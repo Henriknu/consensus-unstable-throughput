@@ -1,0 +1,77 @@
+# Starter pipeline
+# Start with a minimal pipeline that you can customize to build and deploy your code.
+# Add steps that build, run tests, deploy, and more:
+# https://aka.ms/yaml
+
+trigger:
+  - main
+
+pool:
+  vmImage: "ubuntu-latest"
+
+jobs:
+  - job: CheckChanges
+    displayName: Check changes
+    steps:
+      - script: |
+          chmod +x check_for_changes.sh
+          ./check_for_changes.sh pbft/
+        displayName: Changes for pbft
+
+  - job: pbft
+    displayName: pbft
+    dependsOn: CheckChanges
+    condition: eq(dependencies.CheckChanges.outputs['check_changes.SOURCE_CODE_CHANGED_PBFT'], 'true')
+    steps:
+      - checkout: self
+        submodules: "true"
+
+      - script: |
+          mkdir -p $(Pipeline.Workspace)/docker
+          mkdir -p $(Pipeline.Workspace)/cargo
+        displayName: Prepare
+
+      - task: Cache@2
+        inputs:
+          key: 'v3 | docker | "$(Agent.OS)" | pbft/Dockerfile'
+          path: $(Pipeline.Workspace)/docker
+          cacheHitVar: DOCKER_CACHE_RESTORED
+        displayName: Caching docker image
+
+      - task: Cache@2
+        inputs:
+          key: 'v3 | cargo | "$(Agent.OS)" | pbft/Cargo.toml'
+          path: $(Pipeline.Workspace)/cargo
+          cacheHitVar: CARGO_CACHE_RESTORED
+        displayName: Caching cargo dependencies
+
+      - script: |
+          docker load < $(Pipeline.Workspace)/docker/cache.tar
+        displayName: Load docker cache
+        condition: and(not(canceled()), eq(variables.DOCKER_CACHE_RESTORED, 'true'))
+
+      - script: |
+          docker build --tag sawtooth-pbft-local:latest pbft/
+          docker save sawtooth-pbft-local:latest > $(Pipeline.Workspace)/docker/cache.tar
+        displayName: Build docker image
+        condition: and(not(canceled()), or(failed(), ne(variables.DOCKER_CACHE_RESTORED, 'true')))
+
+      - script: |
+          docker run \
+          -v /$(pwd)/pbft/:/project/sawtooth-pbft:Z \
+          -v $(Pipeline.Workspace)/cargo/target:/project/sawtooth-pbft/target:Z \
+          -v $(Pipeline.Workspace)/cargo/registry:/root/.cargo/registry:Z \
+          -v $(Pipeline.Workspace)/cargo/git:/root/.cargo/git:Z \
+          sawtooth-pbft-local:latest
+          sudo chown -R $USER $(Pipeline.Workspace)/cargo
+        displayName: Build pbft-engine
+
+      - script: |
+          docker run \
+          -v /$(pwd)/pbft/:/project/sawtooth-pbft:Z \
+          -v $(Pipeline.Workspace)/cargo/target:/project/sawtooth-pbft/target:Z \
+          -v $(Pipeline.Workspace)/cargo/registry:/root/.cargo/registry:Z \
+          -v $(Pipeline.Workspace)/cargo/git:/root/.cargo/git:Z \
+          sawtooth-pbft-local:latest cargo test
+          sudo chown -R $USER $(Pipeline.Workspace)/cargo
+        displayName: Test
