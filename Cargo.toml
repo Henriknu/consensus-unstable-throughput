@@ -1,0 +1,7 @@
+[workspace]
+members = [
+    "consensus-core",
+    "hbbft",
+    "pbft",
+    "transaction-provider"
+]
