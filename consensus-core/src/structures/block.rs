@@ -29,7 +29,7 @@ pub struct Block {
 
 impl Block {
     pub fn validate_header(&self) -> bool {
-        crypto::verify_sha256(
+        crypto::hash::verify_sha256(
             &bincode::serialize(&self.header).unwrap(),
             self.header_signature,
         )
@@ -54,7 +54,7 @@ impl BlockBuilder {
     pub fn build_block(self) -> Block {
         let header = BlockHeader::default();
 
-        let header_signature = crypto::hash_sha256(&bincode::serialize(&header).unwrap());
+        let header_signature = crypto::hash::hash_sha256(&bincode::serialize(&header).unwrap());
 
         Block {
             header,
