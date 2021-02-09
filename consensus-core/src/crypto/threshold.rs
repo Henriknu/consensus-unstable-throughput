@@ -78,6 +78,7 @@ impl Dealer {
 
         let secrets: Vec<_> = secrets
             .into_iter()
+            .skip(1)
             .map(|secret_scalar| SecretK { secret_scalar })
             .collect();
 
@@ -306,8 +307,8 @@ mod tests {
 
     use super::*;
 
-    const N_ACTORS_MULTIPLE: usize = 5;
-    const THRESHOLD_MULTIPLE: usize = 3;
+    const N_ACTORS_MULTIPLE: usize = 10;
+    const THRESHOLD_MULTIPLE: usize = 5;
 
     #[test]
     fn test_proof_valid() {
@@ -338,9 +339,9 @@ mod tests {
 
     #[test]
     fn test_verify_share() {
-        let keyset = Dealer::generate_keys(2, 1);
+        let keyset = Dealer::generate_keys(N_ACTORS_MULTIPLE, THRESHOLD_MULTIPLE);
 
-        let actors: Vec<Actor> = (0..2)
+        let actors: Vec<Actor> = (0..N_ACTORS_MULTIPLE)
             .into_iter()
             .map(|index| Actor {
                 index,
@@ -363,8 +364,8 @@ mod tests {
             .map(|actor| actor.decrypt_share(&encrypted).unwrap())
             .collect();
 
-        assert_eq!(actors.len(), 2);
-        assert_eq!(decrypt_shares.len(), 2);
+        assert_eq!(actors.len(), N_ACTORS_MULTIPLE);
+        assert_eq!(decrypt_shares.len(), N_ACTORS_MULTIPLE);
         assert!(
             actors[0].verify_share(&encrypted, &decrypt_shares[0]),
             "Actor 0 could not verify share 0"
@@ -483,8 +484,7 @@ mod tests {
             .map(|actor| actor.decrypt_share(&encrypted).unwrap())
             .collect();
 
-        /*
-            for share in &decrypt_shares {
+        for share in &decrypt_shares {
             for actor in &actors {
                 if actor.index != share.index {
                     assert!(
@@ -495,7 +495,7 @@ mod tests {
                     );
                 }
             }
-        } */
+        }
 
         let plaintext = actors[0]
             .combine_shares(&encrypted, decrypt_shares)
