@@ -130,3 +130,22 @@ mod tests {
         assert_eq!(public.to_projective(), result)
     }
 }
+
+const CURVE_ID: Nid = Nid::X9_62_PRIME256V1;
+/// TODO: Remove this stuff, not needed. Can generate keys through p256 only.
+pub fn generate_keys() -> Result<(PublicKey, SecretKey), Box<dyn Error>> {
+    let key: EcKey<Private> = EcKey::generate(EcGroup::from_curve_name(CURVE_ID)?.as_ref())?;
+
+    let public: PublicKey =
+        FromPublicKey::from_public_key_pem(str::from_utf8(key.public_key_to_pem()?.as_slice())?)
+            .expect("Could not parse public key");
+
+    let private: SecretKey = FromPrivateKey::from_pkcs8_pem(str::from_utf8(
+        PKey::from_ec_key(key)?
+            .private_key_to_pem_pkcs8()?
+            .as_slice(),
+    )?)
+    .expect("Could not parse private key");
+
+    Ok((public, private))
+}

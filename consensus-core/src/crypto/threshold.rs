@@ -1,47 +1,20 @@
-use openssl::{
-    ec::*,
-    nid::Nid,
-    pkey::{PKey, Private},
-};
+use p256::{AffinePoint, NonZeroScalar, ProjectivePoint, Scalar};
+use rand_core::OsRng;
+use std::{collections::HashSet, ops::Deref, str};
 
-use byteorder::{BigEndian, ReadBytesExt};
-use p256::*;
-use p256::{
-    ecdh::EphemeralSecret, elliptic_curve::Group, EncodedPoint, NistP256, ProjectivePoint,
-    PublicKey, SecretKey,
-};
-use p256::{elliptic_curve::ff::PrimeField, pkcs8::FromPrivateKey};
-use p256::{pkcs8::FromPublicKey, Scalar};
-use rand_core::{CryptoRng, OsRng, RngCore};
-use std::{collections::HashSet, error::Error, io::Read, ops::Deref, str};
-
-use super::hash::{hash1, hash2, hash4, hash_sha256};
-
-const CURVE_ID: Nid = Nid::X9_62_PRIME256V1;
-/// TODO: Remove this stuff, not needed. Can generate keys through p256 only.
-pub fn generate_keys() -> Result<(PublicKey, SecretKey), Box<dyn Error>> {
-    let key: EcKey<Private> = EcKey::generate(EcGroup::from_curve_name(CURVE_ID)?.as_ref())?;
-
-    let public: PublicKey =
-        FromPublicKey::from_public_key_pem(str::from_utf8(key.public_key_to_pem()?.as_slice())?)
-            .expect("Could not parse public key");
-
-    let private: SecretKey = FromPrivateKey::from_pkcs8_pem(str::from_utf8(
-        PKey::from_ec_key(key)?
-            .private_key_to_pem_pkcs8()?
-            .as_slice(),
-    )?)
-    .expect("Could not parse private key");
-
-    Ok((public, private))
-}
+use super::hash::{hash1, hash2, hash4};
 
 /// Generate keyset -> Public key, public verification key, secret keys.
 pub struct Dealer {}
 
 impl Dealer {
+    /// Generate keys for a TDH2 threshold scheme.
+    /// Invariant 1 <= threshold <= n_actors must hold.
     pub fn generate_keys(n_actors: usize, threshold: usize) -> KeySet {
         // Should generate the keyset, to be used in a trusted setup environment.
+
+        assert!(threshold > 0);
+        assert!(n_actors >= threshold);
 
         let g = AffinePoint::generator();
 
@@ -269,7 +242,6 @@ impl Actor {
                     }
                 });
 
-                assert_ne!(numerator, Scalar::zero(), "Expect numerator to not be zero");
                 assert_ne!(
                     denumerator,
                     Scalar::zero(),
@@ -307,8 +279,8 @@ mod tests {
 
     use super::*;
 
-    const N_ACTORS_MULTIPLE: usize = 10;
-    const THRESHOLD_MULTIPLE: usize = 5;
+    const N_ACTORS_MULTIPLE: usize = 5;
+    const THRESHOLD_MULTIPLE: usize = 2;
 
     #[test]
     fn test_proof_valid() {
@@ -338,115 +310,41 @@ mod tests {
     }
 
     #[test]
-    fn test_verify_share() {
-        let keyset = Dealer::generate_keys(N_ACTORS_MULTIPLE, THRESHOLD_MULTIPLE);
-
-        let actors: Vec<Actor> = (0..N_ACTORS_MULTIPLE)
-            .into_iter()
-            .map(|index| Actor {
-                index,
-                public: keyset.public,
-                verify: keyset.verify.clone(),
-                secret: keyset.secrets[index],
-            })
-            .collect();
-
-        let message = "Hello world! Hello world! Hello!";
-
-        let mut data = [0u8; 32];
-
-        data.copy_from_slice(message.as_bytes());
-
-        let encrypted = actors[0].encrypt(&data, &data);
-
-        let decrypt_shares: Vec<_> = actors
-            .iter()
-            .map(|actor| actor.decrypt_share(&encrypted).unwrap())
-            .collect();
-
-        assert_eq!(actors.len(), N_ACTORS_MULTIPLE);
-        assert_eq!(decrypt_shares.len(), N_ACTORS_MULTIPLE);
-        assert!(
-            actors[0].verify_share(&encrypted, &decrypt_shares[0]),
-            "Actor 0 could not verify share 0"
-        );
-        assert!(
-            actors[1].verify_share(&encrypted, &decrypt_shares[1]),
-            "Actor 1 could not verify share 1"
-        );
+    #[should_panic]
+    fn test_threshold_encrypt_should_fail_with_threshold_less_than_1() {
+        threshold_crypto_scenario(1, 0);
     }
 
     #[test]
-    fn test_threshold_encrypt_single_actor() {
-        let keyset = Dealer::generate_keys(1, 1);
+    #[should_panic]
+    fn test_threshold_encrypt_should_fail_with_threshold_larger_than_n() {
+        threshold_crypto_scenario(1, 2);
+    }
 
-        let actors: Vec<Actor> = (0..1)
-            .into_iter()
-            .map(|index| Actor {
-                index,
-                public: keyset.public,
-                verify: keyset.verify.clone(),
-                secret: keyset.secrets[index],
-            })
-            .collect();
+    #[test]
+    fn test_threshold_encrypt_single_actor_threshold_1() {
+        threshold_crypto_scenario(1, 1);
+    }
 
-        let message = "Hello world! Hello world! Hello!";
-
-        let mut data = [0u8; 32];
-
-        data.copy_from_slice(message.as_bytes());
-
-        assert!(message.as_bytes().len() == 32);
-
-        println!("Message bytes: {:?}", &message.as_bytes());
-        println!("Message bytes len: {:?}", &message.as_bytes().len());
-        println!(
-            "Message str: {:?}",
-            str::from_utf8(&message.as_bytes()).expect("Message data should be valid utf-8")
-        );
-
-        let encrypted = actors[0].encrypt(&data, &data);
-
-        println!("Ciphertext bytes: {:?}", &encrypted.c);
-        println!(
-            "Ciphertext label: {:?}",
-            str::from_utf8(&encrypted.label).expect("Label should be valid utf-8")
-        );
-
-        let decrypt_shares: Vec<_> = actors
-            .iter()
-            .map(|actor| actor.decrypt_share(&encrypted).unwrap())
-            .collect();
-
-        for share in &decrypt_shares {
-            for actor in &actors {
-                if actor.index != share.index {
-                    assert!(
-                        actor.verify_share(&encrypted, share),
-                        "Actor {} could not verify share: {}",
-                        actor.index,
-                        share.index
-                    );
-                }
-            }
-        }
-
-        let plaintext = actors[0]
-            .combine_shares(&encrypted, decrypt_shares)
-            .expect("Plaintext could not be retrieved from shares");
-
-        println!("Plaintext bytes: {:?}", &plaintext.data);
-        println!(
-            "Plaintext message: {:?}",
-            str::from_utf8(&plaintext.data).expect("Plaintext data should be valid utf-8")
-        );
+    #[test]
+    fn test_threshold_encrypt_multiple_actors_threshold_1() {
+        threshold_crypto_scenario(N_ACTORS_MULTIPLE, 1);
     }
 
     #[test]
     fn test_threshold_encrypt_multiple_actors() {
-        let keyset = Dealer::generate_keys(N_ACTORS_MULTIPLE, THRESHOLD_MULTIPLE);
+        threshold_crypto_scenario(N_ACTORS_MULTIPLE, THRESHOLD_MULTIPLE);
+    }
 
-        let actors: Vec<Actor> = (0..N_ACTORS_MULTIPLE)
+    #[test]
+    fn test_threshold_encrypt_multiple_actors_equal_threshold() {
+        threshold_crypto_scenario(N_ACTORS_MULTIPLE, N_ACTORS_MULTIPLE);
+    }
+
+    fn threshold_crypto_scenario(n_actors: usize, threshold: usize) {
+        let keyset = Dealer::generate_keys(n_actors, threshold);
+
+        let actors: Vec<Actor> = (0..n_actors)
             .into_iter()
             .map(|index| Actor {
                 index,
