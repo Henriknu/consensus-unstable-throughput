@@ -2,7 +2,7 @@ use p256::{AffinePoint, NonZeroScalar, ProjectivePoint, Scalar};
 use rand_core::OsRng;
 use std::{collections::HashSet, ops::Deref, str};
 
-use super::hash::{hash1, hash2, hash4};
+use super::hash::threshold::{hash1, hash2, hash4};
 
 /// Generate keyset -> Public key, public verification key, secret keys.
 pub struct Dealer {}
