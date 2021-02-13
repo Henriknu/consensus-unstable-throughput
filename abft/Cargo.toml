@@ -1,5 +1,5 @@
 [package]
-name = "hbbft"
+name = "abft"
 version = "0.1.0"
 authors = ["Henrik Knudsen <henrik@knudsenhome.no>"]
 edition = "2018"
