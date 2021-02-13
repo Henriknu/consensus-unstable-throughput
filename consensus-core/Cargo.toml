@@ -9,6 +9,7 @@ edition = "2018"
 [dependencies]
 bincode = "1.3"
 byteorder = "1.4.2"
+liberasurecode = {git = "https://github.com/Henriknu/liberasurecode" }
 hex = "0.4.2"
 openssl = "0.10"
 p256 = {version = "0.7.2", features = ["ecdh", "pkcs8", "pem", "arithmetic"]}
@@ -16,3 +17,4 @@ serde = { version = "1.0", features = ["derive"] }
 tiny-keccak = { version = "2.0", features = ["sha3"] }
 rand_core = {version = "0.5", features = ["getrandom"]}
 uint = "0.9.0"
+subtle = "2.4"

@@ -70,7 +70,7 @@ pub(crate) mod threshold {
         Scalar::from_bytes_reduced(FieldBytes::from_slice(&output))
     }
 }
-
+/// Hash functions used within the TDH2 threshold encryption system.
 pub(crate) mod commoncoin {
 
     use std::borrow::Borrow;
@@ -85,21 +85,17 @@ pub(crate) mod commoncoin {
     static P256_B: &str =
         "41058363725152142129326129780047268409114441015993725554835256314039467401291";
 
-    /// Hash function H: {0, 1}^32 -> G. Implement F(m) = f(h1(m)) + f(h2(m)) icart scheme.
+    // TODO: Verify assumption that H(m) = (h(m) to Zq) * g is sufficient. If not, current draft: https://tools.ietf.org/html/draft-irtf-cfrg-hash-to-curve-04#section-4.
+    // Would require implementing square root functions for p-256. Rust impl: https://dusk-network.github.io/dusk-zerocaf/src/zerocaf/backend/u64/field.rs.html#380-442
+    /// Hash function H: {0, 1}^32 -> G.
     pub(crate) fn hash_1(data: &[u8]) -> AffinePoint {
         let mut sha3_256 = Sha3::v256();
-        let mut output1 = [0u8; 32];
+        let mut output = [0u8; 32];
         sha3_256.update(data);
-        sha3_256.finalize(&mut output1);
-        let f1 = icart(Scalar::from_bytes_reduced(FieldBytes::from_slice(&output1)));
+        sha3_256.finalize(&mut output);
 
-        let mut sha3_224 = Sha3::v224();
-        let mut output2 = [0u8; 32];
-        sha3_224.update(data);
-        sha3_224.finalize(&mut output2);
-        let f2 = icart(Scalar::from_bytes_reduced(FieldBytes::from_slice(&output2)));
-
-        (ProjectivePoint::from(f1) + ProjectivePoint::from(f2)).to_affine()
+        (ProjectivePoint::generator() * Scalar::from_bytes_reduced(FieldBytes::from_slice(&output)))
+            .to_affine()
     }
 
     fn icart(u: Scalar) -> AffinePoint {
@@ -115,11 +111,18 @@ pub(crate) mod commoncoin {
             - Scalar::from_str(P256_B).unwrap()
             - u.pow_vartime(&[6, 0, 0, 0]) * Scalar::from(27).invert_vartime().unwrap();
 
-        let x = (partial
-            * (partial.pow_vartime(&[3, 0, 0, 0]))
-                .invert_vartime()
-                .unwrap())
-            + u.square() * Scalar::from(3).invert_vartime().unwrap();
+        assert_ne!(partial, Scalar::one());
+
+        // Cube root: N^12865787690039583195855271883267508169999661691570640038046917673452056893819
+        // P - 1 / 3 = [12003011744808111216, 4537280849171177345, 6148914691236517205, 6148914689804861440]
+        // 2P - 1 / 3 = [5559279415906670816, 9074561698342354691, 12297829382473034410, 12297829379609722880]
+        // p + 2 / 9 = [16298833297409071483, 1512426949723725781, 8198552921648689607, 2049638229934953813]
+        let x = (partial.pow_vartime(&[
+            16298833297409071483,
+            1512426949723725781,
+            8198552921648689607,
+            2049638229934953813,
+        ])) + (u.square() * Scalar::from(3).invert_vartime().unwrap());
 
         let y = u * x + v;
 
@@ -163,5 +166,46 @@ pub(crate) mod commoncoin {
         sha3.finalize(&mut output);
 
         (output[0] & (1 << 7)) != 0
+    }
+}
+
+#[cfg(test)]
+mod test_super {
+    use super::*;
+
+    use byteorder::ByteOrder;
+    use p256::elliptic_curve::ff::PrimeField;
+    use uint::construct_uint;
+
+    construct_uint! {
+        pub struct U256(4);
+    }
+
+    #[test]
+    fn test_() {
+        let mut output = [0u8; 32];
+
+        U256::from_dec_str(
+            "57896044605178124381348723474703786764998477612067880171211129530534256022184",
+        )
+        .unwrap()
+        .to_big_endian(&mut output);
+
+        println!("hei");
+
+        let mut result = [0u64; 4];
+
+        result[3] = byteorder::BigEndian::read_u64(&output[0..8]);
+        result[2] = byteorder::BigEndian::read_u64(&output[8..16]);
+        result[1] = byteorder::BigEndian::read_u64(&output[16..24]);
+        result[0] = byteorder::BigEndian::read_u64(&output[24..32]);
+
+        println!("{:?}", result);
+
+        let num = Scalar::from_str(
+            "115792089210356248762697446949407573529996955224135760342422259061068512044369",
+        )
+        .unwrap();
+        println!("{:?}", num);
     }
 }

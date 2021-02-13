@@ -52,6 +52,7 @@ impl Dealer {
 
         let publics: Vec<AffinePoint> = secrets
             .iter()
+            .skip(1)
             .map(|secret| (ProjectivePoint::generator() * secret).to_affine())
             .collect();
 
@@ -74,7 +75,7 @@ impl Dealer {
 }
 
 pub struct Actor {
-    index: usize,
+    pub index: usize,
     public: PublicK,
     verify: VerifyK,
     secret: SecretK,
@@ -103,12 +104,12 @@ impl Actor {
         } = share;
 
         let h = (ProjectivePoint::from(self.public.g) * z)
-            - ProjectivePoint::from(self.verify.elements[*index]) * c;
-        let h1 = (ProjectivePoint::from(g1) * z) - ProjectivePoint::from(*gg1) * c;
+            - (ProjectivePoint::from(self.verify.elements[*index]) * c);
+        let h1 = (ProjectivePoint::from(g1) * z) - (ProjectivePoint::from(*gg1) * c);
 
         c == &hash_2(
             self.public.g,
-            self.verify.elements[self.index],
+            self.verify.elements[*index],
             h.to_affine(),
             g1,
             *gg1,
@@ -191,7 +192,7 @@ impl Actor {
 }
 
 pub struct CoinShare {
-    index: usize,
+    pub index: usize,
     gg1: AffinePoint,
     proof: ValidationProof,
 }
@@ -205,11 +206,28 @@ struct ValidationProof {
 mod test_commoncoin {
     use super::*;
 
+    const N_ACTORS_MULTIPLE: usize = 5;
+    const THRESHOLD_MULTIPLE: usize = 2;
+
     #[test]
     fn test_single_actor_threshold_1() {
-        let keyset = Dealer::generate_keys(1, 1);
+        commoncoin_scenario(1, 1)
+    }
 
-        let actors: Vec<Actor> = (0..1)
+    #[test]
+    fn test_multiple_actor_multiple_threshold() {
+        commoncoin_scenario(N_ACTORS_MULTIPLE, THRESHOLD_MULTIPLE)
+    }
+
+    #[test]
+    fn test_multiple_actor_threshold_equals_num_actors() {
+        commoncoin_scenario(N_ACTORS_MULTIPLE, N_ACTORS_MULTIPLE)
+    }
+
+    fn commoncoin_scenario(n_actors: usize, threshold: usize) {
+        let keyset = Dealer::generate_keys(n_actors, threshold);
+
+        let actors: Vec<Actor> = (0..n_actors)
             .into_iter()
             .map(|index| Actor {
                 index,
@@ -233,7 +251,12 @@ mod test_commoncoin {
         for share in &shares {
             for actor in &actors {
                 if share.index != actor.index {
-                    assert!(actor.verify_share(&data, &share))
+                    assert!(
+                        actor.verify_share(&data, &share),
+                        "Actor {} could not verify share from actor {}",
+                        actor.index,
+                        share.index
+                    )
                 }
             }
         }
