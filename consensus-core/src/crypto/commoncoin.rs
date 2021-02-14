@@ -1,5 +1,6 @@
 use super::hash::commoncoin::{hash_1, hash_2, hash_3};
 use p256::{elliptic_curve::group::ScalarMul, AffinePoint, NonZeroScalar, ProjectivePoint, Scalar};
+// TODO: Look into if OsRng can be switched out for ThreadRNG or other PRNGS. Problem with rand vs rand_core trait contracts in p256...
 use rand_core::OsRng;
 use std::{collections::HashSet, ops::Deref, str};
 
