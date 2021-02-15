@@ -1,7 +1,13 @@
 [workspace]
+
 members = [
     "consensus-core",
     "abft",
     "pbft",
-    "transaction-provider"
+    "transaction-provider",
+
+
+    # internal
+    #"benches"
 ]
+

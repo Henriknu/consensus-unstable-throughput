@@ -1,6 +1,24 @@
-pub use frost::keygen::keygen_with_dealer;
-pub use frost::sign::*;
+use frost::keygen::{keygen_with_dealer, KeyPair};
+use frost::sign::*;
 use rand::rngs::ThreadRng;
+
+pub struct Signer {
+    keypair: KeyPair,
+    commitments: Vec<SigningCommitment>,
+}
+
+impl Signer {
+    pub fn new(keypair: KeyPair, commitments: Vec<SigningCommitment>) -> Signer {
+        Signer {
+            keypair,
+            commitments,
+        }
+    }
+
+    pub fn sign(&self, data: &[u8]) {
+        frost::sign::sign(&self.keypair, &self.commitments, signing_commitments, data)
+    }
+}
 
 #[cfg(test)]
 mod tests {
