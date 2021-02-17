@@ -1,29 +1,39 @@
-use consensus_core::crypto::sign2::{aggregate, sign};
+use consensus_core::crypto::sign::{Signature, SignatureShare, Signer};
 
-pub struct PBSender {
-    id: usize,
+use bincode::serialize;
+use serde::{Deserialize, Serialize};
+
+pub struct PBSender<'s> {
+    id: PBID,
     n_parties: usize,
-    shares: Vec<SigShare>,
+    signer: &'s Signer,
+    message: PBMessage,
+    shares: Vec<PBSigShare>,
 }
 
-impl PBSender {
+impl<'s> PBSender<'_> {
     pub fn invoke(
-        id: usize,
+        id: PBID,
+        n_parties: usize,
+        signer: &'s Signer,
         value: PBvalue,
         proof: PBproof,
-        n_parties: usize,
-        send_handle: &dyn Fn(usize, &PBvalue, &PBproof),
-    ) -> PBSender {
-        let shares = Vec::<SigShare>::with_capacity(n_parties);
+        send_handle: &dyn Fn(usize, &PBMessage),
+    ) -> PBSender<'s> {
+        let shares = Vec::<PBSigShare>::with_capacity(n_parties);
 
         //send <ID, SEND, value, proof> to all parties
+
+        let message = PBMessage { value, proof, id };
         for i in 0..n_parties {
-            send_handle(i, &value, &proof);
+            send_handle(i, &message);
         }
 
         PBSender {
             id,
             n_parties,
+            signer,
+            message,
             shares,
         }
 
@@ -32,92 +42,187 @@ impl PBSender {
         // return aggregate(shares)
     }
 
-    pub fn on_share_ack(&mut self, share: SigShare) -> bool {
-        // if share is valid
-
-        self.shares.push(share);
+    pub fn on_share_ack(&mut self, index: usize, share: PBSigShare) -> bool {
+        if self.signer.verify_share(
+            index,
+            &share.inner,
+            &serialize(&self.message).expect("Could not serialize PB message for ack"),
+        ) {
+            self.shares.push(share);
+        }
 
         self.shares.len() == (self.n_parties * 2 / 3) + 1
     }
 
-    pub fn deliver(&mut self) -> PBsig {
-        aggregate(msg, signing_commitments, signing_responses, signer_pubkeys);
+    pub fn deliver(&mut self) -> PBSig {
+        let shares = self
+            .shares
+            .iter()
+            .enumerate()
+            .map(|(index, share)| (index, share.inner.clone()))
+            .collect();
 
-        PBsig
+        let signature = self.signer.combine_signatures(&shares).unwrap();
+
+        PBSig { inner: signature }
     }
 }
 
 #[derive(Debug, Clone)]
-pub struct PBReceiver {
-    id: usize,
+pub struct PBReceiver<'s> {
+    id: PBID,
+    signer: &'s Signer,
     should_stop: bool,
-    key: Option<PBkey>,
+    message: Option<PBMessage>,
 }
 
-impl PBReceiver {
-    fn batch_init(id: usize, n_parties: usize) -> Vec<PBReceiver> {
+impl<'s> PBReceiver<'s> {
+    fn batch_init(id: PBID, n_parties: usize, signer: &Signer) -> Vec<PBReceiver> {
         vec![
             PBReceiver {
                 id,
+                signer,
                 should_stop: false,
-                key: None
+                message: None
             };
             n_parties
         ]
     }
 
-    fn on_value_send(
-        &mut self,
-        value: &PBvalue,
-        proof: &PBproof,
-        send_handle: &dyn Fn(usize, &SigShare),
-    ) {
-        if !self.should_stop || self.evaluate_pb_val(value, proof) {
+    fn on_value_send(&mut self, message: PBMessage, send_handle: &dyn Fn(PBID, PBSigShare)) {
+        if !self.should_stop && self.evaluate_pb_val(&message) {
             self.abandon();
-            let share = sign((id, value));
-            self.key.replace(value);
+            let response = PBResponse {
+                id: message.id,
+                value: message.value,
+            };
+
+            let inner = self.signer.sign(
+                &serialize(&response).expect("Could not serialize message for on_value_send"),
+            );
+            send_handle(self.id, PBSigShare { inner });
+            self.message.replace(message);
         }
     }
 
-    fn evaluate_pb_val(&self, value: &PBvalue, proof: &PBproof) -> bool {
-        // parse ID as <_ID_, step>
+    fn evaluate_pb_val(&self, message: &PBMessage) -> bool {
+        let PBID { id, step } = self.id;
+        let PBproof { key, proof_prev } = &message.proof;
 
-        // parse proof as <key, _proof_>
+        // If first step, verify that the key provided is valid
+        if step == 1 && self.check_key(&message.value, key) {
+            return true;
+        }
 
-        // if step == 1 && check_key(value, key){ return true;}
+        let response_prev = PBResponse {
+            id: PBID { id, step: step - 1 },
+            value: message.value,
+        };
 
-        // if step > 1 && sig_validate(<<_ID_, step - 1>, v>, _proof_) {return true;}
+        // If later step, verify that the proof provided is valid for the previous step.
+        if step > 1
+            && self.signer.verify_signature(
+                &proof_prev.inner,
+                &serialize(&response_prev)
+                    .expect("Could not serialize response_prev for evaluate_pb_val"),
+            )
+        {
+            return true;
+        }
 
-        // return false
-        todo!()
+        false
     }
 
-    fn check_key(value: &PBvalue, key: &PBkey) -> bool {
-        // if !eval_mvba_val(value) {return false;}
+    fn check_key(&self, value: &PBvalue, key: &PBkey) -> bool {
+        //TODO: FIX dummy id for MVBA protocol variables
+        let MVBA_LOCK = 0;
+        let MVBA_ID = 0;
 
-        //parse key as <view, p>
+        // Check that value is valid high-level application
+        if !eval_mvba_val(value) {
+            return false;
+        }
 
-        //if view != 1 && !sig_validate(<<<id, Leader[view], view>, 1>, v> p){return false;}
+        let PBkey {
+            view,
+            view_key_proof,
+        } = key;
 
-        //if view >= LOCK {return true;}
+        let view_key = PBResponse {
+            id: PBID {
+                id: MVBA_ID,
+                step: 1,
+            },
+            value: *value,
+        };
 
-        //return false;
-        todo!()
+        // Verify the validity of the key provided
+        if *view != 1
+            && !self.signer.verify_signature(
+                &view_key_proof.inner,
+                &serialize(&view_key).expect("Could not serialize view_key for check_key"),
+            )
+        {
+            return false;
+        }
+
+        // Verify that the key was not obtained in an earlier view than what is currently locked
+        if view < &MVBA_LOCK {
+            return false;
+        }
+
+        true
     }
     fn abandon(&mut self) {
         self.should_stop = true;
     }
 }
 
-struct SigShare;
+fn eval_mvba_val(value: &PBvalue) -> bool {
+    todo!()
+}
 
-struct PBsig;
+struct PBSigShare {
+    inner: SignatureShare,
+}
 
-pub struct PBvalue;
+#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
+pub struct PBID {
+    id: usize,
+    step: usize,
+}
 
-pub struct PBproof;
-
-struct PBkey {
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct PBMessage {
+    id: PBID,
     value: PBvalue,
     proof: PBproof,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct PBResponse {
+    id: PBID,
+    value: PBvalue,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct PBSig {
+    inner: Signature,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
+pub struct PBvalue {
+    inner: usize,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct PBproof {
+    key: PBkey,
+    proof_prev: PBSig,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct PBkey {
+    view: usize,
+    view_key_proof: PBSig,
 }

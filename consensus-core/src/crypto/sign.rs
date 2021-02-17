@@ -6,27 +6,27 @@ use std::collections::BTreeMap;
 
 use rand_core::OsRng;
 
-use threshold_crypto::{
-    error::Error, PublicKeySet, PublicKeyShare, SecretKeySet, SecretKeyShare, Signature,
-    SignatureShare,
-};
+pub use threshold_crypto::{Signature, SignatureShare};
+
+use threshold_crypto::{error::Error, PublicKeySet, PublicKeyShare, SecretKeySet, SecretKeyShare};
 #[derive(Debug)]
 pub struct Signer {
     secret: SecretKeyShare,
     publics: PublicKeySet,
+    threshold: usize,
 }
 
 impl Signer {
-    pub fn new(secret: SecretKeyShare, publics: PublicKeySet) -> Signer {
-        Signer { secret, publics }
-    }
-
     pub fn generate_signers(n_parties: usize, threshold: usize) -> Vec<Signer> {
         let sk_set = SecretKeySet::random(threshold, &mut OsRng);
         let pk_set = sk_set.public_keys();
 
         (0..n_parties)
-            .map(|i| Signer::new(sk_set.secret_key_share(i), pk_set.clone()))
+            .map(|i| Signer {
+                secret: sk_set.secret_key_share(i),
+                publics: pk_set.clone(),
+                threshold,
+            })
             .collect()
     }
 
