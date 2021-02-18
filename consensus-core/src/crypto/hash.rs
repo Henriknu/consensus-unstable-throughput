@@ -157,15 +157,15 @@ pub(crate) mod commoncoin {
         Scalar::from_bytes_reduced(FieldBytes::from_slice(&output))
     }
 
-    // Hash function H:  G -> {0,1}.
-    pub(crate) fn hash_3(g: AffinePoint) -> bool {
+    // Hash function H:  G -> {0,1}^32.
+    pub(crate) fn hash_3(g: AffinePoint) -> [u8; 32] {
         let mut sha3 = Sha3::v256();
         let mut output = [0u8; 32];
 
         sha3.update(EncodedPoint::from(g).as_bytes());
         sha3.finalize(&mut output);
 
-        (output[0] & (1 << 7)) != 0
+        output
     }
 }
 
@@ -176,10 +176,6 @@ mod test_super {
     use byteorder::ByteOrder;
     use p256::elliptic_curve::ff::PrimeField;
     use uint::construct_uint;
-
-    construct_uint! {
-        pub struct U256(4);
-    }
 
     #[test]
     fn test_() {

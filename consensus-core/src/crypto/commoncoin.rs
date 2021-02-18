@@ -1,6 +1,7 @@
 use super::hash::commoncoin::{hash_1, hash_2, hash_3};
 use p256::{elliptic_curve::group::ScalarMul, AffinePoint, NonZeroScalar, ProjectivePoint, Scalar};
 // TODO: Look into if OsRng can be switched out for ThreadRNG or other PRNGS. Problem with rand vs rand_core trait contracts in p256...
+use rand::{rngs::StdRng, Rng, SeedableRng};
 use rand_core::OsRng;
 use std::{collections::HashSet, ops::Deref, str};
 
@@ -22,14 +23,20 @@ struct VerifyK {
 struct SecretK {
     secret_scalar: Scalar,
 }
-pub struct Dealer {}
 
-impl Dealer {
-    pub fn generate_keys(n_actors: usize, threshold: usize) -> KeySet {
+pub struct Coin {
+    pub index: usize,
+    public: PublicK,
+    verify: VerifyK,
+    secret: SecretK,
+}
+
+impl Coin {
+    pub fn generate_coins(n_parties: usize, threshold: usize) -> Vec<Coin> {
         // Should generate the keyset, to be used in a trusted setup environment.
 
         assert!(threshold > 0);
-        assert!(n_actors >= threshold);
+        assert!(n_parties >= threshold);
 
         let g = AffinePoint::generator();
 
@@ -37,7 +44,7 @@ impl Dealer {
             .map(|_| NonZeroScalar::random(&mut OsRng))
             .collect();
 
-        let secrets: Vec<Scalar> = (0..n_actors + 1)
+        let secrets: Vec<Scalar> = (0..n_parties + 1)
             .map(|i| {
                 let mut sum = Scalar::zero();
                 let mut factor = Scalar::one();
@@ -67,24 +74,17 @@ impl Dealer {
             .map(|secret_scalar| SecretK { secret_scalar })
             .collect();
 
-        KeySet {
-            public,
-            verify,
-            secrets,
-        }
+        (0..n_parties)
+            .map(|index| Coin {
+                index,
+                public,
+                verify: verify.clone(),
+                secret: secrets[index],
+            })
+            .collect()
     }
-}
-
-pub struct Actor {
-    pub index: usize,
-    public: PublicK,
-    verify: VerifyK,
-    secret: SecretK,
-}
-
-impl Actor {
-    pub fn generate_share(&self, coin: &[u8]) -> CoinShare {
-        let g1 = hash_1(coin);
+    pub fn generate_share(&self, data: &[u8]) -> CoinShare {
+        let g1 = hash_1(data);
         let gg1 = (ProjectivePoint::from(g1) * self.secret.secret_scalar).to_affine();
         let proof = self.generate_proof(&g1, &gg1);
 
@@ -95,8 +95,8 @@ impl Actor {
         }
     }
 
-    pub fn verify_share(&self, coin: &[u8], share: &CoinShare) -> bool {
-        let g1 = hash_1(coin);
+    pub fn verify_share(&self, data: &[u8], share: &CoinShare) -> bool {
+        let g1 = hash_1(data);
 
         let CoinShare {
             index,
@@ -118,7 +118,7 @@ impl Actor {
         )
     }
 
-    pub fn combine_shares(&self, shares: &Vec<CoinShare>) -> bool {
+    pub fn combine_shares(&self, shares: &Vec<CoinShare>, range: usize) -> usize {
         let coefficients = self.calculate_lagrange_coefficients(&shares);
 
         let result = shares
@@ -128,7 +128,11 @@ impl Actor {
                 acc + (ProjectivePoint::from(share.gg1) * coeff)
             });
 
-        hash_3(result.to_affine())
+        let hash = hash_3(result.to_affine());
+
+        // provide hash into prng, generate number < n_parties.
+
+        StdRng::from_seed(hash).gen_range(0, range)
     }
 
     fn generate_proof(&self, g1: &AffinePoint, gg1: &AffinePoint) -> ValidationProof {
@@ -207,7 +211,7 @@ struct ValidationProof {
 mod test_commoncoin {
     use super::*;
 
-    const N_ACTORS_MULTIPLE: usize = 5;
+    const N_PARTIES_MULTIPLE: usize = 5;
     const THRESHOLD_MULTIPLE: usize = 2;
 
     #[test]
@@ -217,26 +221,16 @@ mod test_commoncoin {
 
     #[test]
     fn test_multiple_actor_multiple_threshold() {
-        commoncoin_scenario(N_ACTORS_MULTIPLE, THRESHOLD_MULTIPLE)
+        commoncoin_scenario(N_PARTIES_MULTIPLE, THRESHOLD_MULTIPLE)
     }
 
     #[test]
     fn test_multiple_actor_threshold_equals_num_actors() {
-        commoncoin_scenario(N_ACTORS_MULTIPLE, N_ACTORS_MULTIPLE)
+        commoncoin_scenario(N_PARTIES_MULTIPLE, N_PARTIES_MULTIPLE)
     }
 
-    fn commoncoin_scenario(n_actors: usize, threshold: usize) {
-        let keyset = Dealer::generate_keys(n_actors, threshold);
-
-        let actors: Vec<Actor> = (0..n_actors)
-            .into_iter()
-            .map(|index| Actor {
-                index,
-                public: keyset.public,
-                verify: keyset.verify.clone(),
-                secret: keyset.secrets[index],
-            })
-            .collect();
+    fn commoncoin_scenario(n_parties: usize, threshold: usize) {
+        let actors = Coin::generate_coins(n_parties, threshold);
 
         let coin_name = "Hello world! Hello world! Hello!";
 
@@ -262,9 +256,9 @@ mod test_commoncoin {
             }
         }
 
-        let results: Vec<bool> = actors
+        let results: Vec<usize> = actors
             .iter()
-            .map(|actor| actor.combine_shares(&shares))
+            .map(|actor| actor.combine_shares(&shares, 11))
             .collect();
 
         let result = &results[0];

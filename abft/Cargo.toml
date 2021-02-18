@@ -9,4 +9,8 @@ edition = "2018"
 [dependencies]
 bincode = "1.3"
 consensus-core = {path = "../consensus-core"}
+futures = "0.3"
+num-traits = "0.2"
+num-derive = "0.3"
 serde = { version = "1.0", features = ["derive"] }
+tokio = {version = "1.2", features = ["sync", "macros"]}
