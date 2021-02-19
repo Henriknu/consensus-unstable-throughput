@@ -9,7 +9,12 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::Notify;
 
-use self::{elect::Elect, proposal_promotion::PPID, provable_broadcast::PBSig};
+use self::{
+    elect::Elect,
+    proposal_promotion::PPID,
+    provable_broadcast::PBSig,
+    view_change::{ViewChange, ViewChangeResult},
+};
 
 mod elect;
 mod proposal_promotion;
@@ -137,13 +142,40 @@ impl<F: Fn(usize, &PPProposal)> MVBA<F> {
 
             // get key, lock commit for leader
 
+            let leader_commit = None;
+            let leader_lock = None;
+            let leader_key = None;
             // for index in (0..self.n_parties) { send_view_change(index, view, getKey(id_leader), getLock(id_leader), getCommit(id_leader));} }
-
             // wait for n - f distinct view change messages
+            let view_change = ViewChange::init(
+                id_leader,
+                self.n_parties,
+                &self.KEY,
+                self.LOCK,
+                &signer,
+                leader_key,
+                leader_lock,
+                leader_commit,
+            );
 
-            // Either: 1. Decided on value, should return value up. 2. Could not decide. Invoke again, with current variables.
+            let changes = view_change.invoke().await;
+
+            // Either:
+            // 1. Decided on value, should return value up.
+            // 2. Could not decide. Update key and lock if able. Invoke again, with current variables.
+
+            match changes {
+                changes if changes.value.is_some() => return changes.value.unwrap(),
+                _ => {
+                    if let Some(lock) = changes.lock {
+                        self.LOCK = lock;
+                    }
+                    if let Some(key) = changes.key {
+                        self.KEY = key;
+                    }
+                }
+            }
         }
-        Value { inner: 1 }
     }
 
     pub fn on_done_message() {}
@@ -173,7 +205,7 @@ enum MVBAStatus {
     Finished,
 }
 
-struct Key {
+pub struct Key {
     view: usize,
     value: Value,
     proof: Option<PBSig>,

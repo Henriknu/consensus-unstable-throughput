@@ -221,8 +221,8 @@ pub struct PBID {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct PBResponse {
-    id: PBID,
-    value: Value,
+    pub(crate) id: PBID,
+    pub(crate) value: Value,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
