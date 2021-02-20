@@ -1,4 +1,5 @@
 use super::{
+    messages::{ProtocolMessage, ToProtocolMessage, ViewChangeMessage},
     proposal_promotion::{PPProposal, PPStatus, PPID},
     provable_broadcast::{PBKey, PBProof, PBResponse, PBSig, PBID},
     Key, Value, MVBAID,
@@ -8,7 +9,7 @@ use consensus_core::crypto::sign::Signer;
 use std::sync::Arc;
 use tokio::sync::Notify;
 
-pub struct ViewChange<'s> {
+pub struct ViewChange<'s, F: Fn(usize, &ProtocolMessage)> {
     id: MVBAID,
     n_parties: usize,
     current_key: &'s Key,
@@ -20,9 +21,10 @@ pub struct ViewChange<'s> {
     signer: &'s Signer,
     messages: Vec<u8>,
     notify_messages: Arc<Notify>,
+    send_handle: &'s F,
 }
 
-impl<'s> ViewChange<'s> {
+impl<'s, F: Fn(usize, &ProtocolMessage)> ViewChange<'s, F> {
     pub fn init(
         id: MVBAID,
         n_parties: usize,
@@ -32,6 +34,7 @@ impl<'s> ViewChange<'s> {
         key: Option<PPProposal>,
         lock: Option<PPProposal>,
         commit: Option<PPProposal>,
+        send_handle: &'s F,
     ) -> Self {
         Self {
             id,
@@ -45,14 +48,25 @@ impl<'s> ViewChange<'s> {
             messages: Default::default(),
             notify_messages: Arc::new(Notify::new()),
             n_parties,
+            send_handle,
         }
     }
 
     pub async fn invoke(self) -> ViewChangeResult {
-        // for index in (0..self.n_parties) { send_view_change(index, view, getKey(id_leader), getLock(id_leader), getCommit(id_leader));} }
+        let vc_message = ViewChangeMessage::new(
+            self.id.id,
+            self.id.index,
+            self.id.view,
+            self.leader_key,
+            self.leader_lock,
+            self.leader_commit,
+        );
 
-        for index in 0..self.n_parties {
-            //send_view_change(index, view, getKey(id_leader), getLock(id_leader), getCommit(id_leader));
+        for i in 0..self.n_parties {
+            (self.send_handle)(
+                i,
+                &vc_message.to_protocol_message(self.id.id, self.id.index, i),
+            );
         }
 
         // wait for n - f distinct view change messages, or view change message with valid commit (can decide early then)
@@ -169,13 +183,4 @@ pub struct ViewChangeResult {
     pub(crate) value: Option<Value>,
     pub(crate) lock: Option<usize>,
     pub(crate) key: Option<Key>,
-}
-
-pub struct ViewChangeMessage {
-    id: usize,
-    index: usize,
-    view: usize,
-    leader_key: Option<PPProposal>,
-    leader_lock: Option<PPProposal>,
-    leader_commit: Option<PPProposal>,
 }

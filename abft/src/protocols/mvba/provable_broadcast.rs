@@ -8,36 +8,38 @@ use num_traits::FromPrimitive;
 use serde::{Deserialize, Serialize};
 
 use super::{
+    messages::{PBSendMessage, PBShareAckMessage, ProtocolMessage, ToProtocolMessage},
     proposal_promotion::{PPProposal, PPStatus, PPID},
     Value, MVBA, MVBAID,
 };
 
-type PBMessage = PPProposal;
-
-pub struct PBSender<'s, F: Fn(usize, &PBMessage)> {
+pub struct PBSender<'s, F: Fn(usize, &ProtocolMessage)> {
     id: PBID,
+    index: usize,
     n_parties: usize,
     notify_shares: Arc<Notify>,
     signer: &'s Signer,
-    message: &'s PBMessage,
+    proposal: &'s PPProposal,
     shares: Vec<PBSigShare>,
     send_handle: &'s F,
 }
 
-impl<'s, F: Fn(usize, &PBMessage)> PBSender<'s, F> {
+impl<'s, F: Fn(usize, &ProtocolMessage)> PBSender<'s, F> {
     pub fn init(
         id: PBID,
+        index: usize,
         n_parties: usize,
         signer: &'s Signer,
-        message: &'s PPProposal,
+        proposal: &'s PPProposal,
         send_handle: &'s F,
     ) -> Self {
         Self {
             id,
+            index,
             n_parties,
             notify_shares: Arc::new(Notify::new()),
             signer,
-            message,
+            proposal: proposal,
             shares: Default::default(),
             send_handle,
         }
@@ -47,7 +49,12 @@ impl<'s, F: Fn(usize, &PBMessage)> PBSender<'s, F> {
         //send <ID, SEND, value, proof> to all parties
 
         for i in 0..self.n_parties {
-            (self.send_handle)(i, &self.message);
+            let pb_send = PBSendMessage::new(self.id, self.proposal.clone());
+
+            (self.send_handle)(
+                i,
+                &pb_send.to_protocol_message(self.id.id.inner.id, self.index, i),
+            );
         }
 
         // wait for n - f shares
@@ -61,21 +68,23 @@ impl<'s, F: Fn(usize, &PBMessage)> PBSender<'s, F> {
         self.deliver()
     }
 
-    pub fn on_share_ack(&mut self, index: usize, share: PBSigShare) {
+    pub fn on_share_ack_message(&mut self, index: usize, message: PBShareAckMessage) {
+        let share = message.share;
+
         if self.signer.verify_share(
             index,
             &share.inner,
-            &serialize(&self.message).expect("Could not serialize PB message for ack"),
+            &serialize(&self.proposal).expect("Could not serialize PB message for ack"),
         ) {
             self.shares.push(share);
         }
 
-        if self.shares.len() == (self.n_parties * 2 / 3) + 1 {
+        if self.shares.len() >= (self.n_parties * 2 / 3) + 1 {
             self.notify_shares.notify_one();
         }
     }
 
-    pub fn deliver(&mut self) -> PBSig {
+    fn deliver(&mut self) -> PBSig {
         let shares = self
             .shares
             .iter()
@@ -90,47 +99,64 @@ impl<'s, F: Fn(usize, &PBMessage)> PBSender<'s, F> {
 }
 
 #[derive(Clone)]
-pub struct PBReceiver<'s, F: Fn(usize, &PBMessage)> {
+pub struct PBReceiver<'s, F: Fn(usize, &ProtocolMessage)> {
     id: PBID,
+    index: usize,
     signer: &'s Signer,
     should_stop: bool,
-    message: Option<PBMessage>,
+    proposal: Option<PPProposal>,
+    send_handle: F,
     mvba: &'s MVBA<F>,
 }
 
-impl<'s, F: Fn(usize, &PBMessage)> PBReceiver<'s, F> {
-    pub fn init(id: PBID, signer: &'s Signer, mvba: &'s MVBA<F>) -> Self {
+impl<'s, F: Fn(usize, &ProtocolMessage)> PBReceiver<'s, F> {
+    pub fn init(
+        id: PBID,
+        index: usize,
+        signer: &'s Signer,
+        send_handle: F,
+        mvba: &'s MVBA<F>,
+    ) -> Self {
         Self {
             id,
+            index,
             signer,
             should_stop: false,
-            message: None,
+            proposal: None,
+            send_handle,
             mvba,
         }
     }
 
-    pub fn on_value_send(&mut self, message: PBMessage, send_handle: &dyn Fn(PBID, PBSigShare)) {
-        if !self.should_stop && self.evaluate_pb_val(&message) {
+    pub fn on_value_send_message(&mut self, index: usize, message: PBSendMessage) {
+        let proposal = message.proposal;
+        if !self.should_stop && self.evaluate_pb_val(&proposal) {
             self.abandon();
             let response = PBResponse {
                 id: self.id,
-                value: message.value,
+                value: proposal.value,
             };
 
             let inner = self.signer.sign(
                 &serialize(&response).expect("Could not serialize message for on_value_send"),
             );
-            send_handle(self.id, PBSigShare { inner });
-            self.message.replace(message);
+
+            let pb_ack = PBShareAckMessage::new(self.id, PBSigShare { inner });
+
+            (self.send_handle)(
+                index,
+                &pb_ack.to_protocol_message(self.id.id.inner.id, self.index, index),
+            );
+            self.proposal.replace(proposal);
         }
     }
 
-    fn evaluate_pb_val(&self, message: &PBMessage) -> bool {
+    fn evaluate_pb_val(&self, proposal: &PPProposal) -> bool {
         let PBID { id, step } = self.id;
-        let PBProof { key, proof_prev } = &message.proof;
+        let PBProof { key, proof_prev } = &proposal.proof;
 
         // If first step, verify that the key provided is valid
-        if step == PPStatus::Step1 && self.check_key(&message.value, key) {
+        if step == PPStatus::Step1 && self.check_key(&proposal.value, key) {
             return true;
         }
 
@@ -139,7 +165,7 @@ impl<'s, F: Fn(usize, &PBMessage)> PBReceiver<'s, F> {
                 id,
                 step: FromPrimitive::from_u8(step as u8 - 1).expect("Expect step > 1"),
             },
-            value: message.value,
+            value: proposal.value,
         };
 
         // If later step, verify that the proof provided is valid for the previous step.
@@ -209,6 +235,7 @@ fn eval_mvba_val(value: &Value) -> bool {
     todo!()
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct PBSigShare {
     inner: SignatureShare,
 }

@@ -10,13 +10,12 @@ use std::sync::Arc;
 use tokio::sync::Notify;
 
 use self::{
-    elect::Elect,
-    proposal_promotion::PPID,
-    provable_broadcast::PBSig,
-    view_change::{ViewChange, ViewChangeResult},
+    elect::Elect, messages::ProtocolMessage, proposal_promotion::PPID, provable_broadcast::PBSig,
+    view_change::ViewChange,
 };
 
 mod elect;
+mod messages;
 mod proposal_promotion;
 mod provable_broadcast;
 mod view_change;
@@ -25,7 +24,7 @@ mod view_change;
 #[allow(non_snake_case)]
 
 /// Instance of Multi-valued Validated Byzantine Agreement
-pub struct MVBA<F: Fn(usize, &PPProposal)> {
+pub struct MVBA<F: Fn(usize, &ProtocolMessage)> {
     id: MVBAID,
     n_parties: usize,
     status: MVBAStatus,
@@ -39,7 +38,7 @@ pub struct MVBA<F: Fn(usize, &PPProposal)> {
     send_handle: F,
 }
 
-impl<F: Fn(usize, &PPProposal)> MVBA<F> {
+impl<F: Fn(usize, &ProtocolMessage)> MVBA<F> {
     pub fn init(id: usize, index: usize, n_parties: usize, value: Value, send_handle: F) -> Self {
         Self {
             id: MVBAID { id, index, view: 0 },
@@ -76,23 +75,24 @@ impl<F: Fn(usize, &PPProposal)> MVBA<F> {
 
             let MVBAID { id, index, view } = self.id;
 
-            let key = (self.KEY.view, &self.KEY.proof);
+            let key = PBKey {
+                view: self.KEY.view,
+                view_key_proof: self.KEY.proof.clone(),
+            };
 
             // promotion_proof = promote ID, <KEY.value, key>
 
             let proposal = PPProposal {
                 value: self.KEY.value,
                 proof: PBProof {
-                    key: PBKey {
-                        view: self.KEY.view,
-                        view_key_proof: self.KEY.proof.clone(),
-                    },
+                    key,
                     proof_prev: None,
                 },
             };
 
             let pp = PPSender::init(
                 PPID { inner: self.id },
+                self.id.index,
                 self.n_parties,
                 &proposal,
                 &signer,
@@ -125,7 +125,7 @@ impl<F: Fn(usize, &PPProposal)> MVBA<F> {
             // for index in (0..self.n_parties){ abandon(id, index, view);}
 
             // Leader[view] = elect(id, view)
-            let elect = Elect::init(id, self.n_parties, &coin);
+            let elect = Elect::init(id, self.id.index, self.n_parties, &coin, &self.send_handle);
 
             let leader = elect.invoke().await;
 
@@ -156,6 +156,7 @@ impl<F: Fn(usize, &PPProposal)> MVBA<F> {
                 leader_key,
                 leader_lock,
                 leader_commit,
+                &self.send_handle,
             );
 
             let changes = view_change.invoke().await;

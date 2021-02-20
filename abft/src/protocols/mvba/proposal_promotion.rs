@@ -1,14 +1,12 @@
-use super::{provable_broadcast::*, Value, MVBAID};
-use consensus_core::crypto::sign::{Signature, Signer};
+use super::{messages::ProtocolMessage, provable_broadcast::*, Value, MVBAID};
+use consensus_core::crypto::sign::Signer;
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
 use serde::{Deserialize, Serialize};
 
-use std::sync::Arc;
-use tokio::sync::Notify;
-
-pub struct PPSender<'s, F: Fn(usize, &PPProposal)> {
+pub struct PPSender<'s, F: Fn(usize, &ProtocolMessage)> {
     id: PPID,
+    index: usize,
     n_parties: usize,
     proposal: &'s PPProposal,
     proof: Option<PBSig>,
@@ -17,9 +15,10 @@ pub struct PPSender<'s, F: Fn(usize, &PPProposal)> {
     send_handle: &'s F,
 }
 
-impl<'s, F: Fn(usize, &PPProposal)> PPSender<'s, F> {
+impl<'s, F: Fn(usize, &ProtocolMessage)> PPSender<'s, F> {
     pub fn init(
         id: PPID,
+        index: usize,
         n_parties: usize,
         proposal: &'s PPProposal,
         signer: &'s Signer,
@@ -27,6 +26,7 @@ impl<'s, F: Fn(usize, &PPProposal)> PPSender<'s, F> {
     ) -> Self {
         Self {
             id,
+            index,
             n_parties,
             proposal,
             proof: None,
@@ -49,6 +49,7 @@ impl<'s, F: Fn(usize, &PPProposal)> PPSender<'s, F> {
                     step: FromPrimitive::from_u8(step)
                         .expect("Step 1-4 correspond to range (1..5)"),
                 },
+                self.index,
                 self.n_parties,
                 self.signer,
                 &self.proposal,

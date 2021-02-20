@@ -1,5 +1,9 @@
 use super::hash::commoncoin::{hash_1, hash_2, hash_3};
-use p256::{elliptic_curve::group::ScalarMul, AffinePoint, NonZeroScalar, ProjectivePoint, Scalar};
+use p256::{
+    elliptic_curve::{group::ScalarMul, sec1::FromEncodedPoint},
+    AffinePoint, EncodedPoint, FieldBytes, NonZeroScalar, ProjectivePoint, Scalar,
+};
+use serde::{Deserialize, Serialize};
 // TODO: Look into if OsRng can be switched out for ThreadRNG or other PRNGS. Problem with rand vs rand_core trait contracts in p256...
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use rand_core::OsRng;
@@ -195,7 +199,6 @@ impl Coin {
             .collect()
     }
 }
-
 pub struct CoinShare {
     pub index: usize,
     gg1: AffinePoint,
@@ -205,6 +208,50 @@ pub struct CoinShare {
 struct ValidationProof {
     c: Scalar,
     z: Scalar,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct EncodedCoinShare {
+    pub index: usize,
+    gg1: Vec<u8>,
+    c: Vec<u8>,
+    z: Vec<u8>,
+}
+
+impl From<CoinShare> for EncodedCoinShare {
+    fn from(share: CoinShare) -> Self {
+        let CoinShare { index, gg1, proof } = share;
+
+        let gg1 = EncodedPoint::from(gg1).as_bytes().to_vec();
+
+        let c = proof.c.to_bytes().as_slice().to_vec();
+
+        let z = proof.z.to_bytes().as_slice().to_vec();
+
+        Self { index, gg1, c, z }
+    }
+}
+
+impl From<EncodedCoinShare> for CoinShare {
+    fn from(share: EncodedCoinShare) -> Self {
+        let EncodedCoinShare { index, gg1, c, z } = share;
+
+        let gg1 = AffinePoint::from_encoded_point(
+            &EncodedPoint::from_bytes(gg1)
+                .expect("Could not deserialize Sec1 encoded string to encoded point"),
+        )
+        .expect("Could not decode encoded point as affine point");
+
+        let c = Scalar::from_bytes_reduced(FieldBytes::from_slice(&c));
+
+        let z = Scalar::from_bytes_reduced(FieldBytes::from_slice(&z));
+
+        Self {
+            index,
+            gg1,
+            proof: ValidationProof { c, z },
+        }
+    }
 }
 
 #[cfg(test)]
