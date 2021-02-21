@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use super::{
     proposal_promotion::PPProposal,
     provable_broadcast::{PBSigShare, PBID},
-    Value,
+    SkipShare, SkipSig, Value, MVBAID,
 };
 
 // Wrappers
@@ -169,4 +169,52 @@ impl ViewChangeMessage {
 
 impl ToProtocolMessage for ViewChangeMessage {
     const MESSAGE_TYPE: ProtocolMessageType = ProtocolMessageType::ViewChange;
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct MVBADoneMessage {
+    pub id: MVBAID,
+    pub proposal: PPProposal,
+}
+
+impl MVBADoneMessage {
+    pub fn new(id: MVBAID, proposal: PPProposal) -> Self {
+        Self { id, proposal }
+    }
+}
+
+impl ToProtocolMessage for MVBADoneMessage {
+    const MESSAGE_TYPE: ProtocolMessageType = ProtocolMessageType::MVBADone;
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct MVBASkipShareMessage {
+    pub id: MVBAID,
+    pub share: SkipShare,
+}
+
+impl MVBASkipShareMessage {
+    pub fn new(id: MVBAID, share: SkipShare) -> Self {
+        Self { id, share }
+    }
+}
+
+impl ToProtocolMessage for MVBASkipShareMessage {
+    const MESSAGE_TYPE: ProtocolMessageType = ProtocolMessageType::MVBASkipShare;
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct MVBASkipMessage {
+    pub id: MVBAID,
+    pub sig: SkipSig,
+}
+
+impl MVBASkipMessage {
+    pub fn new(id: MVBAID, sig: SkipSig) -> Self {
+        Self { id, sig }
+    }
+}
+
+impl ToProtocolMessage for MVBASkipMessage {
+    const MESSAGE_TYPE: ProtocolMessageType = ProtocolMessageType::MVBASkip;
 }

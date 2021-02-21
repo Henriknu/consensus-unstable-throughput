@@ -106,7 +106,7 @@ pub struct PBReceiver<'s, F: Fn(usize, &ProtocolMessage)> {
     should_stop: bool,
     proposal: Option<PPProposal>,
     send_handle: F,
-    mvba: &'s MVBA<F>,
+    mvba: &'s MVBA<'s, F>,
 }
 
 impl<'s, F: Fn(usize, &ProtocolMessage)> PBReceiver<'s, F> {
@@ -115,7 +115,7 @@ impl<'s, F: Fn(usize, &ProtocolMessage)> PBReceiver<'s, F> {
         index: usize,
         signer: &'s Signer,
         send_handle: F,
-        mvba: &'s MVBA<F>,
+        mvba: &'s MVBA<'s, F>,
     ) -> Self {
         Self {
             id,

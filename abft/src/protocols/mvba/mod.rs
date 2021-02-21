@@ -1,16 +1,21 @@
+use bincode::serialize;
 use consensus_core::crypto::commoncoin::*;
 use consensus_core::crypto::sign::*;
-use futures::{self, FutureExt};
-use proposal_promotion::{PPProposal, PPSender};
+use proposal_promotion::{PPProposal, PPSender, PPStatus};
 use provable_broadcast::{PBKey, PBProof};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use std::sync::Arc;
 use tokio::sync::Notify;
 
 use self::{
-    elect::Elect, messages::ProtocolMessage, proposal_promotion::PPID, provable_broadcast::PBSig,
+    elect::Elect,
+    messages::{
+        MVBADoneMessage, MVBASkipMessage, MVBASkipShareMessage, ProtocolMessage, ToProtocolMessage,
+    },
+    proposal_promotion::PPID,
+    provable_broadcast::{PBResponse, PBSig, PBID},
     view_change::ViewChange,
 };
 
@@ -24,22 +29,34 @@ mod view_change;
 #[allow(non_snake_case)]
 
 /// Instance of Multi-valued Validated Byzantine Agreement
-pub struct MVBA<F: Fn(usize, &ProtocolMessage)> {
+pub struct MVBA<'s, F: Fn(usize, &ProtocolMessage)> {
     id: MVBAID,
     n_parties: usize,
     status: MVBAStatus,
     LOCK: usize,
     KEY: Key,
     leaders: Vec<Option<usize>>,
+    has_received_done: Vec<HashMap<usize, bool>>,
     pp_done: Vec<usize>,
-    pp_skip: Vec<HashSet<SkipType>>,
+    has_received_skip_share: Vec<HashMap<usize, bool>>,
+    has_sent_skip_share: Vec<bool>,
+    pp_skip: Vec<HashSet<SkipShare>>,
+    has_sent_skip: Vec<bool>,
     notify_skip: Arc<Notify>,
     skip: Vec<bool>,
     send_handle: F,
+    signer: &'s Signer,
 }
 
-impl<F: Fn(usize, &ProtocolMessage)> MVBA<F> {
-    pub fn init(id: usize, index: usize, n_parties: usize, value: Value, send_handle: F) -> Self {
+impl<'s, F: Fn(usize, &ProtocolMessage)> MVBA<'s, F> {
+    pub fn init(
+        id: usize,
+        index: usize,
+        n_parties: usize,
+        value: Value,
+        send_handle: F,
+        signer: &'s Signer,
+    ) -> Self {
         Self {
             id: MVBAID { id, index, view: 0 },
             n_parties,
@@ -51,26 +68,26 @@ impl<F: Fn(usize, &ProtocolMessage)> MVBA<F> {
                 proof: None,
             },
             leaders: Default::default(),
+            has_received_done: Default::default(),
             pp_done: Default::default(),
+            has_received_skip_share: Default::default(),
+            has_sent_skip_share: Default::default(),
             pp_skip: Default::default(),
+            has_sent_skip: Default::default(),
             skip: Default::default(),
             notify_skip: Arc::new(Notify::new()),
             send_handle,
+            signer,
         }
     }
 
     pub async fn invoke(&mut self) -> Value {
         //TODO: Fix dummy signers
 
-        let signers = Signer::generate_signers(1, 1);
-        let signer = &signers[0];
-
         let coins = Coin::generate_coins(1, 1);
         let coin = &coins[0];
 
         loop {
-            self.id.view += 1;
-
             // ***** PROPOSAL PROMOTION *****
 
             let MVBAID { id, index, view } = self.id;
@@ -82,7 +99,7 @@ impl<F: Fn(usize, &ProtocolMessage)> MVBA<F> {
 
             // promotion_proof = promote ID, <KEY.value, key>
 
-            let proposal = PPProposal {
+            let mut proposal = PPProposal {
                 value: self.KEY.value,
                 proof: PBProof {
                     key,
@@ -95,7 +112,7 @@ impl<F: Fn(usize, &ProtocolMessage)> MVBA<F> {
                 self.id.index,
                 self.n_parties,
                 &proposal,
-                &signer,
+                &self.signer,
                 &self.send_handle,
             );
 
@@ -105,7 +122,7 @@ impl<F: Fn(usize, &ProtocolMessage)> MVBA<F> {
 
             let promotion_proof: Option<PBSig> = tokio::select! {
                 proof = pp.promote() => proof,
-                _ = notify_skip.notified().fuse() => {
+                _ = notify_skip.notified() => {
                     self.skip[view] = true;
                     None
                 },
@@ -114,8 +131,17 @@ impl<F: Fn(usize, &ProtocolMessage)> MVBA<F> {
             // if !self.skip[self.view]{ for index in (0..self.n_parties) { send_done(index, view, KEY.value, promotion_proof);} }
             // wait for self.skip[view] = true
             if !self.skip[self.id.view] {
-                for index in 0..self.n_parties {
-                    //self.send_done(index, view, KEY.value, promotion_proof);
+                // update proposal with promotion proof
+
+                proposal.proof.proof_prev = promotion_proof;
+
+                let mvba_done = MVBADoneMessage {
+                    id: self.id,
+                    proposal,
+                };
+
+                for i in 0..self.n_parties {
+                    (self.send_handle)(i, &mvba_done.to_protocol_message(id, index, i));
                 }
                 notify_skip.notified().await;
             }
@@ -152,7 +178,7 @@ impl<F: Fn(usize, &ProtocolMessage)> MVBA<F> {
                 self.n_parties,
                 &self.KEY,
                 self.LOCK,
-                &signer,
+                &self.signer,
                 leader_key,
                 leader_lock,
                 leader_commit,
@@ -165,25 +191,185 @@ impl<F: Fn(usize, &ProtocolMessage)> MVBA<F> {
             // 1. Decided on value, should return value up.
             // 2. Could not decide. Update key and lock if able. Invoke again, with current variables.
 
-            match changes {
-                changes if changes.value.is_some() => return changes.value.unwrap(),
-                _ => {
-                    if let Some(lock) = changes.lock {
-                        self.LOCK = lock;
-                    }
-                    if let Some(key) = changes.key {
-                        self.KEY = key;
-                    }
+            if let Some(value) = changes.value {
+                return value;
+            } else {
+                if let Some(lock) = changes.lock {
+                    self.LOCK = lock;
+                }
+                if let Some(key) = changes.key {
+                    self.KEY = key;
                 }
             }
+
+            self.id.view += 1;
         }
     }
 
-    pub fn on_done_message() {}
+    pub fn on_done_message(&mut self, index: usize, message: MVBADoneMessage) {
+        let MVBADoneMessage { id, proposal } = message;
+        let PPProposal { value, proof } = proposal;
+        let PBProof { proof_prev, .. } = proof;
 
-    pub fn on_skip_share_message() {}
+        // Assert that done message has not already been received from party (index) in view (view)
 
-    pub fn on_skip_message() {}
+        if *self.has_received_done[id.view].entry(index).or_default() {
+            return;
+        }
+
+        // Assert that proof is provided
+
+        if let None = proof_prev {
+            return;
+        }
+
+        // Assert that proof is valid
+
+        let sig = proof_prev.expect("Checked that the proof is provided exist");
+
+        let response_prev = PBResponse {
+            id: PBID {
+                id: PPID { inner: id },
+                step: PPStatus::Step4,
+            },
+            value,
+        };
+
+        if !self.signer.verify_signature(
+            &sig.inner,
+            &serialize(&response_prev)
+                .expect("Could not serialize response_prev for on_done_message"),
+        ) {
+            return;
+        }
+
+        // Update state
+        self.has_received_done[id.view].insert(index, true);
+        self.pp_done[id.view] += 1;
+
+        // If enough done messages have been collected to elect leader, and we have not sent out skip_share, send it.
+
+        if !self.has_sent_skip_share[id.view]
+            && self.pp_done[id.view] >= (self.n_parties * 2 / 3) + 1
+        {
+            let tag = self.tag_skip_share(id.id, id.view);
+
+            let share = SkipShare {
+                inner: self.signer.sign(&tag.as_bytes()),
+            };
+
+            let skip_share_message = MVBASkipShareMessage { id, share };
+
+            for i in 0..self.n_parties {
+                (self.send_handle)(
+                    i,
+                    &skip_share_message.to_protocol_message(id.id, self.id.index, i),
+                );
+            }
+
+            self.has_sent_skip_share[id.view] = true;
+        }
+    }
+
+    pub fn on_skip_share_message(&mut self, index: usize, message: MVBASkipShareMessage) {
+        let MVBASkipShareMessage { id, share } = message;
+
+        // Assert that skip share message has not already been received from party (index) in view (view)
+
+        if *self.has_received_skip_share[id.view]
+            .entry(index)
+            .or_default()
+        {
+            return;
+        }
+
+        // Assert that skip share is valid for index
+
+        let tag = self.tag_skip_share(id.id, id.view);
+
+        if !self
+            .signer
+            .verify_share(index, &share.inner, &tag.as_bytes())
+        {
+            return;
+        }
+
+        // Update state
+
+        self.pp_skip[id.view].insert(share);
+
+        // If we have received enough skip_shares to construct a skip signature, construct and broadcast it.
+
+        if !self.has_sent_skip[id.view]
+            && self.pp_skip[id.view].len() >= (self.n_parties * 2 / 3) + 1
+        {
+            let shares = self.pp_skip[id.view]
+                .clone()
+                .into_iter()
+                .enumerate()
+                .map(|(i, skip_share)| (i, skip_share.inner))
+                .collect();
+
+            // All signatures should have been individually verified. Expect that the signature is valid.
+
+            let skip_proof = self.signer.combine_signatures(&shares).expect(
+                "Invariant that enough valid skip signatures had been collected was broken",
+            );
+
+            let skip_message = MVBASkipMessage {
+                id,
+                sig: SkipSig { inner: skip_proof },
+            };
+
+            for i in 0..self.n_parties {
+                (self.send_handle)(
+                    i,
+                    &skip_message.to_protocol_message(id.id, self.id.index, i),
+                );
+            }
+
+            self.has_sent_skip[id.view] = true;
+        }
+    }
+
+    pub fn on_skip_message(&mut self, index: usize, message: MVBASkipMessage) {
+        let MVBASkipMessage { id, sig } = message;
+
+        // Assert that the skip signature is valid
+
+        let tag = self.tag_skip_share(id.id, id.view);
+
+        if !self.signer.verify_signature(&sig.inner, tag.as_bytes()) {
+            return;
+        }
+
+        // Update state
+
+        self.skip[id.view] = true;
+
+        // Propogate skip message, if we have not sent a skip message for the current view
+
+        if !self.has_sent_skip[id.view] {
+            let skip_message = MVBASkipMessage { id, sig };
+
+            for i in 0..self.n_parties {
+                (self.send_handle)(
+                    i,
+                    &skip_message.to_protocol_message(id.id, self.id.index, i),
+                );
+            }
+
+            self.has_sent_skip[id.view] = true;
+        }
+
+        // wake up invoke()-task, since we are ready to continue to election process
+
+        self.notify_skip.notify_one();
+    }
+
+    fn tag_skip_share(&self, id: usize, view: usize) -> String {
+        format!("{}-SKIP-{}", id, view)
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy)]
@@ -212,7 +398,15 @@ pub struct Key {
     proof: Option<PBSig>,
 }
 
+#[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct SkipShare {
+    inner: SignatureShare,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct SkipSig {
+    inner: Signature,
+}
+
 #[derive(Default)]
 struct LeaderType;
-
-struct SkipType;
