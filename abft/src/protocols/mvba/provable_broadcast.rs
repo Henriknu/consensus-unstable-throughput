@@ -100,12 +100,13 @@ impl<'s, F: Fn(usize, &ProtocolMessage)> PBSender<'s, F> {
 
 #[derive(Clone)]
 pub struct PBReceiver<'s, F: Fn(usize, &ProtocolMessage)> {
-    id: PBID,
+    pub id: PBID,
     index: usize,
     signer: &'s Signer,
     should_stop: bool,
     proposal: Option<PPProposal>,
-    send_handle: F,
+    notify_proposal: Arc<Notify>,
+    send_handle: &'s F,
     mvba: &'s MVBA<'s, F>,
 }
 
@@ -114,7 +115,7 @@ impl<'s, F: Fn(usize, &ProtocolMessage)> PBReceiver<'s, F> {
         id: PBID,
         index: usize,
         signer: &'s Signer,
-        send_handle: F,
+        send_handle: &'s F,
         mvba: &'s MVBA<'s, F>,
     ) -> Self {
         Self {
@@ -123,9 +124,24 @@ impl<'s, F: Fn(usize, &ProtocolMessage)> PBReceiver<'s, F> {
             signer,
             should_stop: false,
             proposal: None,
+            notify_proposal: Arc::new(Notify::new()),
             send_handle,
             mvba,
         }
+    }
+
+    pub async fn invoke(&self) -> PPProposal {
+        // wait for a valid proposal to arrive
+
+        let notify_proposal = self.notify_proposal.clone();
+
+        notify_proposal.notified().await;
+
+        // deliver proposal received
+
+        self.proposal
+            .clone()
+            .expect("Proposal has been validated on arrival")
     }
 
     pub fn on_value_send_message(&mut self, index: usize, message: PBSendMessage) {
