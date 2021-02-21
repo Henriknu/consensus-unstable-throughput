@@ -199,12 +199,15 @@ impl Coin {
             .collect()
     }
 }
+
+#[derive(PartialEq, Debug, Clone)]
 pub struct CoinShare {
     pub index: usize,
     gg1: AffinePoint,
     proof: ValidationProof,
 }
 
+#[derive(PartialEq, Debug, Clone)]
 struct ValidationProof {
     c: Scalar,
     z: Scalar,
@@ -313,5 +316,26 @@ mod test_commoncoin {
         for other in &results {
             assert_eq!(result, other);
         }
+    }
+
+    #[test]
+    fn test_encoding() {
+        let actors = Coin::generate_coins(3, 1);
+
+        let coin_name = "Hello world! Hello world! Hello!";
+
+        let mut data = [0u8; 32];
+
+        data.copy_from_slice(coin_name.as_bytes());
+
+        let share = actors[0].generate_share(&data);
+
+        // encode
+
+        let encoded_share: EncodedCoinShare = share.clone().into();
+
+        let decoded_share: CoinShare = encoded_share.into();
+
+        assert_eq!(share, decoded_share);
     }
 }
