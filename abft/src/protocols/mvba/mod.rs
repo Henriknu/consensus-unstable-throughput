@@ -1,7 +1,8 @@
-use bincode::serialize;
+use bincode::{deserialize, serialize};
 use consensus_core::crypto::commoncoin::*;
 use consensus_core::crypto::sign::*;
-use proposal_promotion::{PPProposal, PPSender, PPStatus};
+use messages::{ElectCoinShareMessage, PBSendMessage, PBShareAckMessage, ViewChangeMessage};
+use proposal_promotion::{PPProposal, PPReceiver, PPSender, PPStatus};
 use provable_broadcast::{PBKey, PBProof};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -12,7 +13,8 @@ use tokio::sync::Notify;
 use self::{
     elect::Elect,
     messages::{
-        MVBADoneMessage, MVBASkipMessage, MVBASkipShareMessage, ProtocolMessage, ToProtocolMessage,
+        MVBADoneMessage, MVBASkipMessage, MVBASkipShareMessage, ProtocolMessage,
+        ProtocolMessageHeader, ToProtocolMessage,
     },
     proposal_promotion::PPID,
     provable_broadcast::{PBResponse, PBSig, PBID},
@@ -30,7 +32,10 @@ mod view_change;
 
 /// Instance of Multi-valued Validated Byzantine Agreement
 pub struct MVBA<'s, F: Fn(usize, &ProtocolMessage)> {
+    // Internal state
+    /// Protocol id
     id: MVBAID,
+    /// Number of parties taking part in protocol
     n_parties: usize,
     status: MVBAStatus,
     LOCK: usize,
@@ -44,7 +49,16 @@ pub struct MVBA<'s, F: Fn(usize, &ProtocolMessage)> {
     has_sent_skip: Vec<bool>,
     notify_skip: Arc<Notify>,
     skip: Vec<bool>,
-    send_handle: F,
+
+    // Sub-protocol instances
+    pp_send: Option<PPSender<'s, F>>,
+    pp_recvs: Option<Vec<PPReceiver<'s, F>>>,
+    elect: Option<Elect<'s, F>>,
+    view_change: Option<ViewChange<'s, F>>,
+
+    // Infrastructure
+    send_handle: &'s F,
+    coin: &'s Coin,
     signer: &'s Signer,
 }
 
@@ -54,8 +68,9 @@ impl<'s, F: Fn(usize, &ProtocolMessage)> MVBA<'s, F> {
         index: usize,
         n_parties: usize,
         value: Value,
-        send_handle: F,
+        send_handle: &'s F,
         signer: &'s Signer,
+        coin: &'s Coin,
     ) -> Self {
         Self {
             id: MVBAID { id, index, view: 0 },
@@ -76,8 +91,13 @@ impl<'s, F: Fn(usize, &ProtocolMessage)> MVBA<'s, F> {
             has_sent_skip: Default::default(),
             skip: Default::default(),
             notify_skip: Arc::new(Notify::new()),
-            send_handle,
+            pp_send: None,
+            pp_recvs: None,
+            elect: None,
+            view_change: None,
+            coin,
             signer,
+            send_handle,
         }
     }
 
@@ -88,8 +108,6 @@ impl<'s, F: Fn(usize, &ProtocolMessage)> MVBA<'s, F> {
         let coin = &coins[0];
 
         loop {
-            // ***** PROPOSAL PROMOTION *****
-
             let MVBAID { id, index, view } = self.id;
 
             let key = PBKey {
@@ -97,9 +115,18 @@ impl<'s, F: Fn(usize, &ProtocolMessage)> MVBA<'s, F> {
                 view_key_proof: self.KEY.proof.clone(),
             };
 
+            // ***** PROPOSAL PROMOTION *****
+
+            self.init_pp();
+
             // promotion_proof = promote ID, <KEY.value, key>
 
-            let mut proposal = PPProposal {
+            let pp_send = self
+                .pp_send
+                .as_mut()
+                .expect("PPSender instance should be initialized");
+
+            let proposal = PPProposal {
                 value: self.KEY.value,
                 proof: PBProof {
                     key,
@@ -107,21 +134,12 @@ impl<'s, F: Fn(usize, &ProtocolMessage)> MVBA<'s, F> {
                 },
             };
 
-            let pp = PPSender::init(
-                PPID { inner: self.id },
-                self.id.index,
-                self.n_parties,
-                &proposal,
-                &self.signer,
-                &self.send_handle,
-            );
-
             // wait for promotion to return. aka: 1. Succesfully promoted value or 2. self.skip[self.view]
 
             let notify_skip = self.notify_skip.clone();
 
             let promotion_proof: Option<PBSig> = tokio::select! {
-                proof = pp.promote() => proof,
+                proof = pp_send.promote(proposal) => proof,
                 _ = notify_skip.notified() => {
                     self.skip[view] = true;
                     None
@@ -133,7 +151,16 @@ impl<'s, F: Fn(usize, &ProtocolMessage)> MVBA<'s, F> {
             if !self.skip[self.id.view] {
                 // update proposal with promotion proof
 
-                proposal.proof.proof_prev = promotion_proof;
+                let proposal = PPProposal {
+                    value: self.KEY.value,
+                    proof: PBProof {
+                        key: PBKey {
+                            view: self.KEY.view,
+                            view_key_proof: self.KEY.proof.clone(),
+                        },
+                        proof_prev: promotion_proof,
+                    },
+                };
 
                 let mvba_done = MVBADoneMessage {
                     id: self.id,
@@ -148,10 +175,16 @@ impl<'s, F: Fn(usize, &ProtocolMessage)> MVBA<'s, F> {
 
             // ***** LEADER ELECTION *****
 
+            self.init_elect();
+
             // for index in (0..self.n_parties){ abandon(id, index, view);}
 
             // Leader[view] = elect(id, view)
-            let elect = Elect::init(id, self.id.index, self.n_parties, &coin, &self.send_handle);
+
+            let elect = self
+                .elect
+                .as_ref()
+                .expect("Elect instance should be initialized");
 
             let leader = elect.invoke().await;
 
@@ -166,24 +199,12 @@ impl<'s, F: Fn(usize, &ProtocolMessage)> MVBA<'s, F> {
                 view,
             };
 
-            // get key, lock commit for leader
+            self.init_view_change(id_leader);
 
-            let leader_commit = None;
-            let leader_lock = None;
-            let leader_key = None;
-            // for index in (0..self.n_parties) { send_view_change(index, view, getKey(id_leader), getLock(id_leader), getCommit(id_leader));} }
-            // wait for n - f distinct view change messages
-            let view_change = ViewChange::init(
-                id_leader,
-                self.n_parties,
-                &self.KEY,
-                self.LOCK,
-                &self.signer,
-                leader_key,
-                leader_lock,
-                leader_commit,
-                &self.send_handle,
-            );
+            let view_change = self
+                .view_change
+                .as_mut()
+                .expect("ViewChange instance should be initialized");
 
             let changes = view_change.invoke().await;
 
@@ -203,6 +224,80 @@ impl<'s, F: Fn(usize, &ProtocolMessage)> MVBA<'s, F> {
             }
 
             self.id.view += 1;
+        }
+    }
+
+    pub fn handle_protocol_message(&mut self, message: ProtocolMessage) {
+        let ProtocolMessage {
+            header,
+            message_data,
+            message_type,
+        } = message;
+        let ProtocolMessageHeader {
+            protocol_id,
+            send_id,
+            recv_id,
+        } = header;
+
+        match message_type {
+            messages::ProtocolMessageType::MVBADone => {
+                let inner: MVBADoneMessage = deserialize(&message_data).expect(
+                    "Could not deserialize MVBADone message when handling protocol message",
+                );
+
+                self.on_done_message(send_id, inner);
+            }
+            messages::ProtocolMessageType::MVBASkipShare => {
+                let inner: MVBASkipShareMessage = deserialize(&message_data).expect(
+                    "Could not deserialize MVBASkipShare message when handling protocol message",
+                );
+
+                self.on_skip_share_message(send_id, inner);
+            }
+            messages::ProtocolMessageType::MVBASkip => {
+                let inner: MVBASkipMessage = deserialize(&message_data).expect(
+                    "Could not deserialize MVBASkip message when handling protocol message",
+                );
+
+                self.on_skip_message(inner);
+            }
+            messages::ProtocolMessageType::PBSend => {
+                if let Some(pp_recvs) = &self.pp_recvs {
+                    let inner: PBSendMessage = deserialize(&message_data).expect(
+                        "Could not deserialize PBSend message when handling protocol message",
+                    );
+                    //TODO Get correct PPReceiver instance, by send_id
+
+                    pp_recvs[0].on_value_send_message(&inner);
+                }
+            }
+            messages::ProtocolMessageType::PBShareAck => {
+                if let Some(pp_send) = &self.pp_send {
+                    let inner: PBShareAckMessage = deserialize(&message_data).expect(
+                        "Could not deserialize PBShareAck message when handling protocol message",
+                    );
+
+                    pp_send.on_share_ack(&inner);
+                }
+            }
+            messages::ProtocolMessageType::ElectCoinShare => {
+                if let Some(elect) = &mut self.elect {
+                    let inner: ElectCoinShareMessage = deserialize(&message_data).expect(
+                        "Could not deserialize ElectCoinShare message when handling protocol message",
+                    );
+
+                    elect.on_coin_share_message(inner);
+                }
+            }
+            messages::ProtocolMessageType::ViewChange => {
+                if let Some(view_change) = &mut self.view_change {
+                    let inner: ViewChangeMessage = deserialize(&message_data).expect(
+                        "Could not deserialize ViewChange message when handling protocol message",
+                    );
+
+                    view_change.on_view_change_message(&inner);
+                }
+            }
         }
     }
 
@@ -332,7 +427,7 @@ impl<'s, F: Fn(usize, &ProtocolMessage)> MVBA<'s, F> {
         }
     }
 
-    pub fn on_skip_message(&mut self, index: usize, message: MVBASkipMessage) {
+    pub fn on_skip_message(&mut self, message: MVBASkipMessage) {
         let MVBASkipMessage { id, sig } = message;
 
         // Assert that the skip signature is valid
@@ -367,12 +462,64 @@ impl<'s, F: Fn(usize, &ProtocolMessage)> MVBA<'s, F> {
         self.notify_skip.notify_one();
     }
 
+    fn init_pp(&mut self) {
+        let pp_id = PPID { inner: self.id };
+
+        let pp_send = PPSender::init(
+            pp_id,
+            self.id.index,
+            self.n_parties,
+            self.signer,
+            self.send_handle,
+        );
+
+        let pp_recvs = (0..self.n_parties - 1)
+            .map(|_| PPReceiver::init(pp_id, self.id.index, self.signer, self.send_handle))
+            .collect();
+
+        self.pp_send.replace(pp_send);
+        self.pp_recvs.replace(pp_recvs);
+    }
+
+    fn init_elect(&mut self) {
+        let elect = Elect::init(
+            self.id,
+            self.id.index,
+            self.n_parties,
+            self.coin,
+            self.send_handle,
+        );
+
+        self.elect.replace(elect);
+    }
+
+    fn init_view_change(&mut self, id_leader: MVBAID) {
+        //TODO: Get leaders proposals
+        let leader_key = None;
+        let leader_lock = None;
+        let leader_commit = None;
+
+        let view_change = ViewChange::init(
+            id_leader,
+            self.n_parties,
+            self.KEY.view,
+            self.LOCK,
+            self.signer,
+            leader_key,
+            leader_lock,
+            leader_commit,
+            self.send_handle,
+        );
+
+        self.view_change.replace(view_change);
+    }
+
     fn tag_skip_share(&self, id: usize, view: usize) -> String {
         format!("{}-SKIP-{}", id, view)
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default)]
 pub struct Value {
     inner: usize,
 }
@@ -392,6 +539,7 @@ enum MVBAStatus {
     Finished,
 }
 
+#[derive(Clone)]
 pub struct Key {
     view: usize,
     value: Value,

@@ -3,12 +3,15 @@ use std::{collections::HashSet, sync::Arc};
 use consensus_core::crypto::commoncoin::*;
 use tokio::sync::Notify;
 
-use super::messages::{ElectCoinShareMessage, ProtocolMessage, ToProtocolMessage};
+use super::{
+    messages::{ElectCoinShareMessage, ProtocolMessage, ToProtocolMessage},
+    MVBAID,
+};
 
 pub struct Elect<'c, F: Fn(usize, &ProtocolMessage)> {
-    id: usize,
+    id: MVBAID,
     index: usize,
-    num_parties: usize,
+    n_parties: usize,
     tag: String,
     coin: &'c Coin,
     shares: Vec<CoinShare>,
@@ -18,17 +21,17 @@ pub struct Elect<'c, F: Fn(usize, &ProtocolMessage)> {
 
 impl<'c, F: Fn(usize, &ProtocolMessage)> Elect<'c, F> {
     pub fn init(
-        id: usize,
+        id: MVBAID,
         index: usize,
-        num_parties: usize,
+        n_parties: usize,
         coin: &'c Coin,
         send_handle: &'c F,
     ) -> Elect<'c, F> {
-        let tag = format!("{}", id);
+        let tag = format!("{}", id.id);
         Elect {
             id,
             index,
-            num_parties,
+            n_parties,
             tag,
             coin,
             shares: Default::default(),
@@ -43,10 +46,10 @@ impl<'c, F: Fn(usize, &ProtocolMessage)> Elect<'c, F> {
             share: share.into(),
         };
 
-        for i in 0..self.num_parties {
+        for i in 0..self.n_parties {
             (self.send_handle)(
                 i,
-                &elect_message.to_protocol_message(self.id, self.index, i),
+                &elect_message.to_protocol_message(self.id.id, self.index, i),
             );
         }
 
@@ -55,7 +58,7 @@ impl<'c, F: Fn(usize, &ProtocolMessage)> Elect<'c, F> {
 
         notify_shares.notified().await;
 
-        self.coin.combine_shares(&self.shares, self.num_parties)
+        self.coin.combine_shares(&self.shares, self.n_parties)
     }
 
     pub fn on_coin_share_message(&mut self, message: ElectCoinShareMessage) {
@@ -65,7 +68,7 @@ impl<'c, F: Fn(usize, &ProtocolMessage)> Elect<'c, F> {
             self.shares.push(share);
         }
 
-        if self.shares.len() >= (self.num_parties / 3) + 1 {
+        if self.shares.len() >= (self.n_parties / 3) + 1 {
             self.notify_shares.notify_one();
         }
     }

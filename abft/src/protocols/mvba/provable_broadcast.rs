@@ -19,7 +19,7 @@ pub struct PBSender<'s, F: Fn(usize, &ProtocolMessage)> {
     n_parties: usize,
     notify_shares: Arc<Notify>,
     signer: &'s Signer,
-    proposal: &'s PPProposal,
+    proposal: PPProposal,
     shares: Vec<PBSigShare>,
     send_handle: &'s F,
 }
@@ -30,7 +30,7 @@ impl<'s, F: Fn(usize, &ProtocolMessage)> PBSender<'s, F> {
         index: usize,
         n_parties: usize,
         signer: &'s Signer,
-        proposal: &'s PPProposal,
+        proposal: PPProposal,
         send_handle: &'s F,
     ) -> Self {
         Self {
@@ -45,7 +45,7 @@ impl<'s, F: Fn(usize, &ProtocolMessage)> PBSender<'s, F> {
         }
     }
 
-    pub async fn broadcast(&mut self) -> PBSig {
+    pub async fn broadcast(&self) -> PBSig {
         //send <ID, SEND, value, proof> to all parties
 
         for i in 0..self.n_parties {
@@ -84,7 +84,7 @@ impl<'s, F: Fn(usize, &ProtocolMessage)> PBSender<'s, F> {
         }
     }
 
-    fn deliver(&mut self) -> PBSig {
+    fn deliver(&self) -> PBSig {
         let shares = self
             .shares
             .iter()
@@ -107,17 +107,10 @@ pub struct PBReceiver<'s, F: Fn(usize, &ProtocolMessage)> {
     proposal: Option<PPProposal>,
     notify_proposal: Arc<Notify>,
     send_handle: &'s F,
-    mvba: &'s MVBA<'s, F>,
 }
 
-impl<'s, F: Fn(usize, &ProtocolMessage)> PBReceiver<'s, F> {
-    pub fn init(
-        id: PBID,
-        index: usize,
-        signer: &'s Signer,
-        send_handle: &'s F,
-        mvba: &'s MVBA<'s, F>,
-    ) -> Self {
+impl<'s, 'p, F: Fn(usize, &ProtocolMessage)> PBReceiver<'s, F> {
+    pub fn init(id: PBID, index: usize, signer: &'s Signer, send_handle: &'s F) -> Self {
         Self {
             id,
             index,
@@ -126,7 +119,6 @@ impl<'s, F: Fn(usize, &ProtocolMessage)> PBReceiver<'s, F> {
             proposal: None,
             notify_proposal: Arc::new(Notify::new()),
             send_handle,
-            mvba,
         }
     }
 
@@ -144,9 +136,14 @@ impl<'s, F: Fn(usize, &ProtocolMessage)> PBReceiver<'s, F> {
             .expect("Proposal has been validated on arrival")
     }
 
-    pub fn on_value_send_message(&mut self, index: usize, message: PBSendMessage) {
+    pub fn on_value_send_message(
+        &mut self,
+        index: usize,
+        message: PBSendMessage,
+        mvba: &MVBA<'s, F>,
+    ) {
         let proposal = message.proposal;
-        if !self.should_stop && self.evaluate_pb_val(&proposal) {
+        if !self.should_stop && self.evaluate_pb_val(&proposal, mvba) {
             self.abandon();
             let response = PBResponse {
                 id: self.id,
@@ -167,12 +164,12 @@ impl<'s, F: Fn(usize, &ProtocolMessage)> PBReceiver<'s, F> {
         }
     }
 
-    fn evaluate_pb_val(&self, proposal: &PPProposal) -> bool {
+    fn evaluate_pb_val(&self, proposal: &PPProposal, mvba: &MVBA<'s, F>) -> bool {
         let PBID { id, step } = self.id;
         let PBProof { key, proof_prev } = &proposal.proof;
 
         // If first step, verify that the key provided is valid
-        if step == PPStatus::Step1 && self.check_key(&proposal.value, key) {
+        if step == PPStatus::Step1 && self.check_key(&proposal.value, key, mvba) {
             return true;
         }
 
@@ -199,7 +196,7 @@ impl<'s, F: Fn(usize, &ProtocolMessage)> PBReceiver<'s, F> {
         false
     }
 
-    fn check_key(&self, value: &Value, key: &PBKey) -> bool {
+    fn check_key(&self, value: &Value, key: &PBKey, mvba: &MVBA<'s, F>) -> bool {
         // Check that value is valid high-level application
         if !eval_mvba_val(value) {
             return false;
@@ -214,8 +211,8 @@ impl<'s, F: Fn(usize, &ProtocolMessage)> PBReceiver<'s, F> {
             id: PBID {
                 id: PPID {
                     inner: MVBAID {
-                        id: self.mvba.id.id,
-                        index: self.mvba.leaders[*view].unwrap(),
+                        id: mvba.id.id,
+                        index: mvba.leaders[*view].unwrap(),
                         view: *view,
                     },
                 },
@@ -236,7 +233,7 @@ impl<'s, F: Fn(usize, &ProtocolMessage)> PBReceiver<'s, F> {
         }
 
         // Verify that the key was not obtained in an earlier view than what is currently locked
-        if view < &self.mvba.LOCK {
+        if view < &mvba.LOCK {
             return false;
         }
 
@@ -273,13 +270,13 @@ pub struct PBSig {
     pub(crate) inner: Signature,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct PBProof {
     pub(crate) key: PBKey,
     pub(crate) proof_prev: Option<PBSig>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct PBKey {
     pub(crate) view: usize,
     pub(crate) view_key_proof: Option<PBSig>,

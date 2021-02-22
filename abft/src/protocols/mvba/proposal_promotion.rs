@@ -1,4 +1,10 @@
-use super::{messages::ProtocolMessage, provable_broadcast::*, Value, MVBA, MVBAID};
+use std::sync::Arc;
+
+use super::{
+    messages::{PBSendMessage, PBShareAckMessage, ProtocolMessage},
+    provable_broadcast::*,
+    Value, MVBA, MVBAID,
+};
 use consensus_core::crypto::sign::Signer;
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
@@ -8,8 +14,8 @@ pub struct PPSender<'s, F: Fn(usize, &ProtocolMessage)> {
     id: PPID,
     index: usize,
     n_parties: usize,
-    proposal: &'s PPProposal,
     proof: Option<PBSig>,
+    inner_pb: Option<PBSender<'s, F>>,
     status: PPStatus,
     signer: &'s Signer,
     send_handle: &'s F,
@@ -20,7 +26,6 @@ impl<'s, F: Fn(usize, &ProtocolMessage)> PPSender<'s, F> {
         id: PPID,
         index: usize,
         n_parties: usize,
-        proposal: &'s PPProposal,
         signer: &'s Signer,
         send_handle: &'s F,
     ) -> Self {
@@ -28,41 +33,54 @@ impl<'s, F: Fn(usize, &ProtocolMessage)> PPSender<'s, F> {
             id,
             index,
             n_parties,
-            proposal,
             proof: None,
             signer,
+            inner_pb: None,
             status: PPStatus::Init,
             send_handle,
         }
     }
 
-    pub async fn promote(&self) -> Option<PBSig> {
+    pub async fn promote(&mut self, proposal: PPProposal) -> Option<PBSig> {
         // proof_prev = null
         let mut proof_prev: Option<PBSig> = None;
 
         // for step 1 to 4: Execute PB. Store return value in proof_prev
 
         for step in 1..5 {
-            let mut pb = PBSender::init(
-                PBID {
-                    id: self.id,
-                    step: FromPrimitive::from_u8(step)
-                        .expect("Step 1-4 correspond to range (1..5)"),
-                },
-                self.index,
-                self.n_parties,
-                self.signer,
-                &self.proposal,
-                self.send_handle,
-            );
+            let pb = self.init_pb(step, proposal.clone());
 
             proof_prev.replace(pb.broadcast().await);
         }
 
         proof_prev
     }
+
+    pub fn on_share_ack(&self, message: &PBShareAckMessage) {}
+
+    fn init_pb(&mut self, step: u8, proposal: PPProposal) -> &PBSender<'s, F> {
+        let pb = PBSender::init(
+            PBID {
+                id: self.id,
+                step: FromPrimitive::from_u8(step).expect("Step 1-4 correspond to range (1..5)"),
+            },
+            self.index,
+            self.n_parties,
+            self.signer,
+            proposal,
+            self.send_handle,
+        );
+
+        self.inner_pb.replace(pb);
+
+        &self
+            .inner_pb
+            .as_ref()
+            .expect("PB instance should be initialized")
+    }
 }
 
+#[derive(Clone)]
 pub struct PPReceiver<'s, F: Fn(usize, &ProtocolMessage)> {
     id: PPID,
     index: usize,
@@ -71,18 +89,11 @@ pub struct PPReceiver<'s, F: Fn(usize, &ProtocolMessage)> {
     commit: Option<PPProposal>,
     signer: &'s Signer,
     send_handle: &'s F,
-    inner_pb: PBReceiver<'s, F>,
-    mvba: &'s MVBA<'s, F>,
+    inner_pb: Option<PBReceiver<'s, F>>,
 }
 
 impl<'s, F: Fn(usize, &ProtocolMessage)> PPReceiver<'s, F> {
-    pub fn init(
-        id: PPID,
-        index: usize,
-        signer: &'s Signer,
-        send_handle: &'s F,
-        mvba: &'s MVBA<'s, F>,
-    ) -> Self {
+    pub fn init(id: PPID, index: usize, signer: &'s Signer, send_handle: &'s F) -> Self {
         Self {
             id,
             index,
@@ -90,66 +101,53 @@ impl<'s, F: Fn(usize, &ProtocolMessage)> PPReceiver<'s, F> {
             lock: None,
             commit: None,
             signer,
-            inner_pb: PBReceiver::init(
-                PBID {
-                    id,
-                    step: PPStatus::Step1,
-                },
-                index,
-                &signer,
-                send_handle,
-                mvba,
-            ),
-            mvba,
+            inner_pb: None,
             send_handle,
         }
     }
 
     pub async fn invoke(&mut self) {
         // Step 1: Sender broadcasts value and mvba key
-
-        let _ = self.inner_pb.invoke().await;
-        self.increment_pb();
+        let pb = self.init_pb(1);
+        let _ = pb.invoke().await;
 
         // Step 2: Sender broadcasts key proposal
-
-        let key = self.inner_pb.invoke().await;
+        let pb = self.init_pb(2);
+        let key = pb.invoke().await;
         self.key.replace(key);
-        self.increment_pb();
 
         // Step 3: Sender broadcasts lock proposal
-
-        let lock = self.inner_pb.invoke().await;
+        let pb = self.init_pb(3);
+        let lock = pb.invoke().await;
         self.lock.replace(lock);
-        self.increment_pb();
 
-        // Step 4: Sender broadcasts lock proposal
-
-        let commit = self.inner_pb.invoke().await;
+        // Step 4: Sender broadcasts commit proposal
+        let pb = self.init_pb(4);
+        let commit = pb.invoke().await;
         self.commit.replace(commit);
     }
 
+    pub fn on_value_send_message(&self, message: &PBSendMessage) {}
+
     pub fn abandon(&mut self) {
-        self.inner_pb.abandon()
+        if let Some(pb) = &mut self.inner_pb {
+            pb.abandon();
+        }
     }
 
-    fn increment_pb(&mut self) {
-        let PBID { id, step } = self.inner_pb.id;
-
-        let new_id = PBID {
-            id,
+    fn init_pb(&mut self, step: u8) -> &PBReceiver<'s, F> {
+        let id = PBID {
+            id: self.id,
             step: FromPrimitive::from_u8(step as u8 + 1).expect("Expect step < 4"),
         };
 
-        let new_pb = PBReceiver::init(
-            new_id,
-            self.index,
-            self.signer,
-            self.send_handle,
-            &self.mvba,
-        );
+        let new_pb = PBReceiver::init(id, self.index, self.signer, self.send_handle);
 
-        self.inner_pb = new_pb;
+        self.inner_pb.replace(new_pb);
+
+        self.inner_pb
+            .as_ref()
+            .expect("PB instance should be initialized")
     }
 }
 
@@ -158,7 +156,7 @@ pub struct PPID {
     pub(crate) inner: MVBAID,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct PPProposal {
     pub(crate) value: Value,
     pub(crate) proof: PBProof,

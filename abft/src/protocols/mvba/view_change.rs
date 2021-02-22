@@ -12,12 +12,12 @@ use tokio::sync::Notify;
 pub struct ViewChange<'s, F: Fn(usize, &ProtocolMessage)> {
     id: MVBAID,
     n_parties: usize,
-    current_key: &'s Key,
+    current_key_view: usize,
     current_lock: usize,
     leader_key: Option<PPProposal>,
     leader_lock: Option<PPProposal>,
     leader_commit: Option<PPProposal>,
-    result: ViewChangeResult,
+    result: Option<ViewChangeResult>,
     signer: &'s Signer,
     messages: Vec<u8>,
     notify_messages: Arc<Notify>,
@@ -28,7 +28,7 @@ impl<'s, F: Fn(usize, &ProtocolMessage)> ViewChange<'s, F> {
     pub fn init(
         id: MVBAID,
         n_parties: usize,
-        current_key: &'s Key,
+        current_key_view: usize,
         current_lock: usize,
         signer: &'s Signer,
         key: Option<PPProposal>,
@@ -38,7 +38,7 @@ impl<'s, F: Fn(usize, &ProtocolMessage)> ViewChange<'s, F> {
     ) -> Self {
         Self {
             id,
-            current_key,
+            current_key_view: current_key_view,
             current_lock,
             leader_commit: commit,
             leader_key: key,
@@ -52,14 +52,14 @@ impl<'s, F: Fn(usize, &ProtocolMessage)> ViewChange<'s, F> {
         }
     }
 
-    pub async fn invoke(self) -> ViewChangeResult {
+    pub async fn invoke(&mut self) -> ViewChangeResult {
         let vc_message = ViewChangeMessage::new(
             self.id.id,
             self.id.index,
             self.id.view,
-            self.leader_key,
-            self.leader_lock,
-            self.leader_commit,
+            self.leader_key.take(),
+            self.leader_lock.take(),
+            self.leader_commit.take(),
         );
 
         for i in 0..self.n_parties {
@@ -75,12 +75,17 @@ impl<'s, F: Fn(usize, &ProtocolMessage)> ViewChange<'s, F> {
 
         notify_messages.notified().await;
 
-        self.result
+        self.result.take().expect("Viewchange result should")
     }
 
     pub fn on_view_change_message(&mut self, message: &ViewChangeMessage) {
+        let mut result = self
+            .result
+            .take()
+            .expect("ViewChange result should be initialized");
+
         if self.has_valid_commit(&message) {
-            self.result.value.replace(
+            result.value.replace(
                 message
                     .leader_commit
                     .as_ref()
@@ -92,18 +97,20 @@ impl<'s, F: Fn(usize, &ProtocolMessage)> ViewChange<'s, F> {
         }
 
         if message.view > self.current_lock && self.has_valid_lock(&message) {
-            self.result.lock.replace(message.view);
+            result.lock.replace(message.view);
         }
 
-        if message.view > self.current_key.view && self.has_valid_key(&message) {
+        if message.view > self.current_key_view && self.has_valid_key(&message) {
             let (value, sig) = try_unpack_value_and_sig(&message.leader_key)
                 .expect("Asserted that message had valid key");
-            self.result.key.replace(Key {
+            result.key.replace(Key {
                 view: message.view,
                 value: value,
                 proof: Some(sig),
             });
         }
+
+        self.result.replace(result);
     }
     fn has_valid_commit(&self, message: &ViewChangeMessage) -> bool {
         if let Some((value, sig)) = try_unpack_value_and_sig(&message.leader_commit) {
