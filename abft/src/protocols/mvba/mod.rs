@@ -40,15 +40,23 @@ pub struct MVBA<'s, F: Fn(usize, &ProtocolMessage)> {
     status: MVBAStatus,
     LOCK: usize,
     KEY: Key,
-    leaders: Vec<Option<usize>>,
-    has_received_done: Vec<HashMap<usize, bool>>,
-    pp_done: Vec<usize>,
-    has_received_skip_share: Vec<HashMap<usize, bool>>,
-    has_sent_skip_share: Vec<bool>,
-    pp_skip: Vec<HashSet<SkipShare>>,
-    has_sent_skip: Vec<bool>,
+    /// Index of elected leader per view, if existing.
+    leaders: HashMap<usize, Option<usize>>,
+    /// Whether a MVBADoneMessage has been received from a certain party, for a particular view.
+    has_received_done: HashMap<usize, HashMap<usize, bool>>,
+    /// Number of unique MVBADoneMessages received for a particular view.
+    pp_done: HashMap<usize, usize>,
+    /// Whether a MVBASkipShareMessage has been received from a certain party, for a particular view.
+    has_received_skip_share: HashMap<usize, HashMap<usize, bool>>,
+    /// Whether the current party has sent out a MVBASkipShareMessage for a particular view.
+    has_sent_skip_share: HashMap<usize, bool>,
+    /// Collection of unique MVBASkipShareMessage received for a particular view.
+    pp_skip: HashMap<usize, HashSet<SkipShare>>,
+    /// Whether the current party has sent out a MVBASkipMessage for a particular view.
+    has_sent_skip: HashMap<usize, bool>,
     notify_skip: Arc<Notify>,
-    skip: Vec<bool>,
+    /// Whether the current party can proceed to the election phase for a particular view.
+    skip: HashMap<usize, bool>,
 
     // Sub-protocol instances
     pp_send: Option<PPSender<'s, F>>,
@@ -141,14 +149,15 @@ impl<'s, F: Fn(usize, &ProtocolMessage)> MVBA<'s, F> {
             let promotion_proof: Option<PBSig> = tokio::select! {
                 proof = pp_send.promote(proposal) => proof,
                 _ = notify_skip.notified() => {
-                    self.skip[view] = true;
+                    self.skip.insert(view, true);
                     None
                 },
             };
 
             // if !self.skip[self.view]{ for index in (0..self.n_parties) { send_done(index, view, KEY.value, promotion_proof);} }
             // wait for self.skip[view] = true
-            if !self.skip[self.id.view] {
+
+            if !*self.skip.get(&self.id.view).get_or_insert(&false) {
                 // update proposal with promotion proof
 
                 let proposal = PPProposal {
@@ -188,7 +197,7 @@ impl<'s, F: Fn(usize, &ProtocolMessage)> MVBA<'s, F> {
 
             let leader = elect.invoke().await;
 
-            self.leaders[self.id.view].replace(leader);
+            self.leaders.insert(self.id.view, Some(leader));
 
             // ***** VIEW CHANGE *****
 
@@ -308,7 +317,13 @@ impl<'s, F: Fn(usize, &ProtocolMessage)> MVBA<'s, F> {
 
         // Assert that done message has not already been received from party (index) in view (view)
 
-        if *self.has_received_done[id.view].entry(index).or_default() {
+        if !*self
+            .has_received_done
+            .entry(id.view)
+            .or_default()
+            .entry(index)
+            .or_default()
+        {
             return;
         }
 
@@ -339,13 +354,18 @@ impl<'s, F: Fn(usize, &ProtocolMessage)> MVBA<'s, F> {
         }
 
         // Update state
-        self.has_received_done[id.view].insert(index, true);
-        self.pp_done[id.view] += 1;
+
+        self.has_received_done
+            .entry(id.view)
+            .or_insert(Default::default())
+            .insert(index, true);
+
+        *self.pp_done.entry(id.view).or_insert(0) += 1;
 
         // If enough done messages have been collected to elect leader, and we have not sent out skip_share, send it.
 
-        if !self.has_sent_skip_share[id.view]
-            && self.pp_done[id.view] >= (self.n_parties * 2 / 3) + 1
+        if !*self.has_sent_skip_share.entry(id.view).or_default()
+            && self.pp_done[&id.view] >= (self.n_parties * 2 / 3) + 1
         {
             let tag = self.tag_skip_share(id.id, id.view);
 
@@ -362,7 +382,7 @@ impl<'s, F: Fn(usize, &ProtocolMessage)> MVBA<'s, F> {
                 );
             }
 
-            self.has_sent_skip_share[id.view] = true;
+            self.has_sent_skip_share.insert(id.view, true);
         }
     }
 
@@ -371,7 +391,10 @@ impl<'s, F: Fn(usize, &ProtocolMessage)> MVBA<'s, F> {
 
         // Assert that skip share message has not already been received from party (index) in view (view)
 
-        if *self.has_received_skip_share[id.view]
+        if *self
+            .has_received_skip_share
+            .entry(id.view)
+            .or_default()
             .entry(index)
             .or_default()
         {
@@ -391,14 +414,14 @@ impl<'s, F: Fn(usize, &ProtocolMessage)> MVBA<'s, F> {
 
         // Update state
 
-        self.pp_skip[id.view].insert(share);
+        self.pp_skip.entry(id.view).or_default().insert(share);
 
         // If we have received enough skip_shares to construct a skip signature, construct and broadcast it.
 
-        if !self.has_sent_skip[id.view]
-            && self.pp_skip[id.view].len() >= (self.n_parties * 2 / 3) + 1
+        if !*self.has_sent_skip.entry(id.view).or_default()
+            && self.pp_skip.entry(id.view).or_default().len() >= (self.n_parties * 2 / 3) + 1
         {
-            let shares = self.pp_skip[id.view]
+            let shares = self.pp_skip[&id.view]
                 .clone()
                 .into_iter()
                 .enumerate()
@@ -423,7 +446,7 @@ impl<'s, F: Fn(usize, &ProtocolMessage)> MVBA<'s, F> {
                 );
             }
 
-            self.has_sent_skip[id.view] = true;
+            self.has_sent_skip.insert(id.view, true);
         }
     }
 
@@ -440,11 +463,11 @@ impl<'s, F: Fn(usize, &ProtocolMessage)> MVBA<'s, F> {
 
         // Update state
 
-        self.skip[id.view] = true;
+        self.skip.insert(id.view, true);
 
         // Propogate skip message, if we have not sent a skip message for the current view
 
-        if !self.has_sent_skip[id.view] {
+        if !*self.has_sent_skip.entry(id.view).or_default() {
             let skip_message = MVBASkipMessage { id, sig };
 
             for i in 0..self.n_parties {
@@ -454,7 +477,7 @@ impl<'s, F: Fn(usize, &ProtocolMessage)> MVBA<'s, F> {
                 );
             }
 
-            self.has_sent_skip[id.view] = true;
+            self.has_sent_skip.insert(id.view, true);
         }
 
         // wake up invoke()-task, since we are ready to continue to election process

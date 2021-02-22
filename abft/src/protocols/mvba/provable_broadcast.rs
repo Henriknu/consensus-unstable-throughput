@@ -212,7 +212,7 @@ impl<'s, 'p, F: Fn(usize, &ProtocolMessage)> PBReceiver<'s, F> {
                 id: PPID {
                     inner: MVBAID {
                         id: mvba.id.id,
-                        index: mvba.leaders[*view].unwrap(),
+                        index: mvba.leaders[view].unwrap(),
                         view: *view,
                     },
                 },
