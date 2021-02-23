@@ -13,7 +13,7 @@ use super::{
     Value, MVBA, MVBAID,
 };
 
-pub struct PBSender<'s, F: Fn(usize, &ProtocolMessage)> {
+pub struct PBSender<'s, F: Fn(usize, ProtocolMessage)> {
     id: PBID,
     index: usize,
     n_parties: usize,
@@ -24,7 +24,7 @@ pub struct PBSender<'s, F: Fn(usize, &ProtocolMessage)> {
     send_handle: &'s F,
 }
 
-impl<'s, F: Fn(usize, &ProtocolMessage)> PBSender<'s, F> {
+impl<'s, F: Fn(usize, ProtocolMessage)> PBSender<'s, F> {
     pub fn init(
         id: PBID,
         index: usize,
@@ -53,7 +53,7 @@ impl<'s, F: Fn(usize, &ProtocolMessage)> PBSender<'s, F> {
 
             (self.send_handle)(
                 i,
-                &pb_send.to_protocol_message(self.id.id.inner.id, self.index, i),
+                pb_send.to_protocol_message(self.id.id.inner.id, self.index, i),
             );
         }
 
@@ -99,7 +99,7 @@ impl<'s, F: Fn(usize, &ProtocolMessage)> PBSender<'s, F> {
 }
 
 #[derive(Clone)]
-pub struct PBReceiver<'s, F: Fn(usize, &ProtocolMessage)> {
+pub struct PBReceiver<'s, F: Fn(usize, ProtocolMessage)> {
     pub id: PBID,
     index: usize,
     signer: &'s Signer,
@@ -109,7 +109,7 @@ pub struct PBReceiver<'s, F: Fn(usize, &ProtocolMessage)> {
     send_handle: &'s F,
 }
 
-impl<'s, 'p, F: Fn(usize, &ProtocolMessage)> PBReceiver<'s, F> {
+impl<'s, 'p, F: Fn(usize, ProtocolMessage)> PBReceiver<'s, F> {
     pub fn init(id: PBID, index: usize, signer: &'s Signer, send_handle: &'s F) -> Self {
         Self {
             id,
@@ -158,7 +158,7 @@ impl<'s, 'p, F: Fn(usize, &ProtocolMessage)> PBReceiver<'s, F> {
 
             (self.send_handle)(
                 index,
-                &pb_ack.to_protocol_message(self.id.id.inner.id, self.index, index),
+                pb_ack.to_protocol_message(self.id.id.inner.id, self.index, index),
             );
             self.proposal.replace(proposal);
         }

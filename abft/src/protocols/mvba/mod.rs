@@ -31,7 +31,7 @@ mod view_change;
 #[allow(non_snake_case)]
 
 /// Instance of Multi-valued Validated Byzantine Agreement
-pub struct MVBA<'s, F: Fn(usize, &ProtocolMessage)> {
+pub struct MVBA<'s, F: Fn(usize, ProtocolMessage)> {
     // Internal state
     /// Protocol id
     id: MVBAID,
@@ -70,7 +70,7 @@ pub struct MVBA<'s, F: Fn(usize, &ProtocolMessage)> {
     signer: &'s Signer,
 }
 
-impl<'s, F: Fn(usize, &ProtocolMessage)> MVBA<'s, F> {
+impl<'s, F: Fn(usize, ProtocolMessage)> MVBA<'s, F> {
     pub fn init(
         id: usize,
         index: usize,
@@ -110,11 +110,6 @@ impl<'s, F: Fn(usize, &ProtocolMessage)> MVBA<'s, F> {
     }
 
     pub async fn invoke(&mut self) -> Value {
-        //TODO: Fix dummy signers
-
-        let coins = Coin::generate_coins(1, 1);
-        let coin = &coins[0];
-
         loop {
             let MVBAID { id, index, view } = self.id;
 
@@ -127,39 +122,24 @@ impl<'s, F: Fn(usize, &ProtocolMessage)> MVBA<'s, F> {
 
             self.init_pp();
 
-            // promotion_proof = promote ID, <KEY.value, key>
-
             let pp_send = self
                 .pp_send
                 .as_mut()
                 .expect("PPSender instance should be initialized");
-
-            let proposal = PPProposal {
-                value: self.KEY.value,
-                proof: PBProof {
-                    key,
-                    proof_prev: None,
-                },
-            };
 
             // wait for promotion to return. aka: 1. Succesfully promoted value or 2. self.skip[self.view]
 
             let notify_skip = self.notify_skip.clone();
 
             let promotion_proof: Option<PBSig> = tokio::select! {
-                proof = pp_send.promote(proposal) => proof,
+                proof = pp_send.promote(self.KEY.value, key) => proof,
                 _ = notify_skip.notified() => {
                     self.skip.insert(view, true);
                     None
                 },
             };
 
-            // if !self.skip[self.view]{ for index in (0..self.n_parties) { send_done(index, view, KEY.value, promotion_proof);} }
-            // wait for self.skip[view] = true
-
-            if !*self.skip.get(&self.id.view).get_or_insert(&false) {
-                // update proposal with promotion proof
-
+            if !*self.skip.entry(self.id.view).or_default() {
                 let proposal = PPProposal {
                     value: self.KEY.value,
                     proof: PBProof {
@@ -177,18 +157,16 @@ impl<'s, F: Fn(usize, &ProtocolMessage)> MVBA<'s, F> {
                 };
 
                 for i in 0..self.n_parties {
-                    (self.send_handle)(i, &mvba_done.to_protocol_message(id, index, i));
+                    (self.send_handle)(i, mvba_done.to_protocol_message(id, index, i));
                 }
                 notify_skip.notified().await;
             }
 
             // ***** LEADER ELECTION *****
 
+            self.abandon_all_ongoing_proposals();
+
             self.init_elect();
-
-            // for index in (0..self.n_parties){ abandon(id, index, view);}
-
-            // Leader[view] = elect(id, view)
 
             let elect = self
                 .elect
@@ -201,7 +179,6 @@ impl<'s, F: Fn(usize, &ProtocolMessage)> MVBA<'s, F> {
 
             // ***** VIEW CHANGE *****
 
-            // id_leader = <id, Leader[view], view>
             let id_leader = MVBAID {
                 id,
                 index: leader,
@@ -216,10 +193,6 @@ impl<'s, F: Fn(usize, &ProtocolMessage)> MVBA<'s, F> {
                 .expect("ViewChange instance should be initialized");
 
             let changes = view_change.invoke().await;
-
-            // Either:
-            // 1. Decided on value, should return value up.
-            // 2. Could not decide. Update key and lock if able. Invoke again, with current variables.
 
             if let Some(value) = changes.value {
                 return value;
@@ -378,7 +351,7 @@ impl<'s, F: Fn(usize, &ProtocolMessage)> MVBA<'s, F> {
             for i in 0..self.n_parties {
                 (self.send_handle)(
                     i,
-                    &skip_share_message.to_protocol_message(id.id, self.id.index, i),
+                    skip_share_message.to_protocol_message(id.id, self.id.index, i),
                 );
             }
 
@@ -440,10 +413,7 @@ impl<'s, F: Fn(usize, &ProtocolMessage)> MVBA<'s, F> {
             };
 
             for i in 0..self.n_parties {
-                (self.send_handle)(
-                    i,
-                    &skip_message.to_protocol_message(id.id, self.id.index, i),
-                );
+                (self.send_handle)(i, skip_message.to_protocol_message(id.id, self.id.index, i));
             }
 
             self.has_sent_skip.insert(id.view, true);
@@ -471,10 +441,7 @@ impl<'s, F: Fn(usize, &ProtocolMessage)> MVBA<'s, F> {
             let skip_message = MVBASkipMessage { id, sig };
 
             for i in 0..self.n_parties {
-                (self.send_handle)(
-                    i,
-                    &skip_message.to_protocol_message(id.id, self.id.index, i),
-                );
+                (self.send_handle)(i, skip_message.to_protocol_message(id.id, self.id.index, i));
             }
 
             self.has_sent_skip.insert(id.view, true);
@@ -537,6 +504,14 @@ impl<'s, F: Fn(usize, &ProtocolMessage)> MVBA<'s, F> {
         self.view_change.replace(view_change);
     }
 
+    fn abandon_all_ongoing_proposals(&mut self) {
+        if let Some(recvs) = &mut self.pp_recvs {
+            for recv in recvs {
+                recv.abandon();
+            }
+        }
+    }
+
     fn tag_skip_share(&self, id: usize, view: usize) -> String {
         format!("{}-SKIP-{}", id, view)
     }
@@ -579,5 +554,70 @@ pub struct SkipSig {
     inner: Signature,
 }
 
-#[derive(Default)]
-struct LeaderType;
+#[cfg(test)]
+mod tests {
+    use tokio::sync::Mutex;
+
+    use super::*;
+    use tokio::sync::mpsc::{self, Receiver, Sender};
+    use tokio::test;
+
+    const N_PARTIES: usize = 4;
+    const THRESHOLD: usize = 1;
+
+    #[test]
+    async fn test_it_works() {
+        let mut signers = Signer::generate_signers(N_PARTIES, THRESHOLD);
+        let mut coins = Coin::generate_coins(N_PARTIES, THRESHOLD);
+
+        let mut channels: Vec<_> = (0..N_PARTIES)
+            .map(|_| {
+                let (tx, rx) = mpsc::channel(20);
+                (tx, Some(rx))
+            })
+            .collect();
+
+        for i in 0..N_PARTIES {
+            let mut recv = channels[i].1.take().unwrap();
+            let senders: HashMap<usize, Sender<_>> = channels
+                .iter()
+                .enumerate()
+                .filter_map(|(j, channel)| {
+                    if i != j {
+                        Some((j, channel.0.clone()))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            let signer = signers.remove(i);
+            let coin = coins.remove(i);
+            tokio::spawn(async move {
+                let f = move |index: usize, message: ProtocolMessage| {
+                    let sender = &senders[&index];
+                    sender.send(message);
+                };
+                let mvba = Arc::new(Mutex::new(MVBA::init(
+                    0,
+                    i,
+                    N_PARTIES,
+                    Value { inner: i * 1000 },
+                    &f,
+                    &signer,
+                    &coin,
+                )));
+
+                let mvba2 = mvba.clone();
+
+                tokio::spawn(async move {
+                    while let Some(message) = recv.recv().await {
+                        let mut mvba = mvba2.lock().await;
+                        mvba.handle_protocol_message(message);
+                    }
+                });
+
+                mvba.lock().await.invoke().await;
+            });
+        }
+    }
+}

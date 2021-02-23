@@ -8,7 +8,7 @@ use super::{
     MVBAID,
 };
 
-pub struct Elect<'c, F: Fn(usize, &ProtocolMessage)> {
+pub struct Elect<'c, F: Fn(usize, ProtocolMessage)> {
     id: MVBAID,
     index: usize,
     n_parties: usize,
@@ -19,7 +19,7 @@ pub struct Elect<'c, F: Fn(usize, &ProtocolMessage)> {
     send_handle: &'c F,
 }
 
-impl<'c, F: Fn(usize, &ProtocolMessage)> Elect<'c, F> {
+impl<'c, F: Fn(usize, ProtocolMessage)> Elect<'c, F> {
     pub fn init(
         id: MVBAID,
         index: usize,
@@ -49,7 +49,7 @@ impl<'c, F: Fn(usize, &ProtocolMessage)> Elect<'c, F> {
         for i in 0..self.n_parties {
             (self.send_handle)(
                 i,
-                &elect_message.to_protocol_message(self.id.id, self.index, i),
+                elect_message.to_protocol_message(self.id.id, self.index, i),
             );
         }
 

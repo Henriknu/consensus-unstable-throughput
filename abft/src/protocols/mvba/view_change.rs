@@ -9,7 +9,7 @@ use consensus_core::crypto::sign::Signer;
 use std::sync::Arc;
 use tokio::sync::Notify;
 
-pub struct ViewChange<'s, F: Fn(usize, &ProtocolMessage)> {
+pub struct ViewChange<'s, F: Fn(usize, ProtocolMessage)> {
     id: MVBAID,
     n_parties: usize,
     current_key_view: usize,
@@ -24,7 +24,7 @@ pub struct ViewChange<'s, F: Fn(usize, &ProtocolMessage)> {
     send_handle: &'s F,
 }
 
-impl<'s, F: Fn(usize, &ProtocolMessage)> ViewChange<'s, F> {
+impl<'s, F: Fn(usize, ProtocolMessage)> ViewChange<'s, F> {
     pub fn init(
         id: MVBAID,
         n_parties: usize,
@@ -65,7 +65,7 @@ impl<'s, F: Fn(usize, &ProtocolMessage)> ViewChange<'s, F> {
         for i in 0..self.n_parties {
             (self.send_handle)(
                 i,
-                &vc_message.to_protocol_message(self.id.id, self.id.index, i),
+                vc_message.to_protocol_message(self.id.id, self.id.index, i),
             );
         }
 

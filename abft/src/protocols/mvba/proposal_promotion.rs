@@ -3,14 +3,14 @@ use std::sync::Arc;
 use super::{
     messages::{PBSendMessage, PBShareAckMessage, ProtocolMessage},
     provable_broadcast::*,
-    Value, MVBA, MVBAID,
+    Key, Value, MVBA, MVBAID,
 };
 use consensus_core::crypto::sign::Signer;
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
 use serde::{Deserialize, Serialize};
 
-pub struct PPSender<'s, F: Fn(usize, &ProtocolMessage)> {
+pub struct PPSender<'s, F: Fn(usize, ProtocolMessage)> {
     id: PPID,
     index: usize,
     n_parties: usize,
@@ -21,7 +21,7 @@ pub struct PPSender<'s, F: Fn(usize, &ProtocolMessage)> {
     send_handle: &'s F,
 }
 
-impl<'s, F: Fn(usize, &ProtocolMessage)> PPSender<'s, F> {
+impl<'s, F: Fn(usize, ProtocolMessage)> PPSender<'s, F> {
     pub fn init(
         id: PPID,
         index: usize,
@@ -41,14 +41,22 @@ impl<'s, F: Fn(usize, &ProtocolMessage)> PPSender<'s, F> {
         }
     }
 
-    pub async fn promote(&mut self, proposal: PPProposal) -> Option<PBSig> {
+    pub async fn promote(&mut self, value: Value, key: PBKey) -> Option<PBSig> {
         // proof_prev = null
         let mut proof_prev: Option<PBSig> = None;
 
         // for step 1 to 4: Execute PB. Store return value in proof_prev
 
         for step in 1..5 {
-            let pb = self.init_pb(step, proposal.clone());
+            let proposal = PPProposal {
+                value,
+                proof: PBProof {
+                    key: key.clone(),
+                    proof_prev: proof_prev.clone(),
+                },
+            };
+
+            let pb = self.init_pb(step, proposal);
 
             proof_prev.replace(pb.broadcast().await);
         }
@@ -81,7 +89,7 @@ impl<'s, F: Fn(usize, &ProtocolMessage)> PPSender<'s, F> {
 }
 
 #[derive(Clone)]
-pub struct PPReceiver<'s, F: Fn(usize, &ProtocolMessage)> {
+pub struct PPReceiver<'s, F: Fn(usize, ProtocolMessage)> {
     id: PPID,
     index: usize,
     key: Option<PPProposal>,
@@ -92,7 +100,7 @@ pub struct PPReceiver<'s, F: Fn(usize, &ProtocolMessage)> {
     inner_pb: Option<PBReceiver<'s, F>>,
 }
 
-impl<'s, F: Fn(usize, &ProtocolMessage)> PPReceiver<'s, F> {
+impl<'s, F: Fn(usize, ProtocolMessage)> PPReceiver<'s, F> {
     pub fn init(id: PPID, index: usize, signer: &'s Signer, send_handle: &'s F) -> Self {
         Self {
             id,
@@ -144,6 +152,8 @@ impl<'s, F: Fn(usize, &ProtocolMessage)> PPReceiver<'s, F> {
         let new_pb = PBReceiver::init(id, self.index, self.signer, self.send_handle);
 
         self.inner_pb.replace(new_pb);
+
+        //TODO: Remove reference, take it in caller instead
 
         self.inner_pb
             .as_ref()
