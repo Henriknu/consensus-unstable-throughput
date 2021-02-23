@@ -1,6 +1,11 @@
+use async_trait::async_trait;
+use std::{collections::HashMap, pin::Pin};
+
 use bincode::serialize;
 use consensus_core::crypto::commoncoin::EncodedCoinShare;
+use futures::Future;
 use serde::{Deserialize, Serialize};
+use tokio::sync::mpsc::Sender;
 
 use super::{
     proposal_promotion::PPProposal,
@@ -9,6 +14,11 @@ use super::{
 };
 
 // Wrappers
+
+#[async_trait]
+pub trait MVBASender {
+    async fn send(&self, index: usize, message: ProtocolMessage);
+}
 
 pub struct ProtocolMessage {
     pub header: ProtocolMessageHeader,

@@ -1,15 +1,15 @@
 use super::{
-    messages::{ProtocolMessage, ToProtocolMessage, ViewChangeMessage},
+    messages::{MVBASender, ProtocolMessage, ToProtocolMessage, ViewChangeMessage},
     proposal_promotion::{PPProposal, PPStatus, PPID},
     provable_broadcast::{PBKey, PBProof, PBResponse, PBSig, PBID},
     Key, Value, MVBAID,
 };
 use bincode::serialize;
 use consensus_core::crypto::sign::Signer;
-use std::sync::Arc;
+use std::{marker::PhantomData, sync::Arc};
 use tokio::sync::Notify;
 
-pub struct ViewChange<'s, F: Fn(usize, ProtocolMessage)> {
+pub struct ViewChange<F: MVBASender> {
     id: MVBAID,
     n_parties: usize,
     current_key_view: usize,
@@ -18,23 +18,20 @@ pub struct ViewChange<'s, F: Fn(usize, ProtocolMessage)> {
     leader_lock: Option<PPProposal>,
     leader_commit: Option<PPProposal>,
     result: Option<ViewChangeResult>,
-    signer: &'s Signer,
     messages: Vec<u8>,
     notify_messages: Arc<Notify>,
-    send_handle: &'s F,
+    _phantom: PhantomData<F>,
 }
 
-impl<'s, F: Fn(usize, ProtocolMessage)> ViewChange<'s, F> {
+impl<F: MVBASender> ViewChange<F> {
     pub fn init(
         id: MVBAID,
         n_parties: usize,
         current_key_view: usize,
         current_lock: usize,
-        signer: &'s Signer,
         key: Option<PPProposal>,
         lock: Option<PPProposal>,
         commit: Option<PPProposal>,
-        send_handle: &'s F,
     ) -> Self {
         Self {
             id,
@@ -44,15 +41,15 @@ impl<'s, F: Fn(usize, ProtocolMessage)> ViewChange<'s, F> {
             leader_key: key,
             leader_lock: lock,
             result: Default::default(),
-            signer,
+
             messages: Default::default(),
             notify_messages: Arc::new(Notify::new()),
             n_parties,
-            send_handle,
+            _phantom: PhantomData,
         }
     }
 
-    pub async fn invoke(&mut self) -> ViewChangeResult {
+    pub async fn invoke(&mut self, send_handle: &F) -> ViewChangeResult {
         let vc_message = ViewChangeMessage::new(
             self.id.id,
             self.id.index,
@@ -63,10 +60,12 @@ impl<'s, F: Fn(usize, ProtocolMessage)> ViewChange<'s, F> {
         );
 
         for i in 0..self.n_parties {
-            (self.send_handle)(
-                i,
-                vc_message.to_protocol_message(self.id.id, self.id.index, i),
-            );
+            send_handle
+                .send(
+                    i,
+                    vc_message.to_protocol_message(self.id.id, self.id.index, i),
+                )
+                .await;
         }
 
         // wait for n - f distinct view change messages, or view change message with valid commit (can decide early then)
@@ -78,13 +77,13 @@ impl<'s, F: Fn(usize, ProtocolMessage)> ViewChange<'s, F> {
         self.result.take().expect("Viewchange result should")
     }
 
-    pub fn on_view_change_message(&mut self, message: &ViewChangeMessage) {
+    pub fn on_view_change_message(&mut self, message: &ViewChangeMessage, signer: &Signer) {
         let mut result = self
             .result
             .take()
             .expect("ViewChange result should be initialized");
 
-        if self.has_valid_commit(&message) {
+        if self.has_valid_commit(&message, signer) {
             result.value.replace(
                 message
                     .leader_commit
@@ -96,11 +95,11 @@ impl<'s, F: Fn(usize, ProtocolMessage)> ViewChange<'s, F> {
             return;
         }
 
-        if message.view > self.current_lock && self.has_valid_lock(&message) {
+        if message.view > self.current_lock && self.has_valid_lock(&message, signer) {
             result.lock.replace(message.view);
         }
 
-        if message.view > self.current_key_view && self.has_valid_key(&message) {
+        if message.view > self.current_key_view && self.has_valid_key(&message, signer) {
             let (value, sig) = try_unpack_value_and_sig(&message.leader_key)
                 .expect("Asserted that message had valid key");
             result.key.replace(Key {
@@ -112,7 +111,7 @@ impl<'s, F: Fn(usize, ProtocolMessage)> ViewChange<'s, F> {
 
         self.result.replace(result);
     }
-    fn has_valid_commit(&self, message: &ViewChangeMessage) -> bool {
+    fn has_valid_commit(&self, message: &ViewChangeMessage, signer: &Signer) -> bool {
         if let Some((value, sig)) = try_unpack_value_and_sig(&message.leader_commit) {
             let response = PBResponse {
                 id: PBID {
@@ -121,7 +120,7 @@ impl<'s, F: Fn(usize, ProtocolMessage)> ViewChange<'s, F> {
                 },
                 value,
             };
-            if self.signer.verify_signature(
+            if signer.verify_signature(
                 &sig.inner,
                 &serialize(&response)
                     .expect("Could not serialize reconstructed PB response on_view_change_message"),
@@ -132,7 +131,7 @@ impl<'s, F: Fn(usize, ProtocolMessage)> ViewChange<'s, F> {
         false
     }
 
-    fn has_valid_lock(&self, message: &ViewChangeMessage) -> bool {
+    fn has_valid_lock(&self, message: &ViewChangeMessage, signer: &Signer) -> bool {
         if let Some((value, sig)) = try_unpack_value_and_sig(&message.leader_lock) {
             let response = PBResponse {
                 id: PBID {
@@ -142,7 +141,7 @@ impl<'s, F: Fn(usize, ProtocolMessage)> ViewChange<'s, F> {
                 value,
             };
 
-            if self.signer.verify_signature(
+            if signer.verify_signature(
                 &sig.inner,
                 &serialize(&response)
                     .expect("Could not serialize reconstructed PB response on_view_change_message"),
@@ -153,7 +152,7 @@ impl<'s, F: Fn(usize, ProtocolMessage)> ViewChange<'s, F> {
         false
     }
 
-    fn has_valid_key(&self, message: &ViewChangeMessage) -> bool {
+    fn has_valid_key(&self, message: &ViewChangeMessage, signer: &Signer) -> bool {
         if let Some((value, sig)) = try_unpack_value_and_sig(&message.leader_key) {
             let response = PBResponse {
                 id: PBID {
@@ -163,7 +162,7 @@ impl<'s, F: Fn(usize, ProtocolMessage)> ViewChange<'s, F> {
                 value,
             };
 
-            if self.signer.verify_signature(
+            if signer.verify_signature(
                 &sig.inner,
                 &serialize(&response)
                     .expect("Could not serialize reconstructed PB response on_view_change_message"),

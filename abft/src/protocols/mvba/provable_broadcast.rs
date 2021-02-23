@@ -1,6 +1,6 @@
 use consensus_core::crypto::sign::{Signature, SignatureShare, Signer};
 
-use std::sync::Arc;
+use std::{marker::PhantomData, sync::Arc};
 use tokio::sync::Notify;
 
 use bincode::serialize;
@@ -8,53 +8,46 @@ use num_traits::FromPrimitive;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    messages::{PBSendMessage, PBShareAckMessage, ProtocolMessage, ToProtocolMessage},
+    messages::{MVBASender, PBSendMessage, PBShareAckMessage, ProtocolMessage, ToProtocolMessage},
     proposal_promotion::{PPProposal, PPStatus, PPID},
     Value, MVBA, MVBAID,
 };
 
-pub struct PBSender<'s, F: Fn(usize, ProtocolMessage)> {
+pub struct PBSender<F: MVBASender> {
     id: PBID,
     index: usize,
     n_parties: usize,
     notify_shares: Arc<Notify>,
-    signer: &'s Signer,
     proposal: PPProposal,
     shares: Vec<PBSigShare>,
-    send_handle: &'s F,
+    _phantom: PhantomData<F>,
 }
 
-impl<'s, F: Fn(usize, ProtocolMessage)> PBSender<'s, F> {
-    pub fn init(
-        id: PBID,
-        index: usize,
-        n_parties: usize,
-        signer: &'s Signer,
-        proposal: PPProposal,
-        send_handle: &'s F,
-    ) -> Self {
+impl<F: MVBASender> PBSender<F> {
+    pub fn init(id: PBID, index: usize, n_parties: usize, proposal: PPProposal) -> Self {
         Self {
             id,
             index,
             n_parties,
             notify_shares: Arc::new(Notify::new()),
-            signer,
             proposal: proposal,
             shares: Default::default(),
-            send_handle,
+            _phantom: PhantomData,
         }
     }
 
-    pub async fn broadcast(&self) -> PBSig {
+    pub async fn broadcast(&self, signer: &Signer, send_handle: &F) -> PBSig {
         //send <ID, SEND, value, proof> to all parties
 
         for i in 0..self.n_parties {
             let pb_send = PBSendMessage::new(self.id, self.proposal.clone());
 
-            (self.send_handle)(
-                i,
-                pb_send.to_protocol_message(self.id.id.inner.id, self.index, i),
-            );
+            send_handle
+                .send(
+                    i,
+                    pb_send.to_protocol_message(self.id.id.inner.id, self.index, i),
+                )
+                .await;
         }
 
         // wait for n - f shares
@@ -65,13 +58,27 @@ impl<'s, F: Fn(usize, ProtocolMessage)> PBSender<'s, F> {
 
         // deliver proof of value being broadcasted
 
-        self.deliver()
+        let shares = self
+            .shares
+            .iter()
+            .enumerate()
+            .map(|(index, share)| (index, share.inner.clone()))
+            .collect();
+
+        let signature = signer.combine_signatures(&shares).unwrap();
+
+        PBSig { inner: signature }
     }
 
-    pub fn on_share_ack_message(&mut self, index: usize, message: PBShareAckMessage) {
+    pub async fn on_share_ack_message(
+        &mut self,
+        index: usize,
+        message: PBShareAckMessage,
+        signer: &Signer,
+    ) {
         let share = message.share;
 
-        if self.signer.verify_share(
+        if signer.verify_share(
             index,
             &share.inner,
             &serialize(&self.proposal).expect("Could not serialize PB message for ack"),
@@ -83,42 +90,27 @@ impl<'s, F: Fn(usize, ProtocolMessage)> PBSender<'s, F> {
             self.notify_shares.notify_one();
         }
     }
-
-    fn deliver(&self) -> PBSig {
-        let shares = self
-            .shares
-            .iter()
-            .enumerate()
-            .map(|(index, share)| (index, share.inner.clone()))
-            .collect();
-
-        let signature = self.signer.combine_signatures(&shares).unwrap();
-
-        PBSig { inner: signature }
-    }
 }
 
 #[derive(Clone)]
-pub struct PBReceiver<'s, F: Fn(usize, ProtocolMessage)> {
+pub struct PBReceiver<F: MVBASender> {
     pub id: PBID,
     index: usize,
-    signer: &'s Signer,
     should_stop: bool,
     proposal: Option<PPProposal>,
     notify_proposal: Arc<Notify>,
-    send_handle: &'s F,
+    _phantom: PhantomData<F>,
 }
 
-impl<'s, 'p, F: Fn(usize, ProtocolMessage)> PBReceiver<'s, F> {
-    pub fn init(id: PBID, index: usize, signer: &'s Signer, send_handle: &'s F) -> Self {
+impl<F: MVBASender> PBReceiver<F> {
+    pub fn init(id: PBID, index: usize) -> Self {
         Self {
             id,
             index,
-            signer,
             should_stop: false,
             proposal: None,
             notify_proposal: Arc::new(Notify::new()),
-            send_handle,
+            _phantom: PhantomData,
         }
     }
 
@@ -136,40 +128,44 @@ impl<'s, 'p, F: Fn(usize, ProtocolMessage)> PBReceiver<'s, F> {
             .expect("Proposal has been validated on arrival")
     }
 
-    pub fn on_value_send_message(
+    pub async fn on_value_send_message(
         &mut self,
         index: usize,
         message: PBSendMessage,
-        mvba: &MVBA<'s, F>,
+        mvba: &MVBA<F>,
+        signer: &Signer,
+        send_handle: &F,
     ) {
         let proposal = message.proposal;
-        if !self.should_stop && self.evaluate_pb_val(&proposal, mvba) {
+        if !self.should_stop && self.evaluate_pb_val(&proposal, mvba, signer) {
             self.abandon();
             let response = PBResponse {
                 id: self.id,
                 value: proposal.value,
             };
 
-            let inner = self.signer.sign(
+            let inner = signer.sign(
                 &serialize(&response).expect("Could not serialize message for on_value_send"),
             );
 
             let pb_ack = PBShareAckMessage::new(self.id, PBSigShare { inner });
 
-            (self.send_handle)(
-                index,
-                pb_ack.to_protocol_message(self.id.id.inner.id, self.index, index),
-            );
+            send_handle
+                .send(
+                    index,
+                    pb_ack.to_protocol_message(self.id.id.inner.id, self.index, index),
+                )
+                .await;
             self.proposal.replace(proposal);
         }
     }
 
-    fn evaluate_pb_val(&self, proposal: &PPProposal, mvba: &MVBA<'s, F>) -> bool {
+    fn evaluate_pb_val(&self, proposal: &PPProposal, mvba: &MVBA<F>, signer: &Signer) -> bool {
         let PBID { id, step } = self.id;
         let PBProof { key, proof_prev } = &proposal.proof;
 
         // If first step, verify that the key provided is valid
-        if step == PPStatus::Step1 && self.check_key(&proposal.value, key, mvba) {
+        if step == PPStatus::Step1 && self.check_key(&proposal.value, key, mvba, signer) {
             return true;
         }
 
@@ -184,7 +180,7 @@ impl<'s, 'p, F: Fn(usize, ProtocolMessage)> PBReceiver<'s, F> {
         // If later step, verify that the proof provided is valid for the previous step.
         if step > PPStatus::Step1
             && proof_prev.is_some()
-            && self.signer.verify_signature(
+            && signer.verify_signature(
                 &proof_prev.as_ref().unwrap().inner,
                 &serialize(&response_prev)
                     .expect("Could not serialize response_prev for evaluate_pb_val"),
@@ -196,7 +192,7 @@ impl<'s, 'p, F: Fn(usize, ProtocolMessage)> PBReceiver<'s, F> {
         false
     }
 
-    fn check_key(&self, value: &Value, key: &PBKey, mvba: &MVBA<'s, F>) -> bool {
+    fn check_key(&self, value: &Value, key: &PBKey, mvba: &MVBA<F>, signer: &Signer) -> bool {
         // Check that value is valid high-level application
         if !eval_mvba_val(value) {
             return false;
@@ -224,7 +220,7 @@ impl<'s, 'p, F: Fn(usize, ProtocolMessage)> PBReceiver<'s, F> {
         // Verify the validity of the key provided
         if *view != 1
             && (view_key_proof.is_none()
-                || !self.signer.verify_signature(
+                || !signer.verify_signature(
                     &view_key_proof.as_ref().unwrap().inner,
                     &serialize(&view_key).expect("Could not serialize view_key for check_key"),
                 ))

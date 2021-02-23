@@ -1,7 +1,7 @@
-use std::sync::Arc;
+use std::{marker::PhantomData, sync::Arc};
 
 use super::{
-    messages::{PBSendMessage, PBShareAckMessage, ProtocolMessage},
+    messages::{MVBASender, PBSendMessage, PBShareAckMessage, ProtocolMessage},
     provable_broadcast::*,
     Key, Value, MVBA, MVBAID,
 };
@@ -10,44 +10,42 @@ use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
 use serde::{Deserialize, Serialize};
 
-pub struct PPSender<'s, F: Fn(usize, ProtocolMessage)> {
+pub struct PPSender<F: MVBASender> {
     id: PPID,
     index: usize,
     n_parties: usize,
     proof: Option<PBSig>,
-    inner_pb: Option<PBSender<'s, F>>,
+    inner_pb: Option<PBSender<F>>,
     status: PPStatus,
-    signer: &'s Signer,
-    send_handle: &'s F,
+    _phantom: PhantomData<F>,
 }
 
-impl<'s, F: Fn(usize, ProtocolMessage)> PPSender<'s, F> {
-    pub fn init(
-        id: PPID,
-        index: usize,
-        n_parties: usize,
-        signer: &'s Signer,
-        send_handle: &'s F,
-    ) -> Self {
+impl<F: MVBASender> PPSender<F> {
+    pub fn init(id: PPID, index: usize, n_parties: usize) -> Self {
         Self {
             id,
             index,
             n_parties,
             proof: None,
-            signer,
             inner_pb: None,
             status: PPStatus::Init,
-            send_handle,
+            _phantom: PhantomData,
         }
     }
 
-    pub async fn promote(&mut self, value: Value, key: PBKey) -> Option<PBSig> {
+    pub async fn promote(
+        &mut self,
+        value: Value,
+        key: PBKey,
+        signer: &Signer,
+        send_handle: &F,
+    ) -> Option<PBSig> {
         // proof_prev = null
         let mut proof_prev: Option<PBSig> = None;
 
         // for step 1 to 4: Execute PB. Store return value in proof_prev
 
-        for step in 1..5 {
+        for step in 1u8..5 {
             let proposal = PPProposal {
                 value,
                 proof: PBProof {
@@ -58,15 +56,24 @@ impl<'s, F: Fn(usize, ProtocolMessage)> PPSender<'s, F> {
 
             let pb = self.init_pb(step, proposal);
 
-            proof_prev.replace(pb.broadcast().await);
+            proof_prev.replace(pb.broadcast(signer, send_handle).await);
         }
 
         proof_prev
     }
 
-    pub fn on_share_ack(&self, message: &PBShareAckMessage) {}
+    pub async fn on_share_ack(
+        &mut self,
+        index: usize,
+        message: PBShareAckMessage,
+        signer: &Signer,
+    ) {
+        if let Some(pb) = &mut self.inner_pb {
+            pb.on_share_ack_message(index, message, signer).await;
+        }
+    }
 
-    fn init_pb(&mut self, step: u8, proposal: PPProposal) -> &PBSender<'s, F> {
+    fn init_pb(&mut self, step: u8, proposal: PPProposal) -> &PBSender<F> {
         let pb = PBSender::init(
             PBID {
                 id: self.id,
@@ -74,9 +81,7 @@ impl<'s, F: Fn(usize, ProtocolMessage)> PPSender<'s, F> {
             },
             self.index,
             self.n_parties,
-            self.signer,
             proposal,
-            self.send_handle,
         );
 
         self.inner_pb.replace(pb);
@@ -88,29 +93,27 @@ impl<'s, F: Fn(usize, ProtocolMessage)> PPSender<'s, F> {
     }
 }
 
-#[derive(Clone)]
-pub struct PPReceiver<'s, F: Fn(usize, ProtocolMessage)> {
+#[derive(Clone, Default)]
+pub struct PPReceiver<F: MVBASender> {
     id: PPID,
     index: usize,
     key: Option<PPProposal>,
     lock: Option<PPProposal>,
     commit: Option<PPProposal>,
-    signer: &'s Signer,
-    send_handle: &'s F,
-    inner_pb: Option<PBReceiver<'s, F>>,
+    inner_pb: Option<PBReceiver<F>>,
+    _phantom: PhantomData<F>,
 }
 
-impl<'s, F: Fn(usize, ProtocolMessage)> PPReceiver<'s, F> {
-    pub fn init(id: PPID, index: usize, signer: &'s Signer, send_handle: &'s F) -> Self {
+impl<F: MVBASender> PPReceiver<F> {
+    pub fn init(id: PPID, index: usize) -> Self {
         Self {
             id,
             index,
             key: None,
             lock: None,
             commit: None,
-            signer,
             inner_pb: None,
-            send_handle,
+            _phantom: PhantomData,
         }
     }
 
@@ -135,7 +138,19 @@ impl<'s, F: Fn(usize, ProtocolMessage)> PPReceiver<'s, F> {
         self.commit.replace(commit);
     }
 
-    pub fn on_value_send_message(&self, message: &PBSendMessage) {}
+    pub async fn on_value_send_message(
+        &mut self,
+        index: usize,
+        message: PBSendMessage,
+        // mvba: &MVBA<F>,
+        signer: &Signer,
+        send_handle: &F,
+    ) {
+        if let Some(pb) = &mut self.inner_pb {
+            pb.on_value_send_message(index, message, mvba, signer, send_handle)
+                .await;
+        }
+    }
 
     pub fn abandon(&mut self) {
         if let Some(pb) = &mut self.inner_pb {
@@ -143,13 +158,13 @@ impl<'s, F: Fn(usize, ProtocolMessage)> PPReceiver<'s, F> {
         }
     }
 
-    fn init_pb(&mut self, step: u8) -> &PBReceiver<'s, F> {
+    fn init_pb(&mut self, step: u8) -> &PBReceiver<F> {
         let id = PBID {
             id: self.id,
             step: FromPrimitive::from_u8(step as u8 + 1).expect("Expect step < 4"),
         };
 
-        let new_pb = PBReceiver::init(id, self.index, self.signer, self.send_handle);
+        let new_pb = PBReceiver::init(id, self.index);
 
         self.inner_pb.replace(new_pb);
 
@@ -161,7 +176,7 @@ impl<'s, F: Fn(usize, ProtocolMessage)> PPReceiver<'s, F> {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default)]
 pub struct PPID {
     pub(crate) inner: MVBAID,
 }
