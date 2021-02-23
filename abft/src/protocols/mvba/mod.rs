@@ -12,6 +12,8 @@ use std::{
     pin::Pin,
 };
 
+
+
 use log::{debug, error, info};
 
 use std::sync::Arc;
@@ -85,6 +87,7 @@ impl<F: MVBASender, R: MVBAReceiver> MVBA<F> {
         n_parties: usize,
         value: Value,
         send_handle: F,
+        receive_handle: R,
         signer: Signer,
         coin: Coin,
     ) -> Self {
@@ -114,6 +117,7 @@ impl<F: MVBASender, R: MVBAReceiver> MVBA<F> {
             coin,
             signer,
             send_handle,
+            receive_handle
         }
     }
 
@@ -627,6 +631,19 @@ mod tests {
             }
         }
     }
+
+    struct ChannelReceiver{
+        recv: Receiver<ProtocolMessage>>
+    }
+
+    #[async_trait]
+    impl MVBAReceiver for ChannelReceiver {
+        async fn receive(&self, message: ProtocolMessage) -> impl Future<Output = ProtocolMessage>{
+            self.recv.recv()
+        }
+    }
+
+
 
     #[test]
     async fn test_it_works() {

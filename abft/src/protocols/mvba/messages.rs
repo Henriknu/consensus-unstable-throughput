@@ -22,7 +22,7 @@ pub trait MVBASender {
 
 #[async_trait]
 pub trait MVBAReceiver {
-    async fn receive(&self, message: ProtocolMessage);
+    async fn receive(&self) -> impl Future<Output = ProtocolMessage>;
 }
 
 pub struct ProtocolMessage {
