@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use std::{collections::HashMap, pin::Pin};
+use std::{collections::HashMap, ops::Range, pin::Pin};
 
 use bincode::serialize;
 use consensus_core::crypto::commoncoin::EncodedCoinShare;
@@ -18,6 +18,11 @@ use super::{
 #[async_trait]
 pub trait MVBASender {
     async fn send(&self, index: usize, message: ProtocolMessage);
+}
+
+#[async_trait]
+pub trait MVBAReceiver {
+    async fn receive(&self, message: ProtocolMessage);
 }
 
 pub struct ProtocolMessage {
@@ -58,6 +63,7 @@ impl ProtocolMessageHeader {
     }
 }
 
+#[derive(Debug)]
 pub enum ProtocolMessageType {
     //MVBA
     MVBADone,

@@ -142,12 +142,14 @@ impl<F: MVBASender> PPReceiver<F> {
         &mut self,
         index: usize,
         message: PBSendMessage,
-        // mvba: &MVBA<F>,
+        id: &MVBAID,
+        leader_index: usize,
+        lock: usize,
         signer: &Signer,
         send_handle: &F,
     ) {
         if let Some(pb) = &mut self.inner_pb {
-            pb.on_value_send_message(index, message, mvba, signer, send_handle)
+            pb.on_value_send_message(index, message, id, leader_index, lock, signer, send_handle)
                 .await;
         }
     }

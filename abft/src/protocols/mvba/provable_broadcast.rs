@@ -132,12 +132,14 @@ impl<F: MVBASender> PBReceiver<F> {
         &mut self,
         index: usize,
         message: PBSendMessage,
-        mvba: &MVBA<F>,
+        id: &MVBAID,
+        leader_index: usize,
+        lock: usize,
         signer: &Signer,
         send_handle: &F,
     ) {
         let proposal = message.proposal;
-        if !self.should_stop && self.evaluate_pb_val(&proposal, mvba, signer) {
+        if !self.should_stop && self.evaluate_pb_val(&proposal, id, leader_index, lock, signer) {
             self.abandon();
             let response = PBResponse {
                 id: self.id,
@@ -160,12 +162,21 @@ impl<F: MVBASender> PBReceiver<F> {
         }
     }
 
-    fn evaluate_pb_val(&self, proposal: &PPProposal, mvba: &MVBA<F>, signer: &Signer) -> bool {
+    fn evaluate_pb_val(
+        &self,
+        proposal: &PPProposal,
+        mvba_id: &MVBAID,
+        leader_index: usize,
+        lock: usize,
+        signer: &Signer,
+    ) -> bool {
         let PBID { id, step } = self.id;
         let PBProof { key, proof_prev } = &proposal.proof;
 
         // If first step, verify that the key provided is valid
-        if step == PPStatus::Step1 && self.check_key(&proposal.value, key, mvba, signer) {
+        if step == PPStatus::Step1
+            && self.check_key(&proposal.value, key, mvba_id, leader_index, lock, signer)
+        {
             return true;
         }
 
@@ -192,7 +203,15 @@ impl<F: MVBASender> PBReceiver<F> {
         false
     }
 
-    fn check_key(&self, value: &Value, key: &PBKey, mvba: &MVBA<F>, signer: &Signer) -> bool {
+    fn check_key(
+        &self,
+        value: &Value,
+        key: &PBKey,
+        id: &MVBAID,
+        leader_index: usize,
+        lock: usize,
+        signer: &Signer,
+    ) -> bool {
         // Check that value is valid high-level application
         if !eval_mvba_val(value) {
             return false;
@@ -207,8 +226,8 @@ impl<F: MVBASender> PBReceiver<F> {
             id: PBID {
                 id: PPID {
                     inner: MVBAID {
-                        id: mvba.id.id,
-                        index: mvba.leaders[view].unwrap(),
+                        id: id.id,
+                        index: leader_index,
                         view: *view,
                     },
                 },
@@ -229,7 +248,7 @@ impl<F: MVBASender> PBReceiver<F> {
         }
 
         // Verify that the key was not obtained in an earlier view than what is currently locked
-        if view < &mvba.LOCK {
+        if view < &lock {
             return false;
         }
 

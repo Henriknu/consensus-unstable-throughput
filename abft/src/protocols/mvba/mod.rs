@@ -12,7 +12,7 @@ use std::{
     pin::Pin,
 };
 
-use log::{debug, error};
+use log::{debug, error, info};
 
 use std::sync::Arc;
 use tokio::sync::{mpsc::Sender, Notify};
@@ -20,8 +20,8 @@ use tokio::sync::{mpsc::Sender, Notify};
 use self::{
     elect::Elect,
     messages::{
-        MVBADoneMessage, MVBASender, MVBASkipMessage, MVBASkipShareMessage, ProtocolMessage,
-        ProtocolMessageHeader, ToProtocolMessage,
+        MVBADoneMessage, MVBAReceiver, MVBASender, MVBASkipMessage, MVBASkipShareMessage,
+        ProtocolMessage, ProtocolMessageHeader, ToProtocolMessage,
     },
     proposal_promotion::PPID,
     provable_broadcast::{PBResponse, PBSig, PBID},
@@ -38,7 +38,7 @@ mod view_change;
 #[allow(non_snake_case)]
 
 /// Instance of Multi-valued Validated Byzantine Agreement
-pub struct MVBA<F: MVBASender> {
+pub struct MVBA<F: MVBASender, R: MVBAReceiver> {
     // Internal state
     /// Protocol id
     id: MVBAID,
@@ -73,11 +73,12 @@ pub struct MVBA<F: MVBASender> {
 
     // Infrastructure
     send_handle: F,
+    receive_handle: R,
     coin: Coin,
     signer: Signer,
 }
 
-impl<F: MVBASender> MVBA<F> {
+impl<F: MVBASender, R: MVBAReceiver> MVBA<F> {
     pub fn init(
         id: usize,
         index: usize,
@@ -245,6 +246,11 @@ impl<F: MVBASender> MVBA<F> {
             recv_id,
         } = header;
 
+        info!(
+            "Handling message from {} to {} with message_type {:?}",
+            send_id, recv_id, message_type
+        );
+
         match message_type {
             messages::ProtocolMessageType::MVBADone => {
                 let inner: MVBADoneMessage = deserialize(&message_data).expect(
@@ -274,10 +280,15 @@ impl<F: MVBASender> MVBA<F> {
                             "Could not deserialize PBSend message when handling protocol message",
                         );
 
+                        let leader_index = self.leaders[&inner.proposal.proof.key.view]
+                            .expect("Leader was not found for view");
+
                         pp.on_value_send_message(
                             send_id,
                             inner,
-                            //&self,
+                            &self.id,
+                            leader_index,
+                            self.LOCK,
                             &self.signer,
                             &self.send_handle,
                         )
@@ -605,7 +616,11 @@ mod tests {
     #[async_trait]
     impl MVBASender for ChannelSender {
         async fn send(&self, index: usize, message: ProtocolMessage) {
+            if !self.senders.contains_key(&index) {
+                return;
+            }
             debug!("Sending message to party {}", index);
+
             let sender = &self.senders[&index];
             if let Err(e) = sender.send(message).await {
                 error!("Got error when sending message: {}", e);
@@ -665,14 +680,16 @@ mod tests {
 
             let main_handle = tokio::spawn(async move {
                 debug!("Started main {}", i);
-                mvba.lock().await.invoke().await
+                let mut lock = mvba.lock().await;
+                lock.invoke().await;
             });
             tokio::spawn(async move {
                 debug!("Started messaging for {}", i);
                 while let Some(message) = recv.recv().await {
                     debug!("Received message at {}", i);
-                    let mut mvba = mvba2.lock().await;
-                    mvba.handle_protocol_message(message);
+                    let mut lock = mvba2.lock().await;
+                    debug!("Got lock at {}", i);
+                    lock.handle_protocol_message(message).await;
                 }
             });
 
