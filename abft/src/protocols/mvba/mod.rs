@@ -65,9 +65,9 @@ pub struct MVBA<'s, F: Fn(usize, ProtocolMessage)> {
     view_change: Option<ViewChange<'s, F>>,
 
     // Infrastructure
-    send_handle: &'s F,
-    coin: &'s Coin,
-    signer: &'s Signer,
+    send_handle: F,
+    coin: Coin,
+    signer: Signer,
 }
 
 impl<'s, F: Fn(usize, ProtocolMessage)> MVBA<'s, F> {
@@ -76,9 +76,9 @@ impl<'s, F: Fn(usize, ProtocolMessage)> MVBA<'s, F> {
         index: usize,
         n_parties: usize,
         value: Value,
-        send_handle: &'s F,
-        signer: &'s Signer,
-        coin: &'s Coin,
+        send_handle: F,
+        signer: Signer,
+        coin: Coin,
     ) -> Self {
         Self {
             id: MVBAID { id, index, view: 0 },
@@ -459,12 +459,12 @@ impl<'s, F: Fn(usize, ProtocolMessage)> MVBA<'s, F> {
             pp_id,
             self.id.index,
             self.n_parties,
-            self.signer,
-            self.send_handle,
+            &self.signer,
+            &self.send_handle,
         );
 
         let pp_recvs = (0..self.n_parties - 1)
-            .map(|_| PPReceiver::init(pp_id, self.id.index, self.signer, self.send_handle))
+            .map(|_| PPReceiver::init(pp_id, self.id.index, &self.signer, &self.send_handle))
             .collect();
 
         self.pp_send.replace(pp_send);
@@ -476,8 +476,8 @@ impl<'s, F: Fn(usize, ProtocolMessage)> MVBA<'s, F> {
             self.id,
             self.id.index,
             self.n_parties,
-            self.coin,
-            self.send_handle,
+            &self.coin,
+            &self.send_handle,
         );
 
         self.elect.replace(elect);
@@ -494,11 +494,11 @@ impl<'s, F: Fn(usize, ProtocolMessage)> MVBA<'s, F> {
             self.n_parties,
             self.KEY.view,
             self.LOCK,
-            self.signer,
+            &self.signer,
             leader_key,
             leader_lock,
             leader_commit,
-            self.send_handle,
+            &self.send_handle,
         );
 
         self.view_change.replace(view_change);
@@ -590,25 +590,28 @@ mod tests {
                     }
                 })
                 .collect();
+
             let signer = signers.remove(i);
             let coin = coins.remove(i);
+
+            let f = move |index: usize, message: ProtocolMessage| {
+                let sender = &senders[&index];
+                sender.send(message);
+            };
+
+            let mvba = Arc::new(Mutex::new(MVBA::init(
+                0,
+                i,
+                N_PARTIES,
+                Value { inner: i * 1000 },
+                &f,
+                signer,
+                coin,
+            )));
+
+            let mvba2 = mvba.clone();
+
             tokio::spawn(async move {
-                let f = move |index: usize, message: ProtocolMessage| {
-                    let sender = &senders[&index];
-                    sender.send(message);
-                };
-                let mvba = Arc::new(Mutex::new(MVBA::init(
-                    0,
-                    i,
-                    N_PARTIES,
-                    Value { inner: i * 1000 },
-                    &f,
-                    &signer,
-                    &coin,
-                )));
-
-                let mvba2 = mvba.clone();
-
                 tokio::spawn(async move {
                     while let Some(message) = recv.recv().await {
                         let mut mvba = mvba2.lock().await;
