@@ -12,8 +12,6 @@ use std::{
     pin::Pin,
 };
 
-
-
 use log::{debug, error, info};
 
 use std::sync::Arc;
@@ -40,7 +38,7 @@ mod view_change;
 #[allow(non_snake_case)]
 
 /// Instance of Multi-valued Validated Byzantine Agreement
-pub struct MVBA<F: MVBASender, R: MVBAReceiver> {
+pub struct MVBA<F: MVBASender> {
     // Internal state
     /// Protocol id
     id: MVBAID,
@@ -75,19 +73,17 @@ pub struct MVBA<F: MVBASender, R: MVBAReceiver> {
 
     // Infrastructure
     send_handle: F,
-    receive_handle: R,
     coin: Coin,
     signer: Signer,
 }
 
-impl<F: MVBASender, R: MVBAReceiver> MVBA<F> {
+impl<F: MVBASender> MVBA<F> {
     pub fn init(
         id: usize,
         index: usize,
         n_parties: usize,
         value: Value,
         send_handle: F,
-        receive_handle: R,
         signer: Signer,
         coin: Coin,
     ) -> Self {
@@ -117,11 +113,10 @@ impl<F: MVBASender, R: MVBAReceiver> MVBA<F> {
             coin,
             signer,
             send_handle,
-            receive_handle
         }
     }
 
-    pub async fn invoke(&mut self) -> Value {
+    pub async fn invoke(&self) -> Value {
         loop {
             let MVBAID { id, index, view } = self.id;
 
@@ -632,18 +627,16 @@ mod tests {
         }
     }
 
-    struct ChannelReceiver{
-        recv: Receiver<ProtocolMessage>>
+    struct ChannelReceiver {
+        recv: Receiver<ProtocolMessage>,
     }
 
     #[async_trait]
     impl MVBAReceiver for ChannelReceiver {
-        async fn receive(&self, message: ProtocolMessage) -> impl Future<Output = ProtocolMessage>{
-            self.recv.recv()
+        async fn receive(&mut self) -> Option<ProtocolMessage> {
+            self.recv.recv().await
         }
     }
-
-
 
     #[test]
     async fn test_it_works() {

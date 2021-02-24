@@ -9,7 +9,7 @@ use consensus_core::crypto::sign::Signer;
 use std::{marker::PhantomData, sync::Arc};
 use tokio::sync::Notify;
 
-pub struct ViewChange<F: MVBASender> {
+pub struct ViewChange {
     id: MVBAID,
     n_parties: usize,
     current_key_view: usize,
@@ -20,10 +20,9 @@ pub struct ViewChange<F: MVBASender> {
     result: Option<ViewChangeResult>,
     messages: Vec<u8>,
     notify_messages: Arc<Notify>,
-    _phantom: PhantomData<F>,
 }
 
-impl<F: MVBASender> ViewChange<F> {
+impl<F: MVBASender> ViewChange {
     pub fn init(
         id: MVBAID,
         n_parties: usize,
@@ -45,7 +44,6 @@ impl<F: MVBASender> ViewChange<F> {
             messages: Default::default(),
             notify_messages: Arc::new(Notify::new()),
             n_parties,
-            _phantom: PhantomData,
         }
     }
 

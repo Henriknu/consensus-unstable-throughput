@@ -8,18 +8,17 @@ use super::{
     MVBAID,
 };
 
-pub struct Elect<F: MVBASender> {
+pub struct Elect {
     id: MVBAID,
     index: usize,
     n_parties: usize,
     tag: String,
     shares: Vec<CoinShare>,
     notify_shares: Arc<Notify>,
-    _phantom: PhantomData<F>,
 }
 
-impl<F: MVBASender> Elect<F> {
-    pub fn init(id: MVBAID, index: usize, n_parties: usize) -> Elect<F> {
+impl<F: MVBASender> Elect {
+    pub fn init(id: MVBAID, index: usize, n_parties: usize) -> Elect {
         let tag = format!("{}", id.id);
         Elect {
             id,
@@ -28,7 +27,6 @@ impl<F: MVBASender> Elect<F> {
             tag,
             shares: Default::default(),
             notify_shares: Arc::new(Notify::new()),
-            _phantom: PhantomData,
         }
     }
 

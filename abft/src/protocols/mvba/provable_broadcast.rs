@@ -13,17 +13,16 @@ use super::{
     Value, MVBA, MVBAID,
 };
 
-pub struct PBSender<F: MVBASender> {
+pub struct PBSender {
     id: PBID,
     index: usize,
     n_parties: usize,
     notify_shares: Arc<Notify>,
     proposal: PPProposal,
     shares: Vec<PBSigShare>,
-    _phantom: PhantomData<F>,
 }
 
-impl<F: MVBASender> PBSender<F> {
+impl<F: MVBASender> PBSender {
     pub fn init(id: PBID, index: usize, n_parties: usize, proposal: PPProposal) -> Self {
         Self {
             id,
@@ -32,7 +31,6 @@ impl<F: MVBASender> PBSender<F> {
             notify_shares: Arc::new(Notify::new()),
             proposal: proposal,
             shares: Default::default(),
-            _phantom: PhantomData,
         }
     }
 
@@ -93,16 +91,15 @@ impl<F: MVBASender> PBSender<F> {
 }
 
 #[derive(Clone)]
-pub struct PBReceiver<F: MVBASender> {
+pub struct PBReceiver {
     pub id: PBID,
     index: usize,
     should_stop: bool,
     proposal: Option<PPProposal>,
     notify_proposal: Arc<Notify>,
-    _phantom: PhantomData<F>,
 }
 
-impl<F: MVBASender> PBReceiver<F> {
+impl<F: MVBASender> PBReceiver {
     pub fn init(id: PBID, index: usize) -> Self {
         Self {
             id,
@@ -110,7 +107,6 @@ impl<F: MVBASender> PBReceiver<F> {
             should_stop: false,
             proposal: None,
             notify_proposal: Arc::new(Notify::new()),
-            _phantom: PhantomData,
         }
     }
 

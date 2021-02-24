@@ -10,17 +10,16 @@ use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
 use serde::{Deserialize, Serialize};
 
-pub struct PPSender<F: MVBASender> {
+pub struct PPSender {
     id: PPID,
     index: usize,
     n_parties: usize,
     proof: Option<PBSig>,
-    inner_pb: Option<PBSender<F>>,
+    inner_pb: Option<PBSender>,
     status: PPStatus,
-    _phantom: PhantomData<F>,
 }
 
-impl<F: MVBASender> PPSender<F> {
+impl<F: MVBASender> PPSender {
     pub fn init(id: PPID, index: usize, n_parties: usize) -> Self {
         Self {
             id,
@@ -29,12 +28,11 @@ impl<F: MVBASender> PPSender<F> {
             proof: None,
             inner_pb: None,
             status: PPStatus::Init,
-            _phantom: PhantomData,
         }
     }
 
     pub async fn promote(
-        &mut self,
+        &self,
         value: Value,
         key: PBKey,
         signer: &Signer,
@@ -62,18 +60,13 @@ impl<F: MVBASender> PPSender<F> {
         proof_prev
     }
 
-    pub async fn on_share_ack(
-        &mut self,
-        index: usize,
-        message: PBShareAckMessage,
-        signer: &Signer,
-    ) {
-        if let Some(pb) = &mut self.inner_pb {
+    pub async fn on_share_ack(&self, index: usize, message: PBShareAckMessage, signer: &Signer) {
+        if let Some(pb) = &self.inner_pb {
             pb.on_share_ack_message(index, message, signer).await;
         }
     }
 
-    fn init_pb(&mut self, step: u8, proposal: PPProposal) -> &PBSender<F> {
+    fn init_pb(&self, step: u8, proposal: PPProposal) -> &PBSender {
         let pb = PBSender::init(
             PBID {
                 id: self.id,
@@ -94,17 +87,16 @@ impl<F: MVBASender> PPSender<F> {
 }
 
 #[derive(Clone, Default)]
-pub struct PPReceiver<F: MVBASender> {
+pub struct PPReceiver {
     id: PPID,
     index: usize,
     key: Option<PPProposal>,
     lock: Option<PPProposal>,
     commit: Option<PPProposal>,
-    inner_pb: Option<PBReceiver<F>>,
-    _phantom: PhantomData<F>,
+    inner_pb: Option<PBReceiver>,
 }
 
-impl<F: MVBASender> PPReceiver<F> {
+impl<F: MVBASender> PPReceiver {
     pub fn init(id: PPID, index: usize) -> Self {
         Self {
             id,
@@ -113,7 +105,6 @@ impl<F: MVBASender> PPReceiver<F> {
             lock: None,
             commit: None,
             inner_pb: None,
-            _phantom: PhantomData,
         }
     }
 
@@ -160,7 +151,7 @@ impl<F: MVBASender> PPReceiver<F> {
         }
     }
 
-    fn init_pb(&mut self, step: u8) -> &PBReceiver<F> {
+    fn init_pb(&mut self, step: u8) -> &PBReceiver {
         let id = PBID {
             id: self.id,
             step: FromPrimitive::from_u8(step as u8 + 1).expect("Expect step < 4"),
