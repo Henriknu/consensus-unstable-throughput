@@ -1,6 +1,10 @@
 use consensus_core::crypto::sign::{Signature, SignatureShare, Signer};
 
-use std::{marker::PhantomData, sync::Arc};
+use std::{
+    marker::PhantomData,
+    ops::Deref,
+    sync::{Arc, Mutex},
+};
 use tokio::sync::Notify;
 
 use bincode::serialize;
@@ -19,10 +23,10 @@ pub struct PBSender {
     n_parties: usize,
     notify_shares: Arc<Notify>,
     proposal: PPProposal,
-    shares: Vec<PBSigShare>,
+    shares: Mutex<Vec<PBSigShare>>,
 }
 
-impl<F: MVBASender> PBSender {
+impl PBSender {
     pub fn init(id: PBID, index: usize, n_parties: usize, proposal: PPProposal) -> Self {
         Self {
             id,
@@ -34,7 +38,7 @@ impl<F: MVBASender> PBSender {
         }
     }
 
-    pub async fn broadcast(&self, signer: &Signer, send_handle: &F) -> PBSig {
+    pub async fn broadcast<F: MVBASender>(&self, signer: &Signer, send_handle: &F) -> PBSig {
         //send <ID, SEND, value, proof> to all parties
 
         for i in 0..self.n_parties {
@@ -56,12 +60,15 @@ impl<F: MVBASender> PBSender {
 
         // deliver proof of value being broadcasted
 
-        let shares = self
-            .shares
+        let lock = self.shares.lock().unwrap();
+
+        let shares = lock
             .iter()
             .enumerate()
             .map(|(index, share)| (index, share.inner.clone()))
             .collect();
+
+        drop(lock);
 
         let signature = signer.combine_signatures(&shares).unwrap();
 
@@ -69,43 +76,44 @@ impl<F: MVBASender> PBSender {
     }
 
     pub async fn on_share_ack_message(
-        &mut self,
+        &self,
         index: usize,
         message: PBShareAckMessage,
         signer: &Signer,
     ) {
         let share = message.share;
 
+        let mut shares = self.shares.lock().unwrap();
+
         if signer.verify_share(
             index,
             &share.inner,
             &serialize(&self.proposal).expect("Could not serialize PB message for ack"),
         ) {
-            self.shares.push(share);
+            shares.push(share);
         }
 
-        if self.shares.len() >= (self.n_parties * 2 / 3) + 1 {
+        if shares.len() >= (self.n_parties * 2 / 3) + 1 {
             self.notify_shares.notify_one();
         }
     }
 }
 
-#[derive(Clone)]
 pub struct PBReceiver {
     pub id: PBID,
     index: usize,
-    should_stop: bool,
-    proposal: Option<PPProposal>,
+    should_stop: Mutex<bool>,
+    proposal: Mutex<Option<PPProposal>>,
     notify_proposal: Arc<Notify>,
 }
 
-impl<F: MVBASender> PBReceiver {
+impl PBReceiver {
     pub fn init(id: PBID, index: usize) -> Self {
         Self {
             id,
             index,
-            should_stop: false,
-            proposal: None,
+            should_stop: Mutex::new(false),
+            proposal: Mutex::new(None),
             notify_proposal: Arc::new(Notify::new()),
         }
     }
@@ -119,13 +127,15 @@ impl<F: MVBASender> PBReceiver {
 
         // deliver proposal received
 
-        self.proposal
-            .clone()
+        let mut proposal = self.proposal.lock().unwrap();
+
+        proposal
+            .take()
             .expect("Proposal has been validated on arrival")
     }
 
-    pub async fn on_value_send_message(
-        &mut self,
+    pub async fn on_value_send_message<F: MVBASender>(
+        &self,
         index: usize,
         message: PBSendMessage,
         id: &MVBAID,
@@ -135,8 +145,12 @@ impl<F: MVBASender> PBReceiver {
         send_handle: &F,
     ) {
         let proposal = message.proposal;
-        if !self.should_stop && self.evaluate_pb_val(&proposal, id, leader_index, lock, signer) {
-            self.abandon();
+
+        let mut should_stop = self.should_stop.lock().unwrap();
+
+        if !*should_stop && self.evaluate_pb_val(&proposal, id, leader_index, lock, signer) {
+            *should_stop = true;
+            drop(should_stop);
             let response = PBResponse {
                 id: self.id,
                 value: proposal.value,
@@ -154,7 +168,10 @@ impl<F: MVBASender> PBReceiver {
                     pb_ack.to_protocol_message(self.id.id.inner.id, self.index, index),
                 )
                 .await;
-            self.proposal.replace(proposal);
+
+            let mut prev_proposal = self.proposal.lock().unwrap();
+
+            prev_proposal.replace(proposal);
         }
     }
 
@@ -249,9 +266,6 @@ impl<F: MVBASender> PBReceiver {
         }
 
         true
-    }
-    pub fn abandon(&mut self) {
-        self.should_stop = true;
     }
 }
 

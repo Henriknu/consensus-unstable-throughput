@@ -6,55 +6,57 @@ use super::{
 };
 use bincode::serialize;
 use consensus_core::crypto::sign::Signer;
-use std::{marker::PhantomData, sync::Arc};
+use std::{
+    marker::PhantomData,
+    sync::{Arc, Mutex},
+};
 use tokio::sync::Notify;
 
 pub struct ViewChange {
     id: MVBAID,
+    view: usize,
     n_parties: usize,
     current_key_view: usize,
     current_lock: usize,
-    leader_key: Option<PPProposal>,
-    leader_lock: Option<PPProposal>,
-    leader_commit: Option<PPProposal>,
-    result: Option<ViewChangeResult>,
+    result: Mutex<Option<ViewChangeResult>>,
     messages: Vec<u8>,
     notify_messages: Arc<Notify>,
 }
 
-impl<F: MVBASender> ViewChange {
+impl ViewChange {
     pub fn init(
         id: MVBAID,
+        view: usize,
         n_parties: usize,
         current_key_view: usize,
         current_lock: usize,
-        key: Option<PPProposal>,
-        lock: Option<PPProposal>,
-        commit: Option<PPProposal>,
     ) -> Self {
         Self {
             id,
+            view,
             current_key_view: current_key_view,
             current_lock,
-            leader_commit: commit,
-            leader_key: key,
-            leader_lock: lock,
-            result: Default::default(),
-
+            result: Mutex::new(Some(ViewChangeResult::default())),
             messages: Default::default(),
             notify_messages: Arc::new(Notify::new()),
             n_parties,
         }
     }
 
-    pub async fn invoke(&mut self, send_handle: &F) -> ViewChangeResult {
+    pub async fn invoke<F: MVBASender>(
+        &self,
+        leader_key: Option<PPProposal>,
+        leader_lock: Option<PPProposal>,
+        leader_commit: Option<PPProposal>,
+        send_handle: &F,
+    ) -> ViewChangeResult {
         let vc_message = ViewChangeMessage::new(
             self.id.id,
             self.id.index,
-            self.id.view,
-            self.leader_key.take(),
-            self.leader_lock.take(),
-            self.leader_commit.take(),
+            self.view,
+            leader_key,
+            leader_lock,
+            leader_commit,
         );
 
         for i in 0..self.n_parties {
@@ -72,43 +74,59 @@ impl<F: MVBASender> ViewChange {
 
         notify_messages.notified().await;
 
-        self.result.take().expect("Viewchange result should")
+        let mut result = self.result.lock().unwrap();
+
+        result.take().expect("Viewchange result should")
     }
 
-    pub fn on_view_change_message(&mut self, message: &ViewChangeMessage, signer: &Signer) {
-        let mut result = self
-            .result
-            .take()
-            .expect("ViewChange result should be initialized");
+    pub fn on_view_change_message(&self, message: &ViewChangeMessage, signer: &Signer) {
+        let mut new_result = ViewChangeResult::default();
 
         if self.has_valid_commit(&message, signer) {
-            result.value.replace(
+            new_result.value.replace(
                 message
                     .leader_commit
                     .as_ref()
                     .expect("Asserted that message had valid commit")
                     .value,
             );
+            self.update(new_result);
             self.notify_messages.notify_one();
             return;
         }
 
         if message.view > self.current_lock && self.has_valid_lock(&message, signer) {
-            result.lock.replace(message.view);
+            new_result.lock.replace(message.view);
         }
 
         if message.view > self.current_key_view && self.has_valid_key(&message, signer) {
             let (value, sig) = try_unpack_value_and_sig(&message.leader_key)
                 .expect("Asserted that message had valid key");
-            result.key.replace(Key {
+            new_result.key.replace(Key {
                 view: message.view,
-                value: value,
+                value,
                 proof: Some(sig),
             });
         }
 
-        self.result.replace(result);
+        self.update(new_result);
     }
+
+    fn update(&self, new_result: ViewChangeResult) {
+        let mut result_lock = self.result.lock().unwrap();
+        let result = result_lock.as_mut().unwrap();
+
+        if let Some(key) = new_result.key {
+            result.key.replace(key);
+        }
+        if let Some(lock) = new_result.lock {
+            result.lock.replace(lock);
+        }
+        if let Some(value) = new_result.value {
+            result.value.replace(value);
+        }
+    }
+
     fn has_valid_commit(&self, message: &ViewChangeMessage, signer: &Signer) -> bool {
         if let Some((value, sig)) = try_unpack_value_and_sig(&message.leader_commit) {
             let response = PBResponse {

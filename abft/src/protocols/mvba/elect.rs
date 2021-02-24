@@ -1,4 +1,8 @@
-use std::{collections::HashSet, marker::PhantomData, sync::Arc};
+use std::{
+    collections::HashSet,
+    marker::PhantomData,
+    sync::{Arc, Mutex},
+};
 
 use consensus_core::crypto::commoncoin::*;
 use tokio::sync::Notify;
@@ -9,17 +13,17 @@ use super::{
 };
 
 pub struct Elect {
-    id: MVBAID,
+    id: usize,
     index: usize,
     n_parties: usize,
     tag: String,
-    shares: Vec<CoinShare>,
+    shares: Mutex<Vec<CoinShare>>,
     notify_shares: Arc<Notify>,
 }
 
-impl<F: MVBASender> Elect {
-    pub fn init(id: MVBAID, index: usize, n_parties: usize) -> Elect {
-        let tag = format!("{}", id.id);
+impl Elect {
+    pub fn init(id: usize, index: usize, n_parties: usize) -> Elect {
+        let tag = format!("{}", id);
         Elect {
             id,
             index,
@@ -30,7 +34,7 @@ impl<F: MVBASender> Elect {
         }
     }
 
-    pub async fn invoke(&self, coin: &Coin, send_handle: &F) -> usize {
+    pub async fn invoke<F: MVBASender>(&self, coin: &Coin, send_handle: &F) -> usize {
         let share = coin.generate_share(self.tag.as_bytes());
         let elect_message = ElectCoinShareMessage {
             share: share.into(),
@@ -38,10 +42,7 @@ impl<F: MVBASender> Elect {
 
         for i in 0..self.n_parties {
             send_handle
-                .send(
-                    i,
-                    elect_message.to_protocol_message(self.id.id, self.index, i),
-                )
+                .send(i, elect_message.to_protocol_message(self.id, self.index, i))
                 .await;
         }
 
@@ -50,17 +51,21 @@ impl<F: MVBASender> Elect {
 
         notify_shares.notified().await;
 
-        coin.combine_shares(&self.shares, self.n_parties)
+        let shares = self.shares.lock().unwrap();
+
+        coin.combine_shares(&*shares, self.n_parties)
     }
 
-    pub fn on_coin_share_message(&mut self, message: ElectCoinShareMessage, coin: &Coin) {
+    pub fn on_coin_share_message(&self, message: ElectCoinShareMessage, coin: &Coin) {
         let share = message.share.into();
 
+        let mut shares = self.shares.lock().unwrap();
+
         if coin.verify_share(&self.tag.as_bytes(), &share) {
-            self.shares.push(share);
+            shares.push(share);
         }
 
-        if self.shares.len() >= (self.n_parties / 3) + 1 {
+        if shares.len() >= (self.n_parties / 3) + 1 {
             self.notify_shares.notify_one();
         }
     }

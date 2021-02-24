@@ -1,4 +1,9 @@
-use std::{marker::PhantomData, sync::Arc};
+use std::{
+    marker::PhantomData,
+    sync::{Arc, Mutex},
+};
+
+use tokio::sync::RwLock;
 
 use super::{
     messages::{MVBASender, PBSendMessage, PBShareAckMessage, ProtocolMessage},
@@ -15,23 +20,23 @@ pub struct PPSender {
     index: usize,
     n_parties: usize,
     proof: Option<PBSig>,
-    inner_pb: Option<PBSender>,
+    inner_pb: RwLock<Option<PBSender>>,
     status: PPStatus,
 }
 
-impl<F: MVBASender> PPSender {
+impl PPSender {
     pub fn init(id: PPID, index: usize, n_parties: usize) -> Self {
         Self {
             id,
             index,
             n_parties,
             proof: None,
-            inner_pb: None,
+            inner_pb: RwLock::new(None),
             status: PPStatus::Init,
         }
     }
 
-    pub async fn promote(
+    pub async fn promote<F: MVBASender>(
         &self,
         value: Value,
         key: PBKey,
@@ -52,7 +57,11 @@ impl<F: MVBASender> PPSender {
                 },
             };
 
-            let pb = self.init_pb(step, proposal);
+            self.init_pb(step, proposal).await;
+
+            let lock = self.inner_pb.read().await;
+
+            let pb = lock.as_ref().unwrap();
 
             proof_prev.replace(pb.broadcast(signer, send_handle).await);
         }
@@ -61,12 +70,13 @@ impl<F: MVBASender> PPSender {
     }
 
     pub async fn on_share_ack(&self, index: usize, message: PBShareAckMessage, signer: &Signer) {
-        if let Some(pb) = &self.inner_pb {
+        let inner_pb = self.inner_pb.read().await;
+        if let Some(pb) = &*inner_pb {
             pb.on_share_ack_message(index, message, signer).await;
         }
     }
 
-    fn init_pb(&self, step: u8, proposal: PPProposal) -> &PBSender {
+    async fn init_pb(&self, step: u8, proposal: PPProposal) {
         let pb = PBSender::init(
             PBID {
                 id: self.id,
@@ -77,26 +87,23 @@ impl<F: MVBASender> PPSender {
             proposal,
         );
 
-        self.inner_pb.replace(pb);
+        let mut inner_pb = self.inner_pb.write().await;
 
-        &self
-            .inner_pb
-            .as_ref()
-            .expect("PB instance should be initialized")
+        inner_pb.replace(pb);
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Default)]
 pub struct PPReceiver {
     id: PPID,
     index: usize,
     key: Option<PPProposal>,
     lock: Option<PPProposal>,
     commit: Option<PPProposal>,
-    inner_pb: Option<PBReceiver>,
+    inner_pb: RwLock<Option<PBReceiver>>,
 }
 
-impl<F: MVBASender> PPReceiver {
+impl PPReceiver {
     pub fn init(id: PPID, index: usize) -> Self {
         Self {
             id,
@@ -104,33 +111,41 @@ impl<F: MVBASender> PPReceiver {
             key: None,
             lock: None,
             commit: None,
-            inner_pb: None,
+            inner_pb: RwLock::new(None),
         }
     }
 
     pub async fn invoke(&mut self) {
         // Step 1: Sender broadcasts value and mvba key
-        let pb = self.init_pb(1);
+        self.init_pb(1).await;
+        let pb_lock = self.inner_pb.read().await;
+        let pb = pb_lock.as_ref().unwrap();
         let _ = pb.invoke().await;
 
         // Step 2: Sender broadcasts key proposal
-        let pb = self.init_pb(2);
+        self.init_pb(2).await;
+        let pb_lock = self.inner_pb.read().await;
+        let pb = pb_lock.as_ref().unwrap();
         let key = pb.invoke().await;
         self.key.replace(key);
 
         // Step 3: Sender broadcasts lock proposal
-        let pb = self.init_pb(3);
+        self.init_pb(3).await;
+        let pb_lock = self.inner_pb.read().await;
+        let pb = pb_lock.as_ref().unwrap();
         let lock = pb.invoke().await;
         self.lock.replace(lock);
 
         // Step 4: Sender broadcasts commit proposal
-        let pb = self.init_pb(4);
+        self.init_pb(4).await;
+        let pb_lock = self.inner_pb.read().await;
+        let pb = pb_lock.as_ref().unwrap();
         let commit = pb.invoke().await;
         self.commit.replace(commit);
     }
 
-    pub async fn on_value_send_message(
-        &mut self,
+    pub async fn on_value_send_message<F: MVBASender>(
+        &self,
         index: usize,
         message: PBSendMessage,
         id: &MVBAID,
@@ -139,19 +154,23 @@ impl<F: MVBASender> PPReceiver {
         signer: &Signer,
         send_handle: &F,
     ) {
-        if let Some(pb) = &mut self.inner_pb {
+        let inner_pb = self.inner_pb.read().await;
+
+        if let Some(pb) = &*inner_pb {
             pb.on_value_send_message(index, message, id, leader_index, lock, signer, send_handle)
                 .await;
         }
     }
 
-    pub fn abandon(&mut self) {
-        if let Some(pb) = &mut self.inner_pb {
-            pb.abandon();
+    pub async fn abandon(&self) {
+        let mut inner_pb = self.inner_pb.write().await;
+
+        if let Some(pb) = &mut *inner_pb {
+            *inner_pb = None;
         }
     }
 
-    fn init_pb(&mut self, step: u8) -> &PBReceiver {
+    async fn init_pb(&self, step: u8) {
         let id = PBID {
             id: self.id,
             step: FromPrimitive::from_u8(step as u8 + 1).expect("Expect step < 4"),
@@ -159,13 +178,9 @@ impl<F: MVBASender> PPReceiver {
 
         let new_pb = PBReceiver::init(id, self.index);
 
-        self.inner_pb.replace(new_pb);
+        let mut inner_pb = self.inner_pb.write().await;
 
-        //TODO: Remove reference, take it in caller instead
-
-        self.inner_pb
-            .as_ref()
-            .expect("PB instance should be initialized")
+        inner_pb.replace(new_pb);
     }
 }
 
