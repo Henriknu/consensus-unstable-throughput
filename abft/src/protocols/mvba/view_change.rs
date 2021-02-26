@@ -1,72 +1,71 @@
 use super::{
-    messages::{ProtocolMessage, ToProtocolMessage, ViewChangeMessage},
+    messages::{MVBASender, ProtocolMessage, ToProtocolMessage, ViewChangeMessage},
     proposal_promotion::{PPProposal, PPStatus, PPID},
     provable_broadcast::{PBKey, PBProof, PBResponse, PBSig, PBID},
     Key, Value, MVBAID,
 };
 use bincode::serialize;
 use consensus_core::crypto::sign::Signer;
-use std::sync::Arc;
+use std::{
+    marker::PhantomData,
+    sync::{Arc, Mutex},
+};
 use tokio::sync::Notify;
 
-pub struct ViewChange<'s, F: Fn(usize, ProtocolMessage)> {
+pub struct ViewChange {
     id: MVBAID,
+    view: usize,
     n_parties: usize,
     current_key_view: usize,
     current_lock: usize,
-    leader_key: Option<PPProposal>,
-    leader_lock: Option<PPProposal>,
-    leader_commit: Option<PPProposal>,
-    result: Option<ViewChangeResult>,
-    signer: &'s Signer,
+    result: Mutex<Option<ViewChangeResult>>,
     messages: Vec<u8>,
     notify_messages: Arc<Notify>,
-    send_handle: &'s F,
 }
 
-impl<'s, F: Fn(usize, ProtocolMessage)> ViewChange<'s, F> {
+impl ViewChange {
     pub fn init(
         id: MVBAID,
+        view: usize,
         n_parties: usize,
         current_key_view: usize,
         current_lock: usize,
-        signer: &'s Signer,
-        key: Option<PPProposal>,
-        lock: Option<PPProposal>,
-        commit: Option<PPProposal>,
-        send_handle: &'s F,
     ) -> Self {
         Self {
             id,
+            view,
             current_key_view: current_key_view,
             current_lock,
-            leader_commit: commit,
-            leader_key: key,
-            leader_lock: lock,
-            result: Default::default(),
-            signer,
+            result: Mutex::new(Some(ViewChangeResult::default())),
             messages: Default::default(),
             notify_messages: Arc::new(Notify::new()),
             n_parties,
-            send_handle,
         }
     }
 
-    pub async fn invoke(&mut self) -> ViewChangeResult {
+    pub async fn invoke<F: MVBASender>(
+        &self,
+        leader_key: Option<PPProposal>,
+        leader_lock: Option<PPProposal>,
+        leader_commit: Option<PPProposal>,
+        send_handle: &F,
+    ) -> ViewChangeResult {
         let vc_message = ViewChangeMessage::new(
             self.id.id,
             self.id.index,
-            self.id.view,
-            self.leader_key.take(),
-            self.leader_lock.take(),
-            self.leader_commit.take(),
+            self.view,
+            leader_key,
+            leader_lock,
+            leader_commit,
         );
 
         for i in 0..self.n_parties {
-            (self.send_handle)(
-                i,
-                vc_message.to_protocol_message(self.id.id, self.id.index, i),
-            );
+            send_handle
+                .send(
+                    i,
+                    vc_message.to_protocol_message(self.id.id, self.id.index, i),
+                )
+                .await;
         }
 
         // wait for n - f distinct view change messages, or view change message with valid commit (can decide early then)
@@ -75,44 +74,60 @@ impl<'s, F: Fn(usize, ProtocolMessage)> ViewChange<'s, F> {
 
         notify_messages.notified().await;
 
-        self.result.take().expect("Viewchange result should")
+        let mut result = self.result.lock().unwrap();
+
+        result.take().expect("Viewchange result should")
     }
 
-    pub fn on_view_change_message(&mut self, message: &ViewChangeMessage) {
-        let mut result = self
-            .result
-            .take()
-            .expect("ViewChange result should be initialized");
+    pub fn on_view_change_message(&self, message: &ViewChangeMessage, signer: &Signer) {
+        let mut new_result = ViewChangeResult::default();
 
-        if self.has_valid_commit(&message) {
-            result.value.replace(
+        if self.has_valid_commit(&message, signer) {
+            new_result.value.replace(
                 message
                     .leader_commit
                     .as_ref()
                     .expect("Asserted that message had valid commit")
                     .value,
             );
+            self.update(new_result);
             self.notify_messages.notify_one();
             return;
         }
 
-        if message.view > self.current_lock && self.has_valid_lock(&message) {
-            result.lock.replace(message.view);
+        if message.view > self.current_lock && self.has_valid_lock(&message, signer) {
+            new_result.lock.replace(message.view);
         }
 
-        if message.view > self.current_key_view && self.has_valid_key(&message) {
+        if message.view > self.current_key_view && self.has_valid_key(&message, signer) {
             let (value, sig) = try_unpack_value_and_sig(&message.leader_key)
                 .expect("Asserted that message had valid key");
-            result.key.replace(Key {
+            new_result.key.replace(Key {
                 view: message.view,
-                value: value,
+                value,
                 proof: Some(sig),
             });
         }
 
-        self.result.replace(result);
+        self.update(new_result);
     }
-    fn has_valid_commit(&self, message: &ViewChangeMessage) -> bool {
+
+    fn update(&self, new_result: ViewChangeResult) {
+        let mut result_lock = self.result.lock().unwrap();
+        let result = result_lock.as_mut().unwrap();
+
+        if let Some(key) = new_result.key {
+            result.key.replace(key);
+        }
+        if let Some(lock) = new_result.lock {
+            result.lock.replace(lock);
+        }
+        if let Some(value) = new_result.value {
+            result.value.replace(value);
+        }
+    }
+
+    fn has_valid_commit(&self, message: &ViewChangeMessage, signer: &Signer) -> bool {
         if let Some((value, sig)) = try_unpack_value_and_sig(&message.leader_commit) {
             let response = PBResponse {
                 id: PBID {
@@ -121,7 +136,7 @@ impl<'s, F: Fn(usize, ProtocolMessage)> ViewChange<'s, F> {
                 },
                 value,
             };
-            if self.signer.verify_signature(
+            if signer.verify_signature(
                 &sig.inner,
                 &serialize(&response)
                     .expect("Could not serialize reconstructed PB response on_view_change_message"),
@@ -132,7 +147,7 @@ impl<'s, F: Fn(usize, ProtocolMessage)> ViewChange<'s, F> {
         false
     }
 
-    fn has_valid_lock(&self, message: &ViewChangeMessage) -> bool {
+    fn has_valid_lock(&self, message: &ViewChangeMessage, signer: &Signer) -> bool {
         if let Some((value, sig)) = try_unpack_value_and_sig(&message.leader_lock) {
             let response = PBResponse {
                 id: PBID {
@@ -142,7 +157,7 @@ impl<'s, F: Fn(usize, ProtocolMessage)> ViewChange<'s, F> {
                 value,
             };
 
-            if self.signer.verify_signature(
+            if signer.verify_signature(
                 &sig.inner,
                 &serialize(&response)
                     .expect("Could not serialize reconstructed PB response on_view_change_message"),
@@ -153,7 +168,7 @@ impl<'s, F: Fn(usize, ProtocolMessage)> ViewChange<'s, F> {
         false
     }
 
-    fn has_valid_key(&self, message: &ViewChangeMessage) -> bool {
+    fn has_valid_key(&self, message: &ViewChangeMessage, signer: &Signer) -> bool {
         if let Some((value, sig)) = try_unpack_value_and_sig(&message.leader_key) {
             let response = PBResponse {
                 id: PBID {
@@ -163,7 +178,7 @@ impl<'s, F: Fn(usize, ProtocolMessage)> ViewChange<'s, F> {
                 value,
             };
 
-            if self.signer.verify_signature(
+            if signer.verify_signature(
                 &sig.inner,
                 &serialize(&response)
                     .expect("Could not serialize reconstructed PB response on_view_change_message"),
