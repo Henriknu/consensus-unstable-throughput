@@ -17,8 +17,8 @@ use tokio::sync::mpsc::{self, Receiver, Sender};
 
 use log::{debug, error, warn};
 
-const N_PARTIES: usize = 4;
-const THRESHOLD: usize = 1;
+const N_PARTIES: usize = THRESHOLD * 3 + 1;
+const THRESHOLD: usize = 2;
 
 struct ChannelSender {
     senders: HashMap<usize, Sender<ProtocolMessage>>,
@@ -117,7 +117,10 @@ async fn main() {
                             .await
                         {
                             if let MVBAError::NotReadyForMessage(early_message) = e {
-                                warn!("Got early message at {}", i);
+                                warn!(
+                                    "Got early message at {}, with type: {:?}",
+                                    i, early_message.message_type
+                                );
                                 message = Some(early_message);
                             } else {
                                 error!("Got error when handling message at {}: {}", i, e);
@@ -128,7 +131,7 @@ async fn main() {
                             break;
                         }
 
-                        tokio::time::sleep(Duration::from_millis(200)).await;
+                        tokio::time::sleep(Duration::from_millis(500)).await;
                     }
                 });
             }

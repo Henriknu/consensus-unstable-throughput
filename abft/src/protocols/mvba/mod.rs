@@ -145,8 +145,6 @@ impl<F: MVBASender> MVBA<F> {
                 let promotion_proof: Option<PBSig> = tokio::select! {
                     proof = pp_send.promote(value, key, &self.signer, &self.send_handle) => proof,
                     _ = notify_skip.notified() => {
-                        let mut state = self.state.write().await;
-                        state.skip.insert(view, true);
                         None
                     },
                 };
@@ -326,6 +324,16 @@ impl<F: MVBASender> MVBA<F> {
                     );
 
                     elect.on_coin_share_message(inner, &self.coin)?;
+                } else {
+                    warn!(
+                        "Party {}'s elect was not initialized, but got elect message from {}!",
+                        recv_id, send_id
+                    );
+                    return Err(MVBAError::NotReadyForMessage(ProtocolMessage {
+                        header,
+                        message_data,
+                        message_type,
+                    }));
                 }
             }
             messages::ProtocolMessageType::ViewChange => {
@@ -338,13 +346,20 @@ impl<F: MVBASender> MVBA<F> {
 
                     match view_change.on_view_change_message(&inner, &self.signer) {
                         Ok(_) => return Ok(()),
-                        Err(ViewChangeError::PoisonedMutex) => {
+                        Err(ViewChangeError::ResultAlreadyTaken) => {
                             // If ViewChangeResult was taken, this should only happen if the result was returned
                             // to the invoke task. It is therefore fine to ignore.
                             return Ok(());
                         }
                         Err(e) => return Err(MVBAError::ViewChangeError(e)),
                     };
+                } else {
+                    warn!("Party {}'s viewChange was not initialized, but got view_change message from {}!", recv_id, send_id);
+                    return Err(MVBAError::NotReadyForMessage(ProtocolMessage {
+                        header,
+                        message_data,
+                        message_type,
+                    }));
                 }
             }
         }
