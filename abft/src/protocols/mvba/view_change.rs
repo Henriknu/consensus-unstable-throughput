@@ -10,7 +10,7 @@ use log::{debug, info, warn};
 use std::{
     marker::PhantomData,
     sync::{
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc, Mutex,
     },
 };
@@ -24,6 +24,7 @@ pub struct ViewChange {
     current_key_view: usize,
     current_lock: usize,
     result: Mutex<Option<ViewChangeResult>>,
+    done: AtomicBool,
     num_messages: AtomicUsize,
     notify_messages: Arc<Notify>,
 }
@@ -44,6 +45,7 @@ impl ViewChange {
             current_key_view,
             current_lock,
             result: Mutex::new(Some(ViewChangeResult::default())),
+            done: AtomicBool::new(false),
             num_messages: AtomicUsize::new(0),
             notify_messages: Arc::new(Notify::new()),
             n_parties,
@@ -80,10 +82,17 @@ impl ViewChange {
 
         let mut result = self.result.lock().unwrap();
 
+        self.done.store(true, Ordering::SeqCst);
+
         result.take().expect("Viewchange result should")
     }
 
     pub fn on_view_change_message(&self, message: &ViewChangeMessage, signer: &Signer) {
+        // Check if result already taken
+        if self.done.load(Ordering::SeqCst) {
+            return;
+        }
+
         let mut new_result = ViewChangeResult::default();
 
         if self.has_valid_commit(&message, signer) {

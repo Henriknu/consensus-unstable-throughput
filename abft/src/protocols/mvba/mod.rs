@@ -32,8 +32,8 @@ use self::{
 };
 
 mod elect;
-mod error;
-mod messages;
+pub mod error;
+pub mod messages;
 mod proposal_promotion;
 mod provable_broadcast;
 mod view_change;
@@ -789,7 +789,7 @@ impl<F: MVBASender> MVBA<F> {
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, Default)]
 pub struct Value {
-    inner: usize,
+    pub(crate) inner: usize,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, Default)]
