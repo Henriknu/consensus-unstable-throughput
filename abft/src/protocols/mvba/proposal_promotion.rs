@@ -40,6 +40,9 @@ pub struct PPSender {
     id: PPID,
     index: usize,
     n_parties: usize,
+    key: RwLock<Option<PPProposal>>,
+    lock: RwLock<Option<PPProposal>>,
+    commit: RwLock<Option<PPProposal>>,
     proof: Option<PBSig>,
     inner_pb: RwLock<Option<PBSender>>,
 }
@@ -51,6 +54,9 @@ impl PPSender {
             index,
             n_parties,
             proof: None,
+            key: RwLock::new(None),
+            lock: RwLock::new(None),
+            commit: RwLock::new(None),
             inner_pb: RwLock::new(None),
         }
     }
@@ -65,36 +71,52 @@ impl PPSender {
         // proof_prev = null
         let mut proof_prev: Option<PBSig> = None;
 
-        // for step 1 to 4: Execute PB. Store return value in proof_prev
+        let mut proposal = PPProposal {
+            value,
+            proof: PBProof {
+                key,
+                proof_prev: None,
+            },
+        };
 
-        for step in 0u8..4 {
-            if step > 1 {
-                debug_assert!(proof_prev.is_some());
-            }
-
-            let proposal = PPProposal {
-                value,
-                proof: PBProof {
-                    key: key.clone(),
-                    proof_prev: proof_prev.clone(),
-                },
-            };
-
-            info!(
-                "Party {} at step {} of promoting value {:?}",
-                self.index, step, value
-            );
-
-            self.init_pb(
-                FromPrimitive::from_u8(step).expect("Step 1-4 correspond to range (0..4)"),
-                proposal,
-            )
-            .await;
-
+        // Step 1
+        {
+            self.init_pb(PPStatus::Step1, proposal.clone()).await;
             let lock = self.inner_pb.read().await;
-
             let pb = lock.as_ref().unwrap();
+            proof_prev.replace(pb.broadcast(signer, send_handle).await);
+            proposal.proof.proof_prev = proof_prev.clone();
 
+            let mut _key = self.key.write().await;
+            _key.replace(proposal.clone());
+        }
+        // Step 2
+        {
+            self.init_pb(PPStatus::Step2, proposal.clone()).await;
+            let lock = self.inner_pb.read().await;
+            let pb = lock.as_ref().unwrap();
+            proof_prev.replace(pb.broadcast(signer, send_handle).await);
+            proposal.proof.proof_prev = proof_prev.clone();
+
+            let mut _lock = self.lock.write().await;
+            _lock.replace(proposal.clone());
+        }
+        // Step 3
+        {
+            self.init_pb(PPStatus::Step3, proposal.clone()).await;
+            let lock = self.inner_pb.read().await;
+            let pb = lock.as_ref().unwrap();
+            proof_prev.replace(pb.broadcast(signer, send_handle).await);
+            proposal.proof.proof_prev = proof_prev.clone();
+
+            let mut _commit = self.commit.write().await;
+            _commit.replace(proposal.clone());
+        }
+        // Step 4
+        {
+            self.init_pb(PPStatus::Step4, proposal.clone()).await;
+            let lock = self.inner_pb.read().await;
+            let pb = lock.as_ref().unwrap();
             proof_prev.replace(pb.broadcast(signer, send_handle).await);
         }
 
@@ -118,6 +140,27 @@ impl PPSender {
             return Err(PPError::NotReadyForShareAck);
         }
         Ok(())
+    }
+
+    pub async fn result(&self) -> PPLeader {
+        let (key, lock, commit);
+
+        {
+            let mut _key = self.key.write().await;
+            key = _key.take();
+        }
+
+        {
+            let mut _lock = self.lock.write().await;
+            lock = _lock.take();
+        }
+
+        {
+            let mut _commit = self.commit.write().await;
+            commit = _commit.take();
+        }
+
+        PPLeader { key, lock, commit }
     }
 
     async fn init_pb(&self, step: PPStatus, proposal: PPProposal) {
@@ -242,6 +285,27 @@ impl PPReceiver {
         }
     }
 
+    pub async fn result(&self) -> PPLeader {
+        let (key, lock, commit);
+
+        {
+            let mut _key = self.key.write().await;
+            key = _key.take();
+        }
+
+        {
+            let mut _lock = self.lock.write().await;
+            lock = _lock.take();
+        }
+
+        {
+            let mut _commit = self.commit.write().await;
+            commit = _commit.take();
+        }
+
+        PPLeader { key, lock, commit }
+    }
+
     pub async fn abandon(&self) {
         let mut inner_pb = self.inner_pb.write().await;
 
@@ -288,6 +352,12 @@ pub enum PPStatus {
     Step2,
     Step3,
     Step4,
+}
+
+pub struct PPLeader {
+    pub key: Option<PPProposal>,
+    pub lock: Option<PPProposal>,
+    pub commit: Option<PPProposal>,
 }
 
 impl fmt::Display for PPStatus {

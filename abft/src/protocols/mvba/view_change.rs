@@ -6,26 +6,32 @@ use super::{
 };
 use bincode::serialize;
 use consensus_core::crypto::sign::Signer;
+use log::{debug, info, warn};
 use std::{
     marker::PhantomData,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex,
+    },
 };
 use tokio::sync::Notify;
 
 pub struct ViewChange {
     id: MVBAID,
+    index: usize,
     view: usize,
     n_parties: usize,
     current_key_view: usize,
     current_lock: usize,
     result: Mutex<Option<ViewChangeResult>>,
-    messages: Vec<u8>,
+    num_messages: AtomicUsize,
     notify_messages: Arc<Notify>,
 }
 
 impl ViewChange {
     pub fn init(
         id: MVBAID,
+        index: usize,
         view: usize,
         n_parties: usize,
         current_key_view: usize,
@@ -33,11 +39,12 @@ impl ViewChange {
     ) -> Self {
         Self {
             id,
+            index,
             view,
-            current_key_view: current_key_view,
+            current_key_view,
             current_lock,
             result: Mutex::new(Some(ViewChangeResult::default())),
-            messages: Default::default(),
+            num_messages: AtomicUsize::new(0),
             notify_messages: Arc::new(Notify::new()),
             n_parties,
         }
@@ -53,7 +60,7 @@ impl ViewChange {
         let vc_message = ViewChangeMessage::new(
             self.id.id,
             self.id.index,
-            self.view,
+            self.id.view,
             leader_key,
             leader_lock,
             leader_commit,
@@ -61,10 +68,7 @@ impl ViewChange {
 
         for i in 0..self.n_parties {
             send_handle
-                .send(
-                    i,
-                    vc_message.to_protocol_message(self.id.id, self.id.index, i),
-                )
+                .send(i, vc_message.to_protocol_message(self.id.id, self.index, i))
                 .await;
         }
 
@@ -110,6 +114,12 @@ impl ViewChange {
         }
 
         self.update(new_result);
+
+        let num_messages = self.num_messages.fetch_add(1, Ordering::SeqCst);
+
+        if num_messages >= (self.n_parties * 2 / 3) {
+            self.notify_messages.notify_one();
+        }
     }
 
     fn update(&self, new_result: ViewChangeResult) {
@@ -143,6 +153,10 @@ impl ViewChange {
             ) {
                 return true;
             }
+            warn!(
+                "Party {} received ViewChange message with invalid signature for commit",
+                self.index
+            );
         }
         false
     }
@@ -164,6 +178,10 @@ impl ViewChange {
             ) {
                 return true;
             }
+            warn!(
+                "Party {} received ViewChange message with invalid signature for lock",
+                self.index
+            );
         }
         false
     }
@@ -185,6 +203,10 @@ impl ViewChange {
             ) {
                 return true;
             }
+            warn!(
+                "Party {} received ViewChange message with invalid signature for key",
+                self.index
+            );
         }
         false
     }
@@ -193,14 +215,15 @@ impl ViewChange {
 /// Utility function to unpack value and view_key_proof from proposal, if proposal and proofs are Some.
 fn try_unpack_value_and_sig(proposal: &Option<PPProposal>) -> Option<(Value, PBSig)> {
     if let Some(PPProposal { value, proof }) = proposal {
-        if let Some(sig) = &proof.key.view_key_proof {
+        if let Some(sig) = &proof.proof_prev {
             return Some((*value, sig.clone()));
         }
     }
+    warn!("Could not unpack value and proof from ViewChange Message");
     None
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct ViewChangeResult {
     pub(crate) value: Option<Value>,
     pub(crate) lock: Option<usize>,

@@ -85,17 +85,6 @@ impl PBSender {
 
         let signature = signer.combine_signatures(&shares).unwrap();
 
-        debug_assert_eq!(shares.values().len(), (self.n_parties * 2 / 3) + 1);
-
-        debug_assert!(signer.verify_signature(
-            &signature,
-            &serialize(&PBResponse {
-                id: pb_send.id,
-                value: pb_send.proposal.value,
-            })
-            .expect("Could not serialize message for on_value_send")
-        ));
-
         PBSig { inner: signature }
     }
 
@@ -342,7 +331,7 @@ impl PBReceiver {
         };
 
         // Verify the validity of the key provided
-        if *view != 1
+        if *view != 0
             && (view_key_proof.is_none()
                 || !signer.verify_signature(
                     &view_key_proof.as_ref().unwrap().inner,

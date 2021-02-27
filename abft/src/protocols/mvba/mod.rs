@@ -26,7 +26,7 @@ use self::{
         MVBADoneMessage, MVBAReceiver, MVBASender, MVBASkipMessage, MVBASkipShareMessage,
         ProtocolMessage, ProtocolMessageHeader, ToProtocolMessage,
     },
-    proposal_promotion::{PPError, PPResult, PPID},
+    proposal_promotion::{PPError, PPLeader, PPResult, PPID},
     provable_broadcast::{PBResponse, PBSig, PBID},
     view_change::ViewChange,
 };
@@ -108,51 +108,57 @@ impl<F: MVBASender> MVBA<F> {
 
             // Invoke pp_recvs
 
-            let read_lock = self.pp_recvs.read().await;
+            {
+                let read_lock = self.pp_recvs.read().await;
 
-            let pp_recvs = read_lock
-                .as_ref()
-                .ok_or_else(|| MVBAError::UninitState("pp_recvs".to_string()))?;
+                let pp_recvs = read_lock
+                    .as_ref()
+                    .ok_or_else(|| MVBAError::UninitState("pp_recvs".to_string()))?;
 
-            for pp_recv in pp_recvs.values() {
-                let copy = pp_recv.clone();
+                for pp_recv in pp_recvs.values() {
+                    let copy = pp_recv.clone();
 
-                tokio::spawn(async move {
-                    copy.invoke().await;
-                });
+                    tokio::spawn(async move {
+                        copy.invoke().await;
+                    });
+                }
             }
 
-            let lock = self.pp_send.read().await;
+            // Invoke pp_send
 
-            let pp_send = lock
-                .as_ref()
-                .ok_or_else(|| MVBAError::UninitState("pp_send".to_string()))?;
+            {
+                let lock = self.pp_send.read().await;
 
-            // wait for promotion to return. aka: 1. Succesfully promoted value or 2. self.skip[self.view]
+                let pp_send = lock
+                    .as_ref()
+                    .ok_or_else(|| MVBAError::UninitState("pp_send".to_string()))?;
 
-            let notify_skip = self.notify_skip.clone();
+                // wait for promotion to return. aka: 1. Succesfully promoted value or 2. self.skip[self.view]
 
-            debug!(
-                "Party {} started Promoting proposal with value: {:?}, view: {}",
-                index, value, view
-            );
+                let notify_skip = self.notify_skip.clone();
 
-            let promotion_proof: Option<PBSig> = tokio::select! {
-                proof = pp_send.promote(value, key, &self.signer, &self.send_handle) => proof,
-                _ = notify_skip.notified() => {
-                    let mut state = self.state.write().await;
-                    state.skip.insert(view, true);
-                    None
-                },
-            };
+                debug!(
+                    "Party {} started Promoting proposal with value: {:?}, view: {}",
+                    index, value, view
+                );
 
-            debug!(
-                "Party {} finished promoting proposal, returning with proof: {:?}",
-                index, promotion_proof
-            );
+                let promotion_proof: Option<PBSig> = tokio::select! {
+                    proof = pp_send.promote(value, key, &self.signer, &self.send_handle) => proof,
+                    _ = notify_skip.notified() => {
+                        let mut state = self.state.write().await;
+                        state.skip.insert(view, true);
+                        None
+                    },
+                };
 
-            self.send_done_if_not_skip(id, index, promotion_proof)
-                .await?;
+                info!(
+                    "Party {} finished promoting proposal, returning with proof: {:?}",
+                    index, promotion_proof
+                );
+
+                self.send_done_if_not_skip(id, index, promotion_proof)
+                    .await?;
+            }
 
             // ***** LEADER ELECTION *****
 
@@ -164,13 +170,20 @@ impl<F: MVBASender> MVBA<F> {
 
             let elect = lock.as_ref().unwrap();
 
+            info!("Party {} started electing phase for view: {}", index, view);
+
             let leader = elect.invoke(&self.coin, &self.send_handle).await;
 
-            let mut state = self.state.write().await;
+            info!(
+                "Party {} finished electing phase for view: {}, electing the leader: {} ",
+                index, view, leader
+            );
 
-            state.leaders.insert(view, Some(leader));
+            {
+                let mut state = self.state.write().await;
 
-            drop(state);
+                state.leaders.insert(view, Some(leader));
+            }
 
             // ***** VIEW CHANGE *****
 
@@ -180,20 +193,19 @@ impl<F: MVBASender> MVBA<F> {
                 view,
             };
 
-            self.init_view_change(id_leader, view).await;
+            let result = self.get_leader_result(leader).await?;
+
+            self.init_view_change(index, id_leader, view).await;
 
             let lock = self.view_change.read().await;
 
             let view_change = lock.as_ref().unwrap();
 
-            //TODO: Get leaders proposals
-            let leader_key = None;
-            let leader_lock = None;
-            let leader_commit = None;
-
             let changes = view_change
-                .invoke(leader_key, leader_lock, leader_commit, &self.send_handle)
+                .invoke(result.key, result.lock, result.commit, &self.send_handle)
                 .await;
+
+            info!("Party {} succesfully completed view change in view: {}. Leader: {}, with result: {:?}", index, view, leader, changes);
 
             if let Some(value) = changes.value {
                 return Ok(value);
@@ -206,7 +218,6 @@ impl<F: MVBASender> MVBA<F> {
                 if let Some(key) = changes.key {
                     state.KEY = key;
                 }
-                state.view += 1;
             }
         }
     }
@@ -343,20 +354,23 @@ impl<F: MVBASender> MVBA<F> {
         );
 
         // Assert that done message has not already been received from party (index) in view (view)
-
-        let state = self.state.read().await;
-
-        if let Ok(true) = state
-            .has_received_done
-            .get(&id.view)
-            .ok_or_else(|| MVBAError::UninitState("has_received_done".to_string()))?
-            .get(&index)
-            .ok_or_else(|| MVBAError::UninitState("has_received_done member".to_string()))
         {
-            return Ok(());
-        }
+            let state = self.state.read().await;
 
-        drop(state);
+            if let Ok(true) = state
+                .has_received_done
+                .get(&id.view)
+                .ok_or_else(|| MVBAError::UninitState("has_received_done".to_string()))?
+                .get(&index)
+                .ok_or_else(|| MVBAError::UninitState("has_received_done member".to_string()))
+            {
+                warn!(
+                    "Party {} had already received a done message from Party {} in view: {}",
+                    self.index, index, state.view
+                );
+                return Ok(());
+            }
+        }
 
         debug!(
             "Had not received done message earlier on MVBA::on_done_message for Party {} on message from Party {}",
@@ -366,6 +380,10 @@ impl<F: MVBASender> MVBA<F> {
         // Assert that proof is provided
 
         if let None = proof_prev {
+            warn!(
+                "Party {} received a done message from Party {} with an empty proof",
+                self.index, index,
+            );
             return Ok(());
         }
 
@@ -399,6 +417,10 @@ impl<F: MVBASender> MVBA<F> {
                 )
             })?,
         ) {
+            warn!(
+                "Party {} received a done message from Party {} with an invalid proof",
+                self.index, index,
+            );
             return Ok(());
         }
 
@@ -463,19 +485,19 @@ impl<F: MVBASender> MVBA<F> {
 
         // Assert that skip share message has not already been received from party (index) in view (view)
 
-        let state = self.state.read().await;
-
-        if let Ok(true) = state
-            .has_received_skip_share
-            .get(&id.view)
-            .ok_or_else(|| MVBAError::UninitState("has_received_skip_share".to_string()))?
-            .get(&index)
-            .ok_or_else(|| MVBAError::UninitState("has_received_skip_share member".to_string()))
         {
-            return Ok(());
-        }
+            let state = self.state.read().await;
 
-        drop(state);
+            if let Ok(true) = state
+                .has_received_skip_share
+                .get(&id.view)
+                .ok_or_else(|| MVBAError::UninitState("has_received_skip_share".to_string()))?
+                .get(&index)
+                .ok_or_else(|| MVBAError::UninitState("has_received_skip_share member".to_string()))
+            {
+                return Ok(());
+            }
+        }
 
         // Assert that skip share is valid for index
 
@@ -492,7 +514,11 @@ impl<F: MVBASender> MVBA<F> {
 
         let mut state = self.state.write().await;
 
-        state.pp_skip.entry(id.view).or_default().insert(share);
+        state
+            .pp_skip
+            .entry(id.view)
+            .or_default()
+            .insert(index, share);
 
         // If we have received enough skip_shares to construct a skip signature, construct and broadcast it.
 
@@ -502,7 +528,6 @@ impl<F: MVBASender> MVBA<F> {
             let shares = state.pp_skip[&id.view]
                 .clone()
                 .into_iter()
-                .enumerate()
                 .map(|(i, skip_share)| (i, skip_share.inner))
                 .collect();
 
@@ -543,8 +568,6 @@ impl<F: MVBASender> MVBA<F> {
 
         let mut state = self.state.write().await;
 
-        state.skip.insert(id.view, true);
-
         // Propogate skip message, if we have not sent a skip message for the current view
 
         if !*state.has_sent_skip.entry(id.view).or_default() {
@@ -559,9 +582,11 @@ impl<F: MVBASender> MVBA<F> {
             state.has_sent_skip.insert(id.view, true);
         }
 
-        // wake up invoke()-task, since we are ready to continue to election process
-
-        self.notify_skip.notify_one();
+        if !*state.skip.entry(id.view).or_default() {
+            state.skip.insert(id.view, true);
+            // wake up invoke()-task, since we are ready to continue to election process
+            self.notify_skip.notify_one();
+        }
 
         Ok(())
     }
@@ -575,7 +600,7 @@ impl<F: MVBASender> MVBA<F> {
         let state = self.state.read().await;
 
         let leader_index = match &message.proposal.proof.key.view {
-            view if *view == 1 => 0,
+            view if *view == 0 => 0,
             _ => state.leaders[&message.proposal.proof.key.view]
                 .expect("Leader was not found for view"),
         };
@@ -619,6 +644,23 @@ impl<F: MVBASender> MVBA<F> {
         (key, value, view)
     }
 
+    async fn get_leader_result(&self, leader: usize) -> MVBAResult<PPLeader> {
+        if leader == self.index {
+            let lock = self.pp_send.read().await;
+            let pp_send = lock
+                .as_ref()
+                .ok_or_else(|| MVBAError::UninitState("pp_send".to_string()))?;
+            Ok(pp_send.result().await)
+        } else {
+            let lock = self.pp_recvs.read().await;
+            let pp_recvs = lock
+                .as_ref()
+                .ok_or_else(|| MVBAError::UninitState("pp_recvs".to_string()))?;
+            let leader_recv = &pp_recvs[&leader];
+            Ok(leader_recv.result().await)
+        }
+    }
+
     async fn send_done_if_not_skip(
         &self,
         id: usize,
@@ -657,6 +699,7 @@ impl<F: MVBASender> MVBA<F> {
                     .send(i, mvba_done.to_protocol_message(id, index, i))
                     .await;
             }
+            drop(state);
             self.notify_skip.notified().await;
         }
 
@@ -715,10 +758,16 @@ impl<F: MVBASender> MVBA<F> {
         lock.replace(elect);
     }
 
-    async fn init_view_change(&self, id_leader: MVBAID, view: usize) {
+    async fn init_view_change(&self, index: usize, id_leader: MVBAID, view: usize) {
         let state = self.state.read().await;
-        let view_change =
-            ViewChange::init(id_leader, view, self.n_parties, state.KEY.view, state.LOCK);
+        let view_change = ViewChange::init(
+            id_leader,
+            index,
+            view,
+            self.n_parties,
+            state.KEY.view,
+            state.LOCK,
+        );
         drop(state);
 
         let mut lock = self.view_change.write().await;
@@ -768,7 +817,7 @@ struct MVBAState {
     /// Whether the current party has sent out a MVBASkipShareMessage for a particular view.
     has_sent_skip_share: HashMap<usize, bool>,
     /// Collection of unique MVBASkipShareMessage received for a particular view.
-    pp_skip: HashMap<usize, HashSet<SkipShare>>,
+    pp_skip: HashMap<usize, HashMap<usize, SkipShare>>,
     /// Whether the current party has sent out a MVBASkipMessage for a particular view.
     has_sent_skip: HashMap<usize, bool>,
     /// Whether the current party can proceed to the election phase for a particular view.
@@ -783,7 +832,7 @@ impl MVBAState {
             status: MVBAStatus::Init,
             LOCK: 0,
             KEY: Key {
-                view: 1,
+                view: 0,
                 value,
                 proof: None,
             },
@@ -807,7 +856,7 @@ impl MVBAState {
         self.pp_done.insert(view, 0);
         self.has_sent_skip.insert(view, false);
         self.skip.insert(view, false);
-        self.pp_skip.insert(view, HashSet::new());
+        self.pp_skip.insert(view, HashMap::new());
 
         self.has_received_done
             .insert(view, (0..self.n_parties).map(|i| (i, false)).collect());
@@ -824,7 +873,7 @@ enum MVBAStatus {
     Finished,
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct Key {
     view: usize,
     value: Value,
@@ -965,7 +1014,7 @@ mod tests {
                                 break;
                             }
 
-                            tokio::time::sleep(Duration::from_millis(500)).await;
+                            tokio::time::sleep(Duration::from_millis(200)).await;
                         }
                     });
                 }
