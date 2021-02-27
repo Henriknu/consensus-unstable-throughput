@@ -15,7 +15,7 @@ use consensus_core::{
 use protocols::mvba::messages::{MVBAReceiver, MVBASender, ProtocolMessage};
 use tokio::sync::mpsc::{self, Receiver, Sender};
 
-use log::{debug, error, info};
+use log::{debug, error, warn};
 
 const N_PARTIES: usize = 4;
 const THRESHOLD: usize = 1;
@@ -53,8 +53,8 @@ impl MVBAReceiver for ChannelReceiver {
 async fn main() {
     env_logger::init();
 
-    let mut signers = Signer::generate_signers(N_PARTIES, THRESHOLD);
-    let mut coins = Coin::generate_coins(N_PARTIES, THRESHOLD);
+    let mut signers = Signer::generate_signers(N_PARTIES, N_PARTIES - THRESHOLD - 1);
+    let mut coins = Coin::generate_coins(N_PARTIES, THRESHOLD + 1);
 
     assert_eq!(signers.len(), N_PARTIES);
     assert_eq!(coins.len(), N_PARTIES);
@@ -116,10 +116,11 @@ async fn main() {
                             .handle_protocol_message(message.take().unwrap())
                             .await
                         {
-                            error!("Got error when handling message at {}: {}", i, e);
-
                             if let MVBAError::NotReadyForMessage(early_message) = e {
+                                warn!("Got early message at {}", i);
                                 message = Some(early_message);
+                            } else {
+                                error!("Got error when handling message at {}: {}", i, e);
                             }
                         }
 
@@ -138,9 +139,13 @@ async fn main() {
 
     let results = join_all(handles).await;
 
+    println!();
+    println!("-------------------------------------------------------------");
+    println!();
+
     for (i, result) in results.iter().enumerate() {
         if let Ok(value) = result {
-            debug!("Value returned party {} = {:?}", i, value);
+            println!("Value returned party {} = {:?}", i, value);
         }
     }
 }

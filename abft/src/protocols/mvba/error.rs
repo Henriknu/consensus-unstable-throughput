@@ -1,6 +1,9 @@
 use thiserror::Error;
 
-use super::{messages::ProtocolMessage, proposal_promotion::PPError};
+use super::{
+    elect::ElectError, messages::ProtocolMessage, proposal_promotion::PPError,
+    view_change::ViewChangeError,
+};
 
 pub type MVBAResult<Output> = Result<Output, MVBAError>;
 
@@ -22,4 +25,8 @@ pub enum MVBAError {
     // Errors propogated from sub-protocol instances
     #[error(transparent)]
     PPError(#[from] PPError),
+    #[error(transparent)]
+    ElectError(#[from] ElectError),
+    #[error(transparent)]
+    ViewChangeError(#[from] ViewChangeError),
 }

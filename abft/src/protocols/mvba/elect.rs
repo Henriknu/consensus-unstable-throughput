@@ -1,16 +1,12 @@
-use std::{
-    collections::HashSet,
-    marker::PhantomData,
-    sync::{Arc, Mutex},
-};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use consensus_core::crypto::commoncoin::*;
 use tokio::sync::Notify;
 
-use super::{
-    messages::{ElectCoinShareMessage, MVBASender, ProtocolMessage, ToProtocolMessage},
-    MVBAID,
-};
+use super::messages::{ElectCoinShareMessage, MVBASender, ToProtocolMessage};
+use thiserror::Error;
+
+pub type ElectResult<T> = Result<T, ElectError>;
 
 pub struct Elect {
     id: usize,
@@ -34,7 +30,7 @@ impl Elect {
         }
     }
 
-    pub async fn invoke<F: MVBASender>(&self, coin: &Coin, send_handle: &F) -> usize {
+    pub async fn invoke<F: MVBASender>(&self, coin: &Coin, send_handle: &F) -> ElectResult<usize> {
         let share = coin.generate_share(self.tag.as_bytes());
         let elect_message = ElectCoinShareMessage {
             share: share.into(),
@@ -46,20 +42,23 @@ impl Elect {
                 .await;
         }
 
-        // wait for Check on shares.len() == (self.num_parties//3) + 1
         let notify_shares = self.notify_shares.clone();
 
         notify_shares.notified().await;
 
-        let shares = self.shares.lock().unwrap();
+        let shares = self.shares.lock().map_err(|_| ElectError::PoisonedMutex)?;
 
-        coin.combine_shares(&*shares, self.n_parties)
+        Ok(coin.combine_shares(&*shares, self.n_parties))
     }
 
-    pub fn on_coin_share_message(&self, message: ElectCoinShareMessage, coin: &Coin) {
+    pub fn on_coin_share_message(
+        &self,
+        message: ElectCoinShareMessage,
+        coin: &Coin,
+    ) -> ElectResult<()> {
         let share = message.share.into();
 
-        let mut shares = self.shares.lock().unwrap();
+        let mut shares = self.shares.lock().map_err(|_| ElectError::PoisonedMutex)?;
 
         if coin.verify_share(&self.tag.as_bytes(), &share) {
             shares.push(share);
@@ -68,5 +67,13 @@ impl Elect {
         if shares.len() >= (self.n_parties / 3) + 1 {
             self.notify_shares.notify_one();
         }
+
+        Ok(())
     }
+}
+
+#[derive(Error, Debug)]
+pub enum ElectError {
+    #[error("Acquired a poisoned mutex during election")]
+    PoisonedMutex,
 }

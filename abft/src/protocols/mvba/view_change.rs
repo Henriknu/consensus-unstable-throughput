@@ -14,7 +14,10 @@ use std::{
         Arc, Mutex,
     },
 };
+use thiserror::Error;
 use tokio::sync::Notify;
+
+pub type ViewChangeResult<T> = Result<T, ViewChangeError>;
 
 pub struct ViewChange {
     id: MVBAID,
@@ -23,7 +26,7 @@ pub struct ViewChange {
     n_parties: usize,
     current_key_view: usize,
     current_lock: usize,
-    result: Mutex<Option<ViewChangeResult>>,
+    result: Mutex<Option<Changes>>,
     done: AtomicBool,
     num_messages: AtomicUsize,
     notify_messages: Arc<Notify>,
@@ -44,7 +47,7 @@ impl ViewChange {
             view,
             current_key_view,
             current_lock,
-            result: Mutex::new(Some(ViewChangeResult::default())),
+            result: Mutex::new(Some(Changes::default())),
             done: AtomicBool::new(false),
             num_messages: AtomicUsize::new(0),
             notify_messages: Arc::new(Notify::new()),
@@ -58,7 +61,7 @@ impl ViewChange {
         leader_lock: Option<PPProposal>,
         leader_commit: Option<PPProposal>,
         send_handle: &F,
-    ) -> ViewChangeResult {
+    ) -> ViewChangeResult<Changes> {
         let vc_message = ViewChangeMessage::new(
             self.id.id,
             self.id.index,
@@ -80,20 +83,29 @@ impl ViewChange {
 
         notify_messages.notified().await;
 
-        let mut result = self.result.lock().unwrap();
+        let mut result = self
+            .result
+            .lock()
+            .map_err(|_| ViewChangeError::PoisonedMutex)?;
 
         self.done.store(true, Ordering::SeqCst);
 
-        result.take().expect("Viewchange result should")
+        Ok(result
+            .take()
+            .expect("Only the invoking task should be able to take the result"))
     }
 
-    pub fn on_view_change_message(&self, message: &ViewChangeMessage, signer: &Signer) {
+    pub fn on_view_change_message(
+        &self,
+        message: &ViewChangeMessage,
+        signer: &Signer,
+    ) -> ViewChangeResult<()> {
         // Check if result already taken
         if self.done.load(Ordering::SeqCst) {
-            return;
+            return Ok(());
         }
 
-        let mut new_result = ViewChangeResult::default();
+        let mut new_result = Changes::default();
 
         if self.has_valid_commit(&message, signer) {
             new_result.value.replace(
@@ -103,9 +115,9 @@ impl ViewChange {
                     .expect("Asserted that message had valid commit")
                     .value,
             );
-            self.update(new_result);
+            self.update(new_result)?;
             self.notify_messages.notify_one();
-            return;
+            return Ok(());
         }
 
         if message.view > self.current_lock && self.has_valid_lock(&message, signer) {
@@ -122,18 +134,26 @@ impl ViewChange {
             });
         }
 
-        self.update(new_result);
+        self.update(new_result)?;
 
         let num_messages = self.num_messages.fetch_add(1, Ordering::SeqCst);
 
         if num_messages >= (self.n_parties * 2 / 3) {
             self.notify_messages.notify_one();
         }
+
+        Ok(())
     }
 
-    fn update(&self, new_result: ViewChangeResult) {
-        let mut result_lock = self.result.lock().unwrap();
-        let result = result_lock.as_mut().unwrap();
+    fn update(&self, new_result: Changes) -> ViewChangeResult<()> {
+        let mut result_lock = self
+            .result
+            .lock()
+            .map_err(|_| ViewChangeError::PoisonedMutex)?;
+
+        let result = result_lock
+            .as_mut()
+            .ok_or_else(|| ViewChangeError::ResultAlreadyTaken)?;
 
         if let Some(key) = new_result.key {
             result.key.replace(key);
@@ -144,6 +164,7 @@ impl ViewChange {
         if let Some(value) = new_result.value {
             result.value.replace(value);
         }
+        Ok(())
     }
 
     fn has_valid_commit(&self, message: &ViewChangeMessage, signer: &Signer) -> bool {
@@ -233,8 +254,16 @@ fn try_unpack_value_and_sig(proposal: &Option<PPProposal>) -> Option<(Value, PBS
 }
 
 #[derive(Debug, Default)]
-pub struct ViewChangeResult {
+pub struct Changes {
     pub(crate) value: Option<Value>,
     pub(crate) lock: Option<usize>,
     pub(crate) key: Option<Key>,
+}
+
+#[derive(Error, Debug)]
+pub enum ViewChangeError {
+    #[error("Acquired a poisoned mutex during viewchange")]
+    PoisonedMutex,
+    #[error("Changes was already taken from ViewChange instance")]
+    ResultAlreadyTaken,
 }

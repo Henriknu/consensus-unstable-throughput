@@ -28,7 +28,7 @@ use self::{
     },
     proposal_promotion::{PPError, PPLeader, PPResult, PPID},
     provable_broadcast::{PBResponse, PBSig, PBID},
-    view_change::ViewChange,
+    view_change::{ViewChange, ViewChangeError},
 };
 
 mod elect;
@@ -172,7 +172,7 @@ impl<F: MVBASender> MVBA<F> {
 
             info!("Party {} started electing phase for view: {}", index, view);
 
-            let leader = elect.invoke(&self.coin, &self.send_handle).await;
+            let leader = elect.invoke(&self.coin, &self.send_handle).await?;
 
             info!(
                 "Party {} finished electing phase for view: {}, electing the leader: {} ",
@@ -203,7 +203,7 @@ impl<F: MVBASender> MVBA<F> {
 
             let changes = view_change
                 .invoke(result.key, result.lock, result.commit, &self.send_handle)
-                .await;
+                .await?;
 
             info!("Party {} succesfully completed view change in view: {}. Leader: {}, with result: {:?}", index, view, leader, changes);
 
@@ -325,7 +325,7 @@ impl<F: MVBASender> MVBA<F> {
                         "Could not deserialize ElectCoinShare message when handling protocol message",
                     );
 
-                    elect.on_coin_share_message(inner, &self.coin);
+                    elect.on_coin_share_message(inner, &self.coin)?;
                 }
             }
             messages::ProtocolMessageType::ViewChange => {
@@ -336,7 +336,15 @@ impl<F: MVBASender> MVBA<F> {
                         "Could not deserialize ViewChange message when handling protocol message",
                     );
 
-                    view_change.on_view_change_message(&inner, &self.signer);
+                    match view_change.on_view_change_message(&inner, &self.signer) {
+                        Ok(_) => return Ok(()),
+                        Err(ViewChangeError::PoisonedMutex) => {
+                            // If ViewChangeResult was taken, this should only happen if the result was returned
+                            // to the invoke task. It is therefore fine to ignore.
+                            return Ok(());
+                        }
+                        Err(e) => return Err(MVBAError::ViewChangeError(e)),
+                    };
                 }
             }
         }
