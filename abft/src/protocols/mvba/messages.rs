@@ -25,6 +25,7 @@ pub trait MVBAReceiver {
     async fn receive(&mut self) -> Option<ProtocolMessage>;
 }
 
+#[derive(Debug)]
 pub struct ProtocolMessage {
     pub header: ProtocolMessageHeader,
     pub message_type: ProtocolMessageType,
@@ -47,6 +48,7 @@ impl ProtocolMessage {
     }
 }
 
+#[derive(Debug)]
 pub struct ProtocolMessageHeader {
     pub protocol_id: usize,
     pub send_id: usize,
@@ -106,7 +108,7 @@ where
 }
 
 // Concrete Messages
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct PBSendMessage {
     pub id: PBID,
     pub proposal: PPProposal,
@@ -122,7 +124,7 @@ impl ToProtocolMessage for PBSendMessage {
     const MESSAGE_TYPE: ProtocolMessageType = ProtocolMessageType::PBSend;
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct PBShareAckMessage {
     pub id: PBID,
     pub share: PBSigShare,
@@ -138,7 +140,7 @@ impl ToProtocolMessage for PBShareAckMessage {
     const MESSAGE_TYPE: ProtocolMessageType = ProtocolMessageType::PBShareAck;
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ElectCoinShareMessage {
     pub share: EncodedCoinShare,
 }
@@ -153,7 +155,7 @@ impl ToProtocolMessage for ElectCoinShareMessage {
     const MESSAGE_TYPE: ProtocolMessageType = ProtocolMessageType::ElectCoinShare;
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ViewChangeMessage {
     pub id: usize,
     pub index: usize,
@@ -187,7 +189,7 @@ impl ToProtocolMessage for ViewChangeMessage {
     const MESSAGE_TYPE: ProtocolMessageType = ProtocolMessageType::ViewChange;
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct MVBADoneMessage {
     pub id: MVBAID,
     pub proposal: PPProposal,
@@ -203,7 +205,7 @@ impl ToProtocolMessage for MVBADoneMessage {
     const MESSAGE_TYPE: ProtocolMessageType = ProtocolMessageType::MVBADone;
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct MVBASkipShareMessage {
     pub id: MVBAID,
     pub share: SkipShare,
@@ -219,7 +221,7 @@ impl ToProtocolMessage for MVBASkipShareMessage {
     const MESSAGE_TYPE: ProtocolMessageType = ProtocolMessageType::MVBASkipShare;
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct MVBASkipMessage {
     pub id: MVBAID,
     pub sig: SkipSig,

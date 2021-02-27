@@ -1,4 +1,6 @@
 use std::{
+    cmp::Ordering,
+    fmt,
     marker::PhantomData,
     sync::{Arc, Mutex},
 };
@@ -7,6 +9,7 @@ use log::{debug, info};
 use tokio::sync::RwLock;
 
 use super::{
+    error::{MVBAError, MVBAResult},
     messages::{MVBASender, PBSendMessage, PBShareAckMessage, ProtocolMessage},
     provable_broadcast::*,
     Key, Value, MVBA, MVBAID,
@@ -15,6 +18,23 @@ use consensus_core::crypto::sign::Signer;
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
+
+#[derive(Error, Debug)]
+pub enum PPError {
+    #[error("Not ready to handle PBShareAckMessage")]
+    NotReadyForShareAck,
+    #[error("Not ready to handle PBShareAckMessage")]
+    NotReadyForSend,
+    #[error("Received message with an earlier step: {0}, when current step is {1}")]
+    ExpiredMessage(PPStatus, PPStatus),
+    #[error(transparent)]
+    PBError(#[from] PBError),
+    #[error("Failed to compare step of message received")]
+    FailedCompareStep,
+}
+
+pub type PPResult<T> = Result<T, PPError>;
 
 pub struct PPSender {
     id: PPID,
@@ -22,7 +42,6 @@ pub struct PPSender {
     n_parties: usize,
     proof: Option<PBSig>,
     inner_pb: RwLock<Option<PBSender>>,
-    status: PPStatus,
 }
 
 impl PPSender {
@@ -33,7 +52,6 @@ impl PPSender {
             n_parties,
             proof: None,
             inner_pb: RwLock::new(None),
-            status: PPStatus::Init,
         }
     }
 
@@ -49,7 +67,11 @@ impl PPSender {
 
         // for step 1 to 4: Execute PB. Store return value in proof_prev
 
-        for step in 1u8..5 {
+        for step in 0u8..4 {
+            if step > 1 {
+                debug_assert!(proof_prev.is_some());
+            }
+
             let proposal = PPProposal {
                 value,
                 proof: PBProof {
@@ -63,7 +85,11 @@ impl PPSender {
                 self.index, step, value
             );
 
-            self.init_pb(step, proposal).await;
+            self.init_pb(
+                FromPrimitive::from_u8(step).expect("Step 1-4 correspond to range (0..4)"),
+                proposal,
+            )
+            .await;
 
             let lock = self.inner_pb.read().await;
 
@@ -75,23 +101,28 @@ impl PPSender {
         proof_prev
     }
 
-    pub async fn on_share_ack(&self, index: usize, message: PBShareAckMessage, signer: &Signer) {
+    pub async fn on_share_ack(
+        &self,
+        index: usize,
+        message: PBShareAckMessage,
+        signer: &Signer,
+    ) -> PPResult<()> {
         debug!(
             "Calling PPSender::on_share_ack for Party {} on message from Party {}",
             self.index, index
         );
         let inner_pb = self.inner_pb.read().await;
         if let Some(pb) = &*inner_pb {
-            pb.on_share_ack_message(index, message, signer).await;
+            pb.on_share_ack_message(index, message, signer).await?;
+        } else {
+            return Err(PPError::NotReadyForShareAck);
         }
+        Ok(())
     }
 
-    async fn init_pb(&self, step: u8, proposal: PPProposal) {
+    async fn init_pb(&self, step: PPStatus, proposal: PPProposal) {
         let pb = PBSender::init(
-            PBID {
-                id: self.id,
-                step: FromPrimitive::from_u8(step).expect("Step 1-4 correspond to range (1..5)"),
-            },
+            PBID { id: self.id, step },
             self.index,
             self.n_parties,
             proposal,
@@ -128,7 +159,7 @@ impl PPReceiver {
     pub async fn invoke(&self) {
         // Step 1: Sender broadcasts value and mvba key
         {
-            self.init_pb(1).await;
+            self.init_pb(PPStatus::Step1).await;
             let pb_lock = self.inner_pb.read().await;
             let pb = pb_lock.as_ref().unwrap();
             let _ = pb.invoke().await;
@@ -136,7 +167,7 @@ impl PPReceiver {
 
         // Step 2: Sender broadcasts key proposal
         {
-            self.init_pb(2).await;
+            self.init_pb(PPStatus::Step2).await;
             let pb_lock = self.inner_pb.read().await;
             let pb = pb_lock.as_ref().unwrap();
             let key = pb.invoke().await;
@@ -146,7 +177,7 @@ impl PPReceiver {
 
         // Step 3: Sender broadcasts lock proposal
         {
-            self.init_pb(3).await;
+            self.init_pb(PPStatus::Step3).await;
             let pb_lock = self.inner_pb.read().await;
             let pb = pb_lock.as_ref().unwrap();
             let lock = pb.invoke().await;
@@ -156,7 +187,7 @@ impl PPReceiver {
 
         // Step 4: Sender broadcasts commit proposal
         {
-            self.init_pb(4).await;
+            self.init_pb(PPStatus::Step4).await;
             let pb_lock = self.inner_pb.read().await;
             let pb = pb_lock.as_ref().unwrap();
             let commit = pb.invoke().await;
@@ -174,7 +205,7 @@ impl PPReceiver {
         lock: usize,
         signer: &Signer,
         send_handle: &F,
-    ) {
+    ) -> PPResult<()> {
         debug!(
             "Calling PPReceiver::on_value_send_message for Party {} on message from Party {}",
             self.index, index
@@ -188,34 +219,44 @@ impl PPReceiver {
         let inner_pb = self.inner_pb.read().await;
 
         if let Some(pb) = &*inner_pb {
+            Self::check_step(&message, pb)?;
+
             pb.on_value_send_message(index, message, id, leader_index, lock, signer, send_handle)
-                .await;
+                .await?;
         } else {
             debug!(
                 "Did not find PBReceiver instance on PPReceiver::on_value_send_message for Party {} on message from Party {}",
                 self.index, index
             );
+            return Err(PPError::NotReadyForSend);
+        }
+        Ok(())
+    }
+
+    fn check_step(message: &PBSendMessage, pb: &PBReceiver) -> PPResult<()> {
+        match message.id.step.partial_cmp(&pb.id.step) {
+            Some(Ordering::Equal) => Ok(()),
+            Some(Ordering::Greater) => Err(PPError::NotReadyForSend),
+            Some(Ordering::Less) => Err(PPError::ExpiredMessage(message.id.step, pb.id.step)),
+            None => Err(PPError::FailedCompareStep),
         }
     }
 
     pub async fn abandon(&self) {
         let mut inner_pb = self.inner_pb.write().await;
 
-        if let Some(pb) = &mut *inner_pb {
+        if let Some(_) = &mut *inner_pb {
             *inner_pb = None;
         }
     }
 
-    async fn init_pb(&self, step: u8) {
+    async fn init_pb(&self, step: PPStatus) {
         debug!(
             "Initializing PBReceiver with step {} for Party {}",
             step, self.index,
         );
 
-        let id = PBID {
-            id: self.id,
-            step: FromPrimitive::from_u8(step as u8).expect("Expect step < 4"),
-        };
+        let id = PBID { id: self.id, step };
 
         let new_pb = PBReceiver::init(id, self.index);
 
@@ -243,10 +284,27 @@ pub struct PPProposal {
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, PartialOrd, FromPrimitive)]
 pub enum PPStatus {
-    Init,
     Step1,
     Step2,
     Step3,
     Step4,
-    Finished,
+}
+
+impl fmt::Display for PPStatus {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match *self {
+            PPStatus::Step1 => {
+                write!(f, "Step1")
+            }
+            PPStatus::Step2 => {
+                write!(f, "Step2")
+            }
+            PPStatus::Step3 => {
+                write!(f, "Step3")
+            }
+            PPStatus::Step4 => {
+                write!(f, "Step4")
+            }
+        }
+    }
 }

@@ -26,7 +26,7 @@ use self::{
         MVBADoneMessage, MVBAReceiver, MVBASender, MVBASkipMessage, MVBASkipShareMessage,
         ProtocolMessage, ProtocolMessageHeader, ToProtocolMessage,
     },
-    proposal_promotion::PPID,
+    proposal_promotion::{PPError, PPResult, PPID},
     provable_broadcast::{PBResponse, PBSig, PBID},
     view_change::ViewChange,
 };
@@ -42,7 +42,7 @@ mod view_change;
 #[allow(non_snake_case)]
 
 /// Instance of Multi-valued Validated Byzantine Agreement
-pub struct MVBA<F: MVBASender, R: MVBAReceiver> {
+pub struct MVBA<F: MVBASender> {
     /// Identifier for protocol
     id: usize,
     index: usize,
@@ -59,19 +59,17 @@ pub struct MVBA<F: MVBASender, R: MVBAReceiver> {
 
     // Infrastructure
     send_handle: F,
-    receive_handle: R,
     coin: Coin,
     signer: Signer,
 }
 
-impl<F: MVBASender, R: MVBAReceiver> MVBA<F, R> {
+impl<F: MVBASender> MVBA<F> {
     pub fn init(
         id: usize,
         index: usize,
         n_parties: usize,
         value: Value,
         send_handle: F,
-        receive_handle: R,
         signer: Signer,
         coin: Coin,
     ) -> Self {
@@ -88,7 +86,6 @@ impl<F: MVBASender, R: MVBAReceiver> MVBA<F, R> {
             coin,
             signer,
             send_handle,
-            receive_handle,
         }
     }
 
@@ -251,52 +248,42 @@ impl<F: MVBASender, R: MVBAReceiver> MVBA<F, R> {
                     "Could not deserialize MVBASkip message when handling protocol message",
                 );
 
-                self.on_skip_message(inner).await;
+                self.on_skip_message(inner).await?;
             }
             messages::ProtocolMessageType::PBSend => {
                 let pp_recvs = self.pp_recvs.read().await;
-
                 if let Some(pp_recvs) = &*pp_recvs {
                     if let Some(pp) = pp_recvs.get(&send_id) {
-                        debug!("Found PPReceiver {} for Party {}", send_id, recv_id);
-
                         let inner: PBSendMessage = deserialize(&message_data).expect(
                             "Could not deserialize PBSend message when handling protocol message",
                         );
 
-                        let state = self.state.read().await;
-
-                        let leader_index = match &inner.proposal.proof.key.view {
-                            view if *view == 1 => 0,
-                            _ => state.leaders[&inner.proposal.proof.key.view]
-                                .expect("Leader was not found for view"),
-                        };
-
-                        let lock = state.LOCK;
-
-                        let id = MVBAID {
-                            id: self.id,
-                            index: send_id,
-                            view: state.view,
-                        };
-
-                        drop(state);
-
-                        pp.on_value_send_message(
-                            send_id,
-                            inner,
-                            &id,
-                            leader_index,
-                            lock,
-                            &self.signer,
-                            &self.send_handle,
-                        )
-                        .await;
+                        match self.on_pb_send_message(pp, inner, send_id).await {
+                            Ok(_) => return Ok(()),
+                            Err(PPError::NotReadyForSend) => {
+                                return Err(MVBAError::NotReadyForMessage(ProtocolMessage {
+                                    header,
+                                    message_data,
+                                    message_type,
+                                }));
+                            }
+                            Err(e) => return Err(MVBAError::PPError(e)),
+                        }
                     } else {
                         warn!("Did not find PPReceiver {} for Party {}!", send_id, recv_id);
+                        return Err(MVBAError::NotReadyForMessage(ProtocolMessage {
+                            header,
+                            message_data,
+                            message_type,
+                        }));
                     }
                 } else {
-                    warn!("pprecvs was not initialized for Party {}!", recv_id)
+                    warn!("pprecvs was not initialized for Party {}!", recv_id);
+                    return Err(MVBAError::NotReadyForMessage(ProtocolMessage {
+                        header,
+                        message_data,
+                        message_type,
+                    }));
                 }
             }
             messages::ProtocolMessageType::PBShareAck => {
@@ -308,7 +295,15 @@ impl<F: MVBASender, R: MVBAReceiver> MVBA<F, R> {
                         "Could not deserialize PBShareAck message when handling protocol message",
                     );
 
-                    pp_send.on_share_ack(send_id, inner, &self.signer).await;
+                    if let Err(PPError::NotReadyForShareAck) =
+                        pp_send.on_share_ack(send_id, inner, &self.signer).await
+                    {
+                        return Err(MVBAError::NotReadyForMessage(ProtocolMessage {
+                            header,
+                            message_data,
+                            message_type,
+                        }));
+                    }
                 }
             }
             messages::ProtocolMessageType::ElectCoinShare => {
@@ -533,7 +528,7 @@ impl<F: MVBASender, R: MVBAReceiver> MVBA<F, R> {
         Ok(())
     }
 
-    pub async fn on_skip_message(&self, message: MVBASkipMessage) {
+    pub async fn on_skip_message(&self, message: MVBASkipMessage) -> MVBAResult<()> {
         let MVBASkipMessage { id, sig } = message;
 
         // Assert that the skip signature is valid
@@ -541,7 +536,7 @@ impl<F: MVBASender, R: MVBAReceiver> MVBA<F, R> {
         let tag = self.tag_skip_share(id.id, id.view);
 
         if !self.signer.verify_signature(&sig.inner, tag.as_bytes()) {
-            return;
+            return Err(MVBAError::InvalidSignature("skip message".to_string()));
         }
 
         // Update state
@@ -567,6 +562,46 @@ impl<F: MVBASender, R: MVBAReceiver> MVBA<F, R> {
         // wake up invoke()-task, since we are ready to continue to election process
 
         self.notify_skip.notify_one();
+
+        Ok(())
+    }
+
+    pub async fn on_pb_send_message(
+        &self,
+        pp: &Arc<PPReceiver>,
+        message: PBSendMessage,
+        send_id: usize,
+    ) -> PPResult<()> {
+        let state = self.state.read().await;
+
+        let leader_index = match &message.proposal.proof.key.view {
+            view if *view == 1 => 0,
+            _ => state.leaders[&message.proposal.proof.key.view]
+                .expect("Leader was not found for view"),
+        };
+
+        let lock = state.LOCK;
+
+        let id = MVBAID {
+            id: self.id,
+            index: send_id,
+            view: state.view,
+        };
+
+        drop(state);
+
+        pp.on_value_send_message(
+            send_id,
+            message,
+            &id,
+            leader_index,
+            lock,
+            &self.signer,
+            &self.send_handle,
+        )
+        .await?;
+
+        Ok(())
     }
 
     async fn get_key_value_view(&self) -> (PBKey, Value, usize) {
@@ -796,23 +831,26 @@ pub struct Key {
     proof: Option<PBSig>,
 }
 
-#[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SkipShare {
     inner: SignatureShare,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct SkipSig {
     inner: Signature,
 }
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use async_trait::async_trait;
 
     use futures::future::join_all;
 
     use super::*;
+    use consensus_core::data::message_buffer::MessageBuffer;
     use tokio::sync::mpsc::{self, Receiver, Sender};
     use tokio::test;
 
@@ -894,7 +932,6 @@ mod tests {
                 N_PARTIES,
                 Value { inner: i * 1000 },
                 f,
-                r,
                 signer,
                 coin,
             ));
@@ -909,9 +946,28 @@ mod tests {
                 debug!("Started messaging for {}", i);
                 while let Some(message) = recv.recv().await {
                     debug!("Received message at {}", i);
-                    if let Err(e) = mvba2.handle_protocol_message(message).await {
-                        error!("Got error when handling message at {}: {:?}", i, e);
-                    }
+                    let mvba_c = mvba2.clone();
+                    tokio::spawn(async move {
+                        let mut message = Some(message);
+                        loop {
+                            if let Err(e) = mvba_c
+                                .handle_protocol_message(message.take().unwrap())
+                                .await
+                            {
+                                error!("Got error when handling message at {}: {}", i, e);
+
+                                if let MVBAError::NotReadyForMessage(early_message) = e {
+                                    message = Some(early_message);
+                                }
+                            }
+
+                            if let None = message {
+                                break;
+                            }
+
+                            tokio::time::sleep(Duration::from_millis(500)).await;
+                        }
+                    });
                 }
             });
 

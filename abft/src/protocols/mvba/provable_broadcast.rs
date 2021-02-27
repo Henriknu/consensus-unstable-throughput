@@ -1,12 +1,13 @@
 use consensus_core::crypto::sign::{Signature, SignatureShare, Signer};
 use log::debug;
 
-use std::{marker::PhantomData, ops::Deref, sync::Arc};
+use std::{collections::BTreeMap, marker::PhantomData, ops::Deref, sync::Arc};
 use tokio::sync::{Mutex, Notify};
 
 use bincode::serialize;
 use num_traits::FromPrimitive;
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
 use super::{
     messages::{MVBASender, PBSendMessage, PBShareAckMessage, ProtocolMessage, ToProtocolMessage},
@@ -14,13 +15,29 @@ use super::{
     Value, MVBA, MVBAID,
 };
 
+type PBResult<T> = Result<T, PBError>;
+
+#[derive(Error, Debug)]
+pub enum PBError {
+    #[error("Got invalid signature for ShareAck Message")]
+    InvalidShareAckSignature,
+    #[error("Got invalid value proposed")]
+    InvalidValueProposed,
+    #[error("Key provided with proposal was invalid")]
+    InvalidKeyIncluded,
+    #[error("Key provided with proposal was older than current lock")]
+    ExpiredKeyIncluded,
+    #[error("Value failed external validation checked")]
+    FailedExternalValidation,
+}
+
 pub struct PBSender {
     id: PBID,
     index: usize,
     n_parties: usize,
     notify_shares: Arc<Notify>,
     proposal: PPProposal,
-    shares: Mutex<Vec<PBSigShare>>,
+    shares: Mutex<BTreeMap<usize, PBSigShare>>,
 }
 
 impl PBSender {
@@ -38,9 +55,9 @@ impl PBSender {
     pub async fn broadcast<F: MVBASender>(&self, signer: &Signer, send_handle: &F) -> PBSig {
         //send <ID, SEND, value, proof> to all parties
 
-        for i in 0..self.n_parties {
-            let pb_send = PBSendMessage::new(self.id, self.proposal.clone());
+        let pb_send = PBSendMessage::new(self.id, self.proposal.clone());
 
+        for i in 0..self.n_parties {
             send_handle
                 .send(
                     i,
@@ -61,13 +78,23 @@ impl PBSender {
 
         let shares = lock
             .iter()
-            .enumerate()
-            .map(|(index, share)| (index, share.inner.clone()))
+            .map(|(index, share)| (*index, share.inner.clone()))
             .collect();
 
         drop(lock);
 
         let signature = signer.combine_signatures(&shares).unwrap();
+
+        debug_assert_eq!(shares.values().len(), (self.n_parties * 2 / 3) + 1);
+
+        debug_assert!(signer.verify_signature(
+            &signature,
+            &serialize(&PBResponse {
+                id: pb_send.id,
+                value: pb_send.proposal.value,
+            })
+            .expect("Could not serialize message for on_value_send")
+        ));
 
         PBSig { inner: signature }
     }
@@ -77,7 +104,7 @@ impl PBSender {
         index: usize,
         message: PBShareAckMessage,
         signer: &Signer,
-    ) {
+    ) -> PBResult<()> {
         debug!(
             "Calling PBSender::on_share_ack for Party {} on message from Party {}",
             self.index, index
@@ -100,16 +127,22 @@ impl PBSender {
                 "Share was valid on PBSender::on_share_ack for Party {}, so added to shares",
                 self.index,
             );
-            shares.push(share);
+            shares.insert(index, share);
+        } else {
+            return Err(PBError::InvalidShareAckSignature);
         }
+
         debug!(
             "shares.len: {}, tolerance: {}",
             shares.len(),
             (self.n_parties * 2 / 3) + 1,
         );
+
         if shares.len() >= (self.n_parties * 2 / 3) + 1 {
             self.notify_shares.notify_one();
         }
+
+        Ok(())
     }
 }
 
@@ -159,7 +192,7 @@ impl PBReceiver {
         lock: usize,
         signer: &Signer,
         send_handle: &F,
-    ) {
+    ) -> PBResult<()> {
         debug!(
             "Calling PBReceiver::on_value_send_message for Party {} on message from Party {}",
             self.index, index
@@ -175,7 +208,7 @@ impl PBReceiver {
         );
 
         if !*should_stop
-            && self.evaluate_pb_val(&proposal, message.id, mvba_id, leader_index, lock, signer)
+            && self.evaluate_pb_val(&proposal, message.id, mvba_id, leader_index, lock, signer)?
         {
             *should_stop = true;
             drop(should_stop);
@@ -203,6 +236,7 @@ impl PBReceiver {
 
             self.notify_proposal.notify_one();
         }
+        Ok(())
     }
 
     fn evaluate_pb_val(
@@ -213,39 +247,39 @@ impl PBReceiver {
         leader_index: usize,
         lock: usize,
         signer: &Signer,
-    ) -> bool {
+    ) -> PBResult<bool> {
         debug!(
             "Calling PBReceiver::evaluate_pb_val for Party {}",
             self.index,
         );
-
-        let PBID { id, step } = self.id;
+        let step = message_id.step;
         let PBProof { key, proof_prev } = &proposal.proof;
 
         // If first step, verify that the key provided is valid
         if step == PPStatus::Step1
-            && self.check_key(&proposal.value, key, mvba_id, leader_index, lock, signer)
+            && self.check_key(&proposal.value, key, mvba_id, leader_index, lock, signer)?
         {
             debug!(
                 "Returning true for PBReceiver::evaluate_pb_val for Party {}, since step = 1 and key was valid",
                 self.index,
             );
-            return true;
+            return Ok(true);
         }
 
         let response_prev = PBResponse {
             id: PBID {
                 id: message_id.id,
-                step: FromPrimitive::from_u8(step as u8 - 1).expect("Expect step > 1"),
+                step: FromPrimitive::from_u8(message_id.step as u8 - 1).expect("Expect step > 1"),
             },
             value: proposal.value,
         };
 
         debug!(
-            "Checking in PBReceiver::evaluate_pb_val for Party {}, step: {:?}, proof is some: {}, ",
+            "Checking in PBReceiver::evaluate_pb_val for Party {}, step: {:?}, proof is some: {}, receiver_step: {}",
             self.index,
             step,
-            proof_prev.is_some()
+            proof_prev.is_some(),
+            self.id.step
         );
 
         // If later step, verify that the proof provided is valid for the previous step.
@@ -261,7 +295,7 @@ impl PBReceiver {
                 "Returning true for PBReceiver::evaluate_pb_val for Party {}, since step: {:?} > 1 and proof of previous step was valid",
                 self.index, step
             );
-            return true;
+            return Ok(true);
         }
 
         debug!(
@@ -269,7 +303,7 @@ impl PBReceiver {
             self.index,
         );
 
-        false
+        Err(PBError::InvalidValueProposed)
     }
 
     fn check_key(
@@ -280,12 +314,12 @@ impl PBReceiver {
         leader_index: usize,
         lock: usize,
         signer: &Signer,
-    ) -> bool {
+    ) -> PBResult<bool> {
         debug!("Calling PBReceiver::check_key for Party {}", self.index,);
 
         // Check that value is valid high-level application
         if !eval_mvba_val(value) {
-            return false;
+            return Err(PBError::FailedExternalValidation);
         }
 
         let PBKey {
@@ -316,20 +350,21 @@ impl PBReceiver {
                 ))
         {
             debug!("Returning false for PBReceiver::check_key for Party {} because view: {} != 1 and key was not valid", self.index,view);
-            return false;
+            return Err(PBError::InvalidKeyIncluded);
         }
 
         // Verify that the key was not obtained in an earlier view than what is currently locked
         if view < &lock {
             debug!("Returning false for PBReceiver::check_key for Party {} because key was gotten in earlier view: {} than lock: {}", self.index, view, lock);
-            return false;
+            return Err(PBError::ExpiredKeyIncluded);
         }
 
-        true
+        Ok(true)
     }
 }
 
 fn eval_mvba_val(value: &Value) -> bool {
+    //TODO
     true
 }
 
