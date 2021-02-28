@@ -12,9 +12,11 @@ use consensus_core::{
     crypto::{commoncoin::Coin, sign::Signer},
     data::message_buffer::MessageBuffer,
 };
+use protocols::mvba::buffer::{MVBABuffer, MVBABufferCommand};
+
 use protocols::mvba::messages::{
-    ElectCoinShareMessage, MVBABuffer, MVBASender, PBSendMessage, PBShareAckMessage,
-    ProtocolMessage, ToProtocolMessage, ViewChangeMessage,
+    ElectCoinShareMessage, MVBASender, PBSendMessage, PBShareAckMessage, ProtocolMessage,
+    ToProtocolMessage, ViewChangeMessage,
 };
 use tokio::sync::{
     mpsc::{self, Receiver, Sender},
@@ -24,7 +26,8 @@ use tokio::sync::{
 use log::{debug, error, warn};
 
 const N_PARTIES: usize = THRESHOLD * 3 + 1;
-const THRESHOLD: usize = 1;
+const THRESHOLD: usize = 3;
+const BUFFER_CAPACITY: usize = THRESHOLD * 30;
 
 struct ChannelSender {
     senders: HashMap<usize, Sender<ProtocolMessage>>,
@@ -66,7 +69,7 @@ impl MVBASender for ChannelSender {
 
         for i in (0..n_parties) {
             if !self.senders.contains_key(&i) {
-                return;
+                continue;
             }
             let mut inner = message.clone();
             inner.header.recv_id = i;
@@ -126,32 +129,68 @@ async fn main() {
             coin,
         ));
 
-        let mvba2 = mvba.clone();
+        // Setup buffer manager
 
-        let mvba_b = mvba.clone();
-        let buffer = Arc::new(Mutex::new(MVBABuffer::new(mvba_b)));
+        let mut buffer = MVBABuffer::new();
 
-        let buffer2 = buffer.clone();
-        tokio::spawn(async move {
-            while let Some(message) = recv.recv().await {
-                debug!("Received message at {}", i);
+        let buffer_mvba = mvba.clone();
 
-                if let Err(e) = mvba2.handle_protocol_message(message).await {
-                    if let MVBAError::NotReadyForMessage(early_message) = e {
-                        warn!(
-                            "Got early message at {}, with type: {:?}",
-                            i, early_message.message_type
-                        );
-                        let mut buff_lock = buffer.lock().await;
-                        buff_lock.put(early_message.header.view, early_message early_message);
-                    } else {
-                        error!("Got error when handling message at {}: {}", i, e);
+        let (buff_cmd_send, mut buff_cmd_recv) =
+            mpsc::channel::<MVBABufferCommand>(BUFFER_CAPACITY);
+
+        let buffer_manager_handle = tokio::spawn(async move {
+            while let Some(command) = buff_cmd_recv.recv().await {
+                let messages = buffer.execute(command);
+
+                for message in messages {
+                    match buffer_mvba.handle_protocol_message(message).await {
+                        Ok(_) => {}
+                        Err(MVBAError::NotReadyForMessage(early_message)) => {
+                            buffer.execute(MVBABufferCommand::Store {
+                                message: early_message,
+                            });
+                        }
+
+                        Err(e) => error!(
+                            "Party {} got error when handling protocol message: {}",
+                            i, e
+                        ),
                     }
                 }
             }
         });
 
-        let main_handle = tokio::spawn(async move { mvba.invoke(buffer2).await });
+        // Setup messaging manager
+
+        let msg_buff_send = buff_cmd_send.clone();
+
+        let msg_mvba = mvba.clone();
+
+        let messaging_handle = tokio::spawn(async move {
+            while let Some(message) = recv.recv().await {
+                debug!("Received message at {}", i);
+                match msg_mvba.handle_protocol_message(message).await {
+                    Ok(_) => {}
+                    Err(MVBAError::NotReadyForMessage(early_message)) => msg_buff_send
+                        .send(MVBABufferCommand::Store {
+                            message: early_message,
+                        })
+                        .await
+                        .unwrap(),
+
+                    Err(e) => error!(
+                        "Party {} got error when handling protocol message: {}",
+                        i, e
+                    ),
+                }
+            }
+        });
+
+        // setup main thread
+
+        let main_buff_send = buff_cmd_send.clone();
+
+        let main_handle = tokio::spawn(async move { mvba.invoke(main_buff_send).await });
 
         handles.push(main_handle);
     }

@@ -19,17 +19,19 @@ use std::sync::Arc;
 use tokio::sync::{mpsc::Sender, Mutex, Notify};
 
 use self::{
+    buffer::{MVBABuffer, MVBABufferCommand},
     elect::Elect,
     error::{MVBAError, MVBAResult},
     messages::{
-        MVBABuffer, MVBADoneMessage, MVBASender, MVBASkipMessage, MVBASkipShareMessage,
-        ProtocolMessage, ProtocolMessageHeader, ToProtocolMessage,
+        MVBADoneMessage, MVBASender, MVBASkipMessage, MVBASkipShareMessage, ProtocolMessage,
+        ProtocolMessageHeader, ToProtocolMessage,
     },
     proposal_promotion::{PPError, PPLeader, PPResult, PPID},
     provable_broadcast::{PBResponse, PBSig, PBID},
     view_change::{ViewChange, ViewChangeError},
 };
 
+pub mod buffer;
 mod elect;
 pub mod error;
 pub mod messages;
@@ -88,7 +90,7 @@ impl<F: MVBASender + Sync + Send> MVBA<F> {
         }
     }
 
-    pub async fn invoke(&self, buff_handle: Arc<Mutex<MVBABuffer<F>>>) -> MVBAResult<Value> {
+    pub async fn invoke(&self, buff_handle: Sender<MVBABufferCommand>) -> MVBAResult<Value> {
         loop {
             let (id, index) = (self.id, self.index);
 
@@ -115,11 +117,11 @@ impl<F: MVBASender + Sync + Send> MVBA<F> {
                     .ok_or_else(|| MVBAError::UninitState("pp_recvs".to_string()))?;
 
                 for pp_recv in pp_recvs.values() {
-                    let copy = pp_recv.clone();
-                    let buff_copy = buff_handle.clone();
+                    let pp_clone = pp_recv.clone();
+                    let buff_clone = buff_handle.clone();
 
                     tokio::spawn(async move {
-                        copy.invoke(buff_copy).await;
+                        pp_clone.invoke(buff_clone).await;
                     });
                 }
             }
@@ -170,11 +172,9 @@ impl<F: MVBASender + Sync + Send> MVBA<F> {
 
             info!("Party {} started electing phase for view: {}", index, view);
 
-            {
-                let mut buff_lock = buff_handle.lock().await;
-
-                buff_lock.drain_elect(view).await;
-            }
+            buff_handle
+                .send(MVBABufferCommand::ElectCoinShare { view })
+                .await?;
 
             let leader = elect.invoke(&self.coin, &self.send_handle).await?;
 
@@ -201,11 +201,9 @@ impl<F: MVBASender + Sync + Send> MVBA<F> {
 
             self.init_view_change(index, id_leader, view).await;
 
-            {
-                let mut buff_lock = buff_handle.lock().await;
-
-                buff_lock.drain_view_change(view).await;
-            }
+            buff_handle
+                .send(MVBABufferCommand::ViewChange { view })
+                .await?;
 
             let lock = self.view_change.read().await;
 
@@ -320,6 +318,7 @@ impl<F: MVBASender + Sync + Send> MVBA<F> {
                     if let Err(PPError::NotReadyForShareAck) =
                         pp_send.on_share_ack(send_id, inner, &self.signer).await
                     {
+                        warn!("pp_send not ready for message at Party {}!", recv_id);
                         return Err(MVBAError::NotReadyForMessage(ProtocolMessage {
                             header,
                             message_data,
@@ -338,7 +337,7 @@ impl<F: MVBASender + Sync + Send> MVBA<F> {
 
                     elect.on_coin_share_message(inner, &self.coin)?;
                 } else {
-                    warn!(
+                    debug!(
                         "Party {}'s elect was not initialized, but got elect message from {}!",
                         recv_id, send_id
                     );
@@ -367,7 +366,7 @@ impl<F: MVBASender + Sync + Send> MVBA<F> {
                         Err(e) => return Err(MVBAError::ViewChangeError(e)),
                     };
                 } else {
-                    warn!("Party {}'s viewChange was not initialized, but got view_change message from {}!", recv_id, send_id);
+                    debug!("Party {}'s viewChange was not initialized, but got view_change message from {}!", recv_id, send_id);
                     return Err(MVBAError::NotReadyForMessage(ProtocolMessage {
                         header,
                         message_data,
@@ -461,7 +460,7 @@ impl<F: MVBASender + Sync + Send> MVBA<F> {
             return Ok(());
         }
 
-        info!(
+        debug!(
             "Proof was valid for done message earlier on MVBA::on_done_message for Party {} on message from Party {}",
             self.index, index
         );
@@ -480,7 +479,7 @@ impl<F: MVBASender + Sync + Send> MVBA<F> {
 
         // If enough done messages have been collected to elect leader, and we have not sent out skip_share, send it.
 
-        info!(
+        debug!(
             "Party {} has received enough MVBADone messages to send skip share: {}",
             self.index,
             !*state.has_sent_skip_share.entry(id.view).or_default()

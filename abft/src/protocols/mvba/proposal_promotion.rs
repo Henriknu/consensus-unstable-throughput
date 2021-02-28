@@ -1,11 +1,15 @@
 use std::{cmp::Ordering, fmt, marker::PhantomData, sync::Arc};
 
 use log::{debug, info};
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{
+    mpsc::{error::SendError, Sender},
+    Mutex, RwLock,
+};
 
 use super::{
+    buffer::{MVBABuffer, MVBABufferCommand},
     error::{MVBAError, MVBAResult},
-    messages::{MVBABuffer, MVBASender, PBSendMessage, PBShareAckMessage, ProtocolMessage},
+    messages::{MVBASender, PBSendMessage, PBShareAckMessage, ProtocolMessage},
     provable_broadcast::*,
     Key, Value, MVBA, MVBAID,
 };
@@ -27,6 +31,8 @@ pub enum PPError {
     PBError(#[from] PBError),
     #[error("Failed to compare step of message received")]
     FailedCompareStep,
+    #[error("Failed to send MVBABufferCommand at PPReceiver")]
+    BufferSender(#[from] SendError<MVBABufferCommand>),
 }
 
 pub type PPResult<T> = Result<T, PPError>;
@@ -196,14 +202,11 @@ impl PPReceiver {
         }
     }
 
-    pub async fn invoke<F: MVBASender + Sync + Send>(
-        &self,
-        buff_handle: Arc<Mutex<MVBABuffer<F>>>,
-    ) {
+    pub async fn invoke(&self, buff_handle: Sender<MVBABufferCommand>) -> PPResult<()> {
         // Step 1: Sender broadcasts value and mvba key
         {
             self.init_pb(PPStatus::Step1).await;
-            self.drain_messages(&buff_handle);
+            self.drain_buffer(&buff_handle).await?;
 
             let pb_lock = self.inner_pb.read().await;
             let pb = pb_lock.as_ref().unwrap();
@@ -213,7 +216,7 @@ impl PPReceiver {
         // Step 2: Sender broadcasts key proposal
         {
             self.init_pb(PPStatus::Step2).await;
-            self.drain_messages(&buff_handle);
+            self.drain_buffer(&buff_handle).await?;
 
             let pb_lock = self.inner_pb.read().await;
             let pb = pb_lock.as_ref().unwrap();
@@ -225,7 +228,7 @@ impl PPReceiver {
         // Step 3: Sender broadcasts lock proposal
         {
             self.init_pb(PPStatus::Step3).await;
-            self.drain_messages(&buff_handle);
+            self.drain_buffer(&buff_handle).await?;
 
             let pb_lock = self.inner_pb.read().await;
             let pb = pb_lock.as_ref().unwrap();
@@ -237,7 +240,7 @@ impl PPReceiver {
         // Step 4: Sender broadcasts commit proposal
         {
             self.init_pb(PPStatus::Step4).await;
-            self.drain_messages(&buff_handle);
+            self.drain_buffer(&buff_handle).await?;
 
             let pb_lock = self.inner_pb.read().await;
             let pb = pb_lock.as_ref().unwrap();
@@ -245,6 +248,7 @@ impl PPReceiver {
             let mut _commit = self.commit.write().await;
             _commit.replace(commit);
         }
+        Ok(())
     }
 
     pub async fn on_value_send_message<F: MVBASender>(
@@ -342,12 +346,15 @@ impl PPReceiver {
         );
     }
 
-    async fn drain_messages<F: MVBASender + Sync + Send>(
-        &self,
-        buff_handle: &Arc<Mutex<MVBABuffer<F>>>,
-    ) {
-        let mut buff_lock = buff_handle.lock().await;
-        buff_lock.drain_pp_recv(self.send_id, self.id.inner.view);
+    async fn drain_buffer(&self, buff_handle: &Sender<MVBABufferCommand>) -> PPResult<()> {
+        buff_handle
+            .send(MVBABufferCommand::PPReceive {
+                send_id: self.send_id,
+                view: self.id.inner.view,
+            })
+            .await?;
+
+        Ok(())
     }
 }
 

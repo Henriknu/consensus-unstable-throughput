@@ -1,8 +1,8 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, Default)]
 pub struct MessageBuffer<T: Default> {
-    pub epochs: HashMap<usize, VecDeque<T>>,
+    pub epochs: HashMap<usize, Vec<T>>,
 }
 
 impl<T: Default> MessageBuffer<T> {
@@ -17,7 +17,7 @@ impl<T: Default> MessageBuffer<T> {
     }
 
     pub fn put(&mut self, epoch: usize, message: T) {
-        self.epochs.entry(epoch).or_default().push_back(message);
+        self.epochs.entry(epoch).or_default().push(message);
     }
 
     pub fn clear(&mut self, epoch: usize) {
