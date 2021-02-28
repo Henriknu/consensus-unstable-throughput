@@ -11,6 +11,7 @@ pub type ElectResult<T> = Result<T, ElectError>;
 pub struct Elect {
     id: usize,
     index: usize,
+    view: usize,
     n_parties: usize,
     tag: String,
     shares: Mutex<Vec<CoinShare>>,
@@ -18,11 +19,12 @@ pub struct Elect {
 }
 
 impl Elect {
-    pub fn init(id: usize, index: usize, n_parties: usize) -> Elect {
+    pub fn init(id: usize, index: usize, view: usize, n_parties: usize) -> Elect {
         let tag = format!("{}", id);
         Elect {
             id,
             index,
+            view,
             n_parties,
             tag,
             shares: Default::default(),
@@ -36,11 +38,15 @@ impl Elect {
             share: share.into(),
         };
 
-        for i in 0..self.n_parties {
-            send_handle
-                .send(i, elect_message.to_protocol_message(self.id, self.index, i))
-                .await;
-        }
+        send_handle
+            .broadcast(
+                self.id,
+                self.index,
+                self.n_parties,
+                self.view,
+                elect_message,
+            )
+            .await;
 
         let notify_shares = self.notify_shares.clone();
 

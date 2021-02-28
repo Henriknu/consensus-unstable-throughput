@@ -12,13 +12,19 @@ use consensus_core::{
     crypto::{commoncoin::Coin, sign::Signer},
     data::message_buffer::MessageBuffer,
 };
-use protocols::mvba::messages::{MVBAReceiver, MVBASender, ProtocolMessage};
-use tokio::sync::mpsc::{self, Receiver, Sender};
+use protocols::mvba::messages::{
+    ElectCoinShareMessage, MVBABuffer, MVBASender, PBSendMessage, PBShareAckMessage,
+    ProtocolMessage, ToProtocolMessage, ViewChangeMessage,
+};
+use tokio::sync::{
+    mpsc::{self, Receiver, Sender},
+    Mutex,
+};
 
 use log::{debug, error, warn};
 
 const N_PARTIES: usize = THRESHOLD * 3 + 1;
-const THRESHOLD: usize = 2;
+const THRESHOLD: usize = 1;
 
 struct ChannelSender {
     senders: HashMap<usize, Sender<ProtocolMessage>>,
@@ -26,29 +32,52 @@ struct ChannelSender {
 
 #[async_trait]
 impl MVBASender for ChannelSender {
-    async fn send(&self, index: usize, message: ProtocolMessage) {
-        if !self.senders.contains_key(&index) {
+    async fn send<M: ToProtocolMessage + Send + Sync>(
+        &self,
+        id: usize,
+        send_id: usize,
+        recv_id: usize,
+        view: usize,
+        message: M,
+    ) {
+        if !self.senders.contains_key(&recv_id) {
             return;
         }
-        debug!("Sending message to party {}", index);
+        debug!("Sending message to party {}", recv_id);
 
-        let sender = &self.senders[&index];
-        if let Err(e) = sender.send(message).await {
+        let sender = &self.senders[&recv_id];
+        if let Err(e) = sender
+            .send(message.to_protocol_message(id, send_id, recv_id, view))
+            .await
+        {
             error!("Got error when sending message: {}", e);
         }
     }
-}
 
-struct ChannelReceiver {
-    recv: Receiver<ProtocolMessage>,
-}
+    async fn broadcast<M: ToProtocolMessage + Send + Sync>(
+        &self,
+        id: usize,
+        send_id: usize,
+        n_parties: usize,
+        view: usize,
+        message: M,
+    ) {
+        let message = message.to_protocol_message(id, send_id, 0, view);
 
-#[async_trait]
-impl MVBAReceiver for ChannelReceiver {
-    async fn receive(&mut self) -> Option<ProtocolMessage> {
-        self.recv.recv().await
+        for i in (0..n_parties) {
+            if !self.senders.contains_key(&i) {
+                return;
+            }
+            let mut inner = message.clone();
+            inner.header.recv_id = i;
+            let sender = &self.senders[&i];
+            if let Err(e) = sender.send(inner).await {
+                error!("Got error when sending message: {}", e);
+            }
+        }
     }
 }
+
 #[tokio::main]
 async fn main() {
     env_logger::init();
@@ -86,7 +115,6 @@ async fn main() {
         let coin = coins.remove(0);
 
         let f = ChannelSender { senders };
-        //let r = ChannelReceiver { recv };
 
         let mvba = Arc::new(MVBA::init(
             0,
@@ -100,42 +128,30 @@ async fn main() {
 
         let mvba2 = mvba.clone();
 
-        let main_handle = tokio::spawn(async move {
-            debug!("Started main {}", i);
-            mvba.invoke().await
-        });
+        let mvba_b = mvba.clone();
+        let buffer = Arc::new(Mutex::new(MVBABuffer::new(mvba_b)));
+
+        let buffer2 = buffer.clone();
         tokio::spawn(async move {
-            debug!("Started messaging for {}", i);
             while let Some(message) = recv.recv().await {
                 debug!("Received message at {}", i);
-                let mvba_c = mvba2.clone();
-                tokio::spawn(async move {
-                    let mut message = Some(message);
-                    loop {
-                        if let Err(e) = mvba_c
-                            .handle_protocol_message(message.take().unwrap())
-                            .await
-                        {
-                            if let MVBAError::NotReadyForMessage(early_message) = e {
-                                warn!(
-                                    "Got early message at {}, with type: {:?}",
-                                    i, early_message.message_type
-                                );
-                                message = Some(early_message);
-                            } else {
-                                error!("Got error when handling message at {}: {}", i, e);
-                            }
-                        }
 
-                        if let None = message {
-                            break;
-                        }
-
-                        tokio::time::sleep(Duration::from_millis(500)).await;
+                if let Err(e) = mvba2.handle_protocol_message(message).await {
+                    if let MVBAError::NotReadyForMessage(early_message) = e {
+                        warn!(
+                            "Got early message at {}, with type: {:?}",
+                            i, early_message.message_type
+                        );
+                        let mut buff_lock = buffer.lock().await;
+                        buff_lock.put(early_message.header.view, early_message);
+                    } else {
+                        error!("Got error when handling message at {}: {}", i, e);
                     }
-                });
+                }
             }
         });
+
+        let main_handle = tokio::spawn(async move { mvba.invoke(buffer2).await });
 
         handles.push(main_handle);
     }

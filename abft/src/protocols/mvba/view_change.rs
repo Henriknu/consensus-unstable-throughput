@@ -71,11 +71,15 @@ impl ViewChange {
             leader_commit,
         );
 
-        for i in 0..self.n_parties {
-            send_handle
-                .send(i, vc_message.to_protocol_message(self.id.id, self.index, i))
-                .await;
-        }
+        send_handle
+            .broadcast(
+                self.id.id,
+                self.index,
+                self.n_parties,
+                self.view,
+                vc_message,
+            )
+            .await;
 
         // wait for n - f distinct view change messages, or view change message with valid commit (can decide early then)
 
