@@ -1,23 +1,20 @@
-use std::{cmp::Ordering, fmt, marker::PhantomData, sync::Arc};
+use std::{cmp::Ordering, fmt, sync::Arc};
 
-use log::{debug, info};
 use tokio::sync::{
     mpsc::{error::SendError, Sender},
-    Mutex, RwLock,
+    RwLock,
 };
 
 use tokio::sync::Notify;
 
 use super::{
-    buffer::{MVBABuffer, MVBABufferCommand},
-    error::{MVBAError, MVBAResult},
-    messages::{MVBASender, PBSendMessage, PBShareAckMessage, ProtocolMessage},
+    buffer::MVBABufferCommand,
+    messages::{MVBASender, PBSendMessage, PBShareAckMessage},
     provable_broadcast::*,
-    Key, Value, MVBA, MVBAID,
+    Value, MVBAID,
 };
 use consensus_core::crypto::sign::Signer;
 use num_derive::FromPrimitive;
-use num_traits::FromPrimitive;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -48,7 +45,6 @@ pub struct PPSender {
     key: RwLock<Option<PPProposal>>,
     lock: RwLock<Option<PPProposal>>,
     commit: RwLock<Option<PPProposal>>,
-    proof: Option<PBSig>,
     inner_pb: RwLock<Option<PBSender>>,
 }
 
@@ -58,7 +54,6 @@ impl PPSender {
             id,
             index,
             n_parties,
-            proof: None,
             key: RwLock::new(None),
             lock: RwLock::new(None),
             commit: RwLock::new(None),
@@ -73,7 +68,6 @@ impl PPSender {
         signer: &Signer,
         send_handle: &F,
     ) -> Option<PBSig> {
-        // proof_prev = null
         let mut proof_prev: Option<PBSig> = None;
 
         let mut proposal = PPProposal {
@@ -134,10 +128,6 @@ impl PPSender {
         message: PBShareAckMessage,
         signer: &Signer,
     ) -> PPResult<()> {
-        debug!(
-            "Calling PPSender::on_share_ack for Party {} on message from Party {}",
-            self.index, index
-        );
         let inner_pb = self.inner_pb.read().await;
         if let Some(pb) = &*inner_pb {
             pb.on_share_ack_message(index, message, signer).await?;
@@ -267,16 +257,6 @@ impl PPReceiver {
         signer: &Signer,
         send_handle: &F,
     ) -> PPResult<()> {
-        debug!(
-            "Calling PPReceiver::on_value_send_message for Party {} on message from Party {}",
-            self.index, index
-        );
-
-        debug!(
-            "Grabbing lock at PPReceiver::on_value_send_message for Party {}",
-            self.index
-        );
-
         let inner_pb = self.inner_pb.read().await;
 
         if let Some(pb) = &*inner_pb {
@@ -285,10 +265,6 @@ impl PPReceiver {
             pb.on_value_send_message(index, message, id, leader_index, lock, signer, send_handle)
                 .await?;
         } else {
-            debug!(
-                "Did not find PBReceiver instance on PPReceiver::on_value_send_message for Party {} on message from Party {}",
-                self.index, index
-            );
             return Err(PPError::NotReadyForSend);
         }
         Ok(())
@@ -343,11 +319,6 @@ impl PPReceiver {
     }
 
     async fn init_pb(&self, step: PPStatus) {
-        debug!(
-            "Initializing PBReceiver with step {} for Party {}",
-            step, self.index,
-        );
-
         let id = PBID { id: self.id, step };
 
         let new_pb = PBReceiver::init(id, self.index);
@@ -355,11 +326,6 @@ impl PPReceiver {
         let mut inner_pb = self.inner_pb.write().await;
 
         inner_pb.replace(new_pb);
-
-        debug!(
-            "Succesfully Initialized PBReceiver with step {} for Party {}",
-            step, self.index,
-        );
     }
 
     async fn drain_buffer(&self, buff_handle: &Sender<MVBABufferCommand>) -> PPResult<()> {

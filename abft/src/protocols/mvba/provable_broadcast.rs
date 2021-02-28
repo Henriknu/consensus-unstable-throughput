@@ -1,7 +1,7 @@
 use consensus_core::crypto::sign::{Signature, SignatureShare, Signer};
-use log::debug;
+use log::warn;
 
-use std::{collections::BTreeMap, marker::PhantomData, ops::Deref, sync::Arc};
+use std::{collections::BTreeMap, sync::Arc};
 use tokio::sync::{Mutex, Notify};
 
 use bincode::serialize;
@@ -10,9 +10,9 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use super::{
-    messages::{MVBASender, PBSendMessage, PBShareAckMessage, ProtocolMessage, ToProtocolMessage},
+    messages::{MVBASender, PBSendMessage, PBShareAckMessage},
     proposal_promotion::{PPProposal, PPStatus, PPID},
-    Value, MVBA, MVBAID,
+    Value, MVBAID,
 };
 
 type PBResult<T> = Result<T, PBError>;
@@ -95,10 +95,6 @@ impl PBSender {
         message: PBShareAckMessage,
         signer: &Signer,
     ) -> PBResult<()> {
-        debug!(
-            "Calling PBSender::on_share_ack for Party {} on message from Party {}",
-            self.index, index
-        );
         let share = message.share;
 
         let response = PBResponse {
@@ -113,20 +109,10 @@ impl PBSender {
             &share.inner,
             &serialize(&response).expect("Could not serialize PB message for ack"),
         ) {
-            debug!(
-                "Share was valid on PBSender::on_share_ack for Party {}, so added to shares",
-                self.index,
-            );
             shares.insert(index, share);
         } else {
             return Err(PBError::InvalidShareAckSignature);
         }
-
-        debug!(
-            "shares.len: {}, tolerance: {}",
-            shares.len(),
-            (self.n_parties * 2 / 3) + 1,
-        );
 
         if shares.len() >= (self.n_parties * 2 / 3) + 1 {
             self.notify_shares.notify_one();
@@ -158,8 +144,6 @@ impl PBReceiver {
     pub async fn invoke(&self) -> PPProposal {
         // wait for a valid proposal to arrive
 
-        debug!("Calling PBReceiver::invoke for Party {}", self.index);
-
         let notify_proposal = self.notify_proposal.clone();
 
         notify_proposal.notified().await;
@@ -183,19 +167,9 @@ impl PBReceiver {
         signer: &Signer,
         send_handle: &F,
     ) -> PBResult<()> {
-        debug!(
-            "Calling PBReceiver::on_value_send_message for Party {} on message from Party {}",
-            self.index, index
-        );
-
         let proposal = message.proposal;
 
         let mut should_stop = self.should_stop.lock().await;
-
-        debug!(
-            "Got should_stop lock for Party {} with value {}",
-            self.index, *should_stop
-        );
 
         if !*should_stop
             && self.evaluate_pb_val(&proposal, message.id, mvba_id, leader_index, lock, signer)?
@@ -241,10 +215,6 @@ impl PBReceiver {
         lock: usize,
         signer: &Signer,
     ) -> PBResult<bool> {
-        debug!(
-            "Calling PBReceiver::evaluate_pb_val for Party {}",
-            self.index,
-        );
         let step = message_id.step;
         let PBProof { key, proof_prev } = &proposal.proof;
 
@@ -252,10 +222,6 @@ impl PBReceiver {
         if step == PPStatus::Step1
             && self.check_key(&proposal.value, key, mvba_id, leader_index, lock, signer)?
         {
-            debug!(
-                "Returning true for PBReceiver::evaluate_pb_val for Party {}, since step = 1 and key was valid",
-                self.index,
-            );
             return Ok(true);
         }
 
@@ -267,14 +233,6 @@ impl PBReceiver {
             value: proposal.value,
         };
 
-        debug!(
-            "Checking in PBReceiver::evaluate_pb_val for Party {}, step: {:?}, proof is some: {}, receiver_step: {}",
-            self.index,
-            step,
-            proof_prev.is_some(),
-            self.id.step
-        );
-
         // If later step, verify that the proof provided is valid for the previous step.
         if step > PPStatus::Step1
             && proof_prev.is_some()
@@ -284,17 +242,8 @@ impl PBReceiver {
                     .expect("Could not serialize response_prev for evaluate_pb_val"),
             )
         {
-            debug!(
-                "Returning true for PBReceiver::evaluate_pb_val for Party {}, since step: {:?} > 1 and proof of previous step was valid",
-                self.index, step
-            );
             return Ok(true);
         }
-
-        debug!(
-            "Returning false for PBReceiver::evaluate_pb_val for Party {}, since both previous checks failed",
-            self.index,
-        );
 
         Err(PBError::InvalidValueProposed)
     }
@@ -308,8 +257,6 @@ impl PBReceiver {
         lock: usize,
         signer: &Signer,
     ) -> PBResult<bool> {
-        debug!("Calling PBReceiver::check_key for Party {}", self.index,);
-
         // Check that value is valid high-level application
         if !eval_mvba_val(value) {
             return Err(PBError::FailedExternalValidation);
@@ -342,13 +289,13 @@ impl PBReceiver {
                     &serialize(&view_key).expect("Could not serialize view_key for check_key"),
                 ))
         {
-            debug!("Returning false for PBReceiver::check_key for Party {} because view: {} != 1 and key was not valid", self.index,view);
+            warn!("Returning false for PBReceiver::check_key for Party {} because view: {} != 1 and key was not valid", self.index,view);
             return Err(PBError::InvalidKeyIncluded);
         }
 
         // Verify that the key was not obtained in an earlier view than what is currently locked
         if view < &lock {
-            debug!("Returning false for PBReceiver::check_key for Party {} because key was gotten in earlier view: {} than lock: {}", self.index, view, lock);
+            warn!("Returning false for PBReceiver::check_key for Party {} because key was gotten in earlier view: {} than lock: {}", self.index, view, lock);
             return Err(PBError::ExpiredKeyIncluded);
         }
 
@@ -356,7 +303,7 @@ impl PBReceiver {
     }
 }
 
-fn eval_mvba_val(value: &Value) -> bool {
+fn eval_mvba_val(_value: &Value) -> bool {
     //TODO
     true
 }

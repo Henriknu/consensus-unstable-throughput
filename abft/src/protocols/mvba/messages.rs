@@ -1,22 +1,14 @@
 use async_trait::async_trait;
-use log::{error, warn};
-use std::{
-    collections::{hash_map::Drain, HashMap},
-    ops::Range,
-    pin::Pin,
-    sync::Arc,
-};
 
 use bincode::serialize;
-use consensus_core::{crypto::commoncoin::EncodedCoinShare, data::message_buffer::MessageBuffer};
-use futures::Future;
+use consensus_core::crypto::commoncoin::EncodedCoinShare;
+
 use serde::{Deserialize, Serialize};
-use tokio::sync::mpsc::Sender;
 
 use super::{
     proposal_promotion::PPProposal,
     provable_broadcast::{PBSigShare, PBID},
-    SkipShare, SkipSig, Value, MVBA, MVBAID,
+    SkipShare, SkipSig, MVBAID,
 };
 
 // Wrappers

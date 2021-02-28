@@ -1,18 +1,15 @@
 use super::{
-    messages::{MVBASender, ProtocolMessage, ToProtocolMessage, ViewChangeMessage},
+    messages::{MVBASender, ViewChangeMessage},
     proposal_promotion::{PPProposal, PPStatus, PPID},
-    provable_broadcast::{PBKey, PBProof, PBResponse, PBSig, PBID},
+    provable_broadcast::{PBResponse, PBSig, PBID},
     Key, Value, MVBAID,
 };
 use bincode::serialize;
 use consensus_core::crypto::sign::Signer;
-use log::{debug, info, warn};
-use std::{
-    marker::PhantomData,
-    sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
-        Arc, Mutex,
-    },
+use log::warn;
+use std::sync::{
+    atomic::{AtomicBool, AtomicUsize, Ordering},
+    Arc, Mutex,
 };
 use thiserror::Error;
 use tokio::sync::Notify;

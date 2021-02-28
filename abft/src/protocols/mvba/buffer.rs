@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 
 use consensus_core::data::message_buffer::MessageBuffer;
-use log::error;
 
 use super::messages::{ProtocolMessage, ProtocolMessageType};
 
