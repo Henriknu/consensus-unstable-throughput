@@ -1,14 +1,15 @@
-use std::{
-    cmp::Ordering,
-    fmt,
-    marker::PhantomData,
-    sync::{Arc, Mutex},
-};
+use std::{cmp::Ordering, fmt, marker::PhantomData, sync::Arc};
 
 use log::{debug, info};
-use tokio::sync::RwLock;
+use tokio::sync::{
+    mpsc::{error::SendError, Sender},
+    Mutex, RwLock,
+};
+
+use tokio::sync::Notify;
 
 use super::{
+    buffer::{MVBABuffer, MVBABufferCommand},
     error::{MVBAError, MVBAResult},
     messages::{MVBASender, PBSendMessage, PBShareAckMessage, ProtocolMessage},
     provable_broadcast::*,
@@ -32,6 +33,10 @@ pub enum PPError {
     PBError(#[from] PBError),
     #[error("Failed to compare step of message received")]
     FailedCompareStep,
+    #[error("Failed to send MVBABufferCommand at PPReceiver")]
+    BufferSender(#[from] SendError<MVBABufferCommand>),
+    #[error("PPReceiver was abandoned")]
+    Abandoned,
 }
 
 pub type PPResult<T> = Result<T, PPError>;
@@ -181,39 +186,47 @@ impl PPSender {
 pub struct PPReceiver {
     id: PPID,
     index: usize,
+    send_id: usize,
     key: RwLock<Option<PPProposal>>,
     lock: RwLock<Option<PPProposal>>,
     commit: RwLock<Option<PPProposal>>,
     inner_pb: RwLock<Option<PBReceiver>>,
+    notify_abandon: Arc<Notify>,
 }
 
 impl PPReceiver {
-    pub fn init(id: PPID, index: usize) -> Self {
+    pub fn init(id: PPID, index: usize, send_id: usize) -> Self {
         Self {
             id,
             index,
+            send_id,
             key: RwLock::new(None),
             lock: RwLock::new(None),
             commit: RwLock::new(None),
             inner_pb: RwLock::new(None),
+            notify_abandon: Arc::new(Notify::new()),
         }
     }
 
-    pub async fn invoke(&self) {
+    pub async fn invoke(&self, buff_handle: Sender<MVBABufferCommand>) -> PPResult<()> {
         // Step 1: Sender broadcasts value and mvba key
         {
             self.init_pb(PPStatus::Step1).await;
+            self.drain_buffer(&buff_handle).await?;
+
             let pb_lock = self.inner_pb.read().await;
             let pb = pb_lock.as_ref().unwrap();
-            let _ = pb.invoke().await;
+            let _ = self.invoke_or_abandon(pb).await?;
         }
 
         // Step 2: Sender broadcasts key proposal
         {
             self.init_pb(PPStatus::Step2).await;
+            self.drain_buffer(&buff_handle).await?;
+
             let pb_lock = self.inner_pb.read().await;
             let pb = pb_lock.as_ref().unwrap();
-            let key = pb.invoke().await;
+            let key = self.invoke_or_abandon(pb).await?;
             let mut _key = self.key.write().await;
             _key.replace(key);
         }
@@ -221,9 +234,11 @@ impl PPReceiver {
         // Step 3: Sender broadcasts lock proposal
         {
             self.init_pb(PPStatus::Step3).await;
+            self.drain_buffer(&buff_handle).await?;
+
             let pb_lock = self.inner_pb.read().await;
             let pb = pb_lock.as_ref().unwrap();
-            let lock = pb.invoke().await;
+            let lock = self.invoke_or_abandon(pb).await?;
             let mut _lock = self.lock.write().await;
             _lock.replace(lock);
         }
@@ -231,12 +246,15 @@ impl PPReceiver {
         // Step 4: Sender broadcasts commit proposal
         {
             self.init_pb(PPStatus::Step4).await;
+            self.drain_buffer(&buff_handle).await?;
+
             let pb_lock = self.inner_pb.read().await;
             let pb = pb_lock.as_ref().unwrap();
-            let commit = pb.invoke().await;
+            let commit = self.invoke_or_abandon(pb).await?;
             let mut _commit = self.commit.write().await;
             _commit.replace(commit);
         }
+        Ok(())
     }
 
     pub async fn on_value_send_message<F: MVBASender>(
@@ -307,11 +325,21 @@ impl PPReceiver {
     }
 
     pub async fn abandon(&self) {
-        let mut inner_pb = self.inner_pb.write().await;
+        self.notify_abandon.notify_one();
+    }
 
-        if let Some(_) = &mut *inner_pb {
-            *inner_pb = None;
-        }
+    pub async fn invoke_or_abandon(&self, pb: &PBReceiver) -> PPResult<PPProposal> {
+        let notify_abandon = self.notify_abandon.clone();
+        let proposal = tokio::select! {
+            proposal = pb.invoke() => Some(proposal),
+            _ = notify_abandon.notified() => {
+                None
+            },
+        };
+
+        let proposal = proposal.ok_or_else(|| PPError::Abandoned)?;
+
+        Ok(proposal)
     }
 
     async fn init_pb(&self, step: PPStatus) {
@@ -332,6 +360,17 @@ impl PPReceiver {
             "Succesfully Initialized PBReceiver with step {} for Party {}",
             step, self.index,
         );
+    }
+
+    async fn drain_buffer(&self, buff_handle: &Sender<MVBABufferCommand>) -> PPResult<()> {
+        buff_handle
+            .send(MVBABufferCommand::PPReceive {
+                send_id: self.send_id,
+                view: self.id.inner.view,
+            })
+            .await?;
+
+        Ok(())
     }
 }
 

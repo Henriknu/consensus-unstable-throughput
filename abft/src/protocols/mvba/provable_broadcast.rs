@@ -57,14 +57,15 @@ impl PBSender {
 
         let pb_send = PBSendMessage::new(self.id, self.proposal.clone());
 
-        for i in 0..self.n_parties {
-            send_handle
-                .send(
-                    i,
-                    pb_send.to_protocol_message(self.id.id.inner.id, self.index, i),
-                )
-                .await;
-        }
+        send_handle
+            .broadcast(
+                self.id.id.inner.id,
+                self.index,
+                self.n_parties,
+                self.id.id.inner.view,
+                pb_send,
+            )
+            .await;
 
         // wait for n - f shares
 
@@ -214,8 +215,11 @@ impl PBReceiver {
 
             send_handle
                 .send(
+                    self.id.id.inner.id,
+                    self.index,
                     index,
-                    pb_ack.to_protocol_message(self.id.id.inner.id, self.index, index),
+                    self.id.id.inner.view,
+                    pb_ack,
                 )
                 .await;
 

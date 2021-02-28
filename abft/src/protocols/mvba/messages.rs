@@ -1,8 +1,14 @@
 use async_trait::async_trait;
-use std::{collections::HashMap, ops::Range, pin::Pin};
+use log::{error, warn};
+use std::{
+    collections::{hash_map::Drain, HashMap},
+    ops::Range,
+    pin::Pin,
+    sync::Arc,
+};
 
 use bincode::serialize;
-use consensus_core::crypto::commoncoin::EncodedCoinShare;
+use consensus_core::{crypto::commoncoin::EncodedCoinShare, data::message_buffer::MessageBuffer};
 use futures::Future;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::Sender;
@@ -10,26 +16,46 @@ use tokio::sync::mpsc::Sender;
 use super::{
     proposal_promotion::PPProposal,
     provable_broadcast::{PBSigShare, PBID},
-    SkipShare, SkipSig, Value, MVBAID,
+    SkipShare, SkipSig, Value, MVBA, MVBAID,
 };
 
 // Wrappers
 
 #[async_trait]
 pub trait MVBASender {
-    async fn send(&self, index: usize, message: ProtocolMessage);
+    async fn send<M: ToProtocolMessage + Send + Sync>(
+        &self,
+        id: usize,
+        send_id: usize,
+        recv_id: usize,
+        view: usize,
+        message: M,
+    );
+    async fn broadcast<M: ToProtocolMessage + Send + Sync>(
+        &self,
+        id: usize,
+        send_id: usize,
+        n_parties: usize,
+        view: usize,
+        message: M,
+    );
 }
 
-#[async_trait]
-pub trait MVBAReceiver {
-    async fn receive(&mut self) -> Option<ProtocolMessage>;
-}
-
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ProtocolMessage {
     pub header: ProtocolMessageHeader,
     pub message_type: ProtocolMessageType,
     pub message_data: Vec<u8>,
+}
+
+impl Default for ProtocolMessage {
+    fn default() -> Self {
+        Self {
+            header: Default::default(),
+            message_data: Default::default(),
+            message_type: ProtocolMessageType::Unknown,
+        }
+    }
 }
 
 impl ProtocolMessage {
@@ -37,35 +63,38 @@ impl ProtocolMessage {
         protocol_id: usize,
         send_id: usize,
         recv_id: usize,
+        view: usize,
         message_type: ProtocolMessageType,
         message_data: Vec<u8>,
     ) -> Self {
         Self {
-            header: ProtocolMessageHeader::new(protocol_id, send_id, recv_id),
+            header: ProtocolMessageHeader::new(protocol_id, send_id, recv_id, view),
             message_type,
             message_data,
         }
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Default)]
 pub struct ProtocolMessageHeader {
     pub protocol_id: usize,
     pub send_id: usize,
     pub recv_id: usize,
+    pub view: usize,
 }
 
 impl ProtocolMessageHeader {
-    pub fn new(protocol_id: usize, send_id: usize, recv_id: usize) -> Self {
+    pub fn new(protocol_id: usize, send_id: usize, recv_id: usize, view: usize) -> Self {
         Self {
             protocol_id,
             recv_id,
             send_id,
+            view,
         }
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ProtocolMessageType {
     //MVBA
     MVBADone,
@@ -81,6 +110,9 @@ pub enum ProtocolMessageType {
 
     // ViewChange
     ViewChange,
+
+    // Default
+    Unknown,
 }
 
 pub trait ToProtocolMessage
@@ -94,6 +126,7 @@ where
         protocol_id: usize,
         send_id: usize,
         recv_id: usize,
+        view: usize,
     ) -> ProtocolMessage {
         let message_data = serialize(self).expect("Could not serialize inner of Protocol message");
 
@@ -101,6 +134,7 @@ where
             protocol_id,
             send_id,
             recv_id,
+            view,
             Self::MESSAGE_TYPE,
             message_data,
         )

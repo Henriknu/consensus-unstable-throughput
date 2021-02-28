@@ -1,8 +1,9 @@
 use thiserror::Error;
+use tokio::sync::mpsc::error::SendError;
 
 use super::{
-    elect::ElectError, messages::ProtocolMessage, proposal_promotion::PPError,
-    view_change::ViewChangeError,
+    buffer::MVBABufferCommand, elect::ElectError, messages::ProtocolMessage,
+    proposal_promotion::PPError, view_change::ViewChangeError,
 };
 
 pub type MVBAResult<Output> = Result<Output, MVBAError>;
@@ -21,6 +22,8 @@ pub enum MVBAError {
     FailedSerialization(String, String),
     #[error("Not ready to handle message")]
     NotReadyForMessage(ProtocolMessage),
+    #[error("Failed to send MVBABufferCommand from MVBA instance")]
+    BufferSender(#[from] SendError<MVBABufferCommand>),
 
     // Errors propogated from sub-protocol instances
     #[error(transparent)]
