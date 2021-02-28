@@ -196,7 +196,10 @@ impl PPReceiver {
         }
     }
 
-    pub async fn invoke<F: MVBASender>(&self, buff_handle: Arc<Mutex<MVBABuffer<F>>>) {
+    pub async fn invoke<F: MVBASender + Sync + Send>(
+        &self,
+        buff_handle: Arc<Mutex<MVBABuffer<F>>>,
+    ) {
         // Step 1: Sender broadcasts value and mvba key
         {
             self.init_pb(PPStatus::Step1).await;
@@ -339,7 +342,10 @@ impl PPReceiver {
         );
     }
 
-    async fn drain_messages<F: MVBASender>(&self, buff_handle: &Arc<Mutex<MVBABuffer<F>>>) {
+    async fn drain_messages<F: MVBASender + Sync + Send>(
+        &self,
+        buff_handle: &Arc<Mutex<MVBABuffer<F>>>,
+    ) {
         let mut buff_lock = buff_handle.lock().await;
         buff_lock.drain_pp_recv(self.send_id, self.id.inner.view);
     }

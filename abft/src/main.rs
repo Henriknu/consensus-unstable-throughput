@@ -143,7 +143,7 @@ async fn main() {
                             i, early_message.message_type
                         );
                         let mut buff_lock = buffer.lock().await;
-                        buff_lock.put(early_message.header.view, early_message);
+                        buff_lock.put(early_message.header.view, early_message early_message);
                     } else {
                         error!("Got error when handling message at {}: {}", i, e);
                     }

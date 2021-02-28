@@ -1,10 +1,11 @@
 use std::collections::{HashMap, VecDeque};
 
-pub struct MessageBuffer<T> {
+#[derive(Debug, Clone, Default)]
+pub struct MessageBuffer<T: Default> {
     pub epochs: HashMap<usize, VecDeque<T>>,
 }
 
-impl<T> MessageBuffer<T> {
+impl<T: Default> MessageBuffer<T> {
     pub fn new() -> Self {
         Self {
             epochs: Default::default(),
@@ -17,5 +18,9 @@ impl<T> MessageBuffer<T> {
 
     pub fn put(&mut self, epoch: usize, message: T) {
         self.epochs.entry(epoch).or_default().push_back(message);
+    }
+
+    pub fn clear(&mut self, epoch: usize) {
+        self.epochs.remove(&epoch);
     }
 }
