@@ -26,7 +26,7 @@ use tokio::sync::{
 use log::{debug, error, warn};
 
 const N_PARTIES: usize = THRESHOLD * 3 + 1;
-const THRESHOLD: usize = 3;
+const THRESHOLD: usize = 20;
 const BUFFER_CAPACITY: usize = THRESHOLD * 30;
 
 struct ChannelSender {
@@ -93,7 +93,7 @@ async fn main() {
 
     let mut channels: Vec<_> = (0..N_PARTIES)
         .map(|_| {
-            let (tx, rx) = mpsc::channel(20);
+            let (tx, rx) = mpsc::channel(BUFFER_CAPACITY);
             (tx, Some(rx))
         })
         .collect();

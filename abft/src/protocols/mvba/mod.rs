@@ -119,9 +119,16 @@ impl<F: MVBASender + Sync + Send> MVBA<F> {
                 for pp_recv in pp_recvs.values() {
                     let pp_clone = pp_recv.clone();
                     let buff_clone = buff_handle.clone();
+                    let index = self.index;
 
                     tokio::spawn(async move {
-                        pp_clone.invoke(buff_clone).await;
+                        match pp_clone.invoke(buff_clone).await {
+                            Ok(_) => {}
+                            Err(PPError::Abandoned) => {}
+                            Err(e) => {
+                                error!("Party {} received error on invoking pp_recv: {}", index, e);
+                            }
+                        }
                     });
                 }
             }
@@ -732,7 +739,10 @@ impl<F: MVBASender + Sync + Send> MVBA<F> {
                 .await;
 
             drop(state);
+
+            info!("Party {} waiting at send_done_skip", self.index);
             self.notify_skip.notified().await;
+            info!("Party {} done waiting at send_done_skip", self.index);
         }
 
         Ok(())
@@ -807,11 +817,18 @@ impl<F: MVBASender + Sync + Send> MVBA<F> {
     }
 
     async fn abandon_all_ongoing_proposals(&self) {
+        info!(
+            "Party {} grabbing lock in abandon all proposals",
+            self.index
+        );
         let lock = self.pp_recvs.read().await;
 
         if let Some(recvs) = &*lock {
+            info!("Party {} found recvs", self.index);
             futures::future::join_all(recvs.values().map(|recv| recv.abandon())).await;
+            info!("Party {} abandoned all recvs", self.index);
         }
+        info!("Party {} exiting  abandon all proposals", self.index);
     }
 
     fn tag_skip_share(&self, id: usize, view: usize) -> String {

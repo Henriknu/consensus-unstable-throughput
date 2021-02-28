@@ -6,6 +6,8 @@ use tokio::sync::{
     Mutex, RwLock,
 };
 
+use tokio::sync::Notify;
+
 use super::{
     buffer::{MVBABuffer, MVBABufferCommand},
     error::{MVBAError, MVBAResult},
@@ -33,6 +35,8 @@ pub enum PPError {
     FailedCompareStep,
     #[error("Failed to send MVBABufferCommand at PPReceiver")]
     BufferSender(#[from] SendError<MVBABufferCommand>),
+    #[error("PPReceiver was abandoned")]
+    Abandoned,
 }
 
 pub type PPResult<T> = Result<T, PPError>;
@@ -187,6 +191,7 @@ pub struct PPReceiver {
     lock: RwLock<Option<PPProposal>>,
     commit: RwLock<Option<PPProposal>>,
     inner_pb: RwLock<Option<PBReceiver>>,
+    notify_abandon: Arc<Notify>,
 }
 
 impl PPReceiver {
@@ -199,6 +204,7 @@ impl PPReceiver {
             lock: RwLock::new(None),
             commit: RwLock::new(None),
             inner_pb: RwLock::new(None),
+            notify_abandon: Arc::new(Notify::new()),
         }
     }
 
@@ -210,7 +216,7 @@ impl PPReceiver {
 
             let pb_lock = self.inner_pb.read().await;
             let pb = pb_lock.as_ref().unwrap();
-            let _ = pb.invoke().await;
+            let _ = self.invoke_or_abandon(pb).await?;
         }
 
         // Step 2: Sender broadcasts key proposal
@@ -220,7 +226,7 @@ impl PPReceiver {
 
             let pb_lock = self.inner_pb.read().await;
             let pb = pb_lock.as_ref().unwrap();
-            let key = pb.invoke().await;
+            let key = self.invoke_or_abandon(pb).await?;
             let mut _key = self.key.write().await;
             _key.replace(key);
         }
@@ -232,7 +238,7 @@ impl PPReceiver {
 
             let pb_lock = self.inner_pb.read().await;
             let pb = pb_lock.as_ref().unwrap();
-            let lock = pb.invoke().await;
+            let lock = self.invoke_or_abandon(pb).await?;
             let mut _lock = self.lock.write().await;
             _lock.replace(lock);
         }
@@ -244,7 +250,7 @@ impl PPReceiver {
 
             let pb_lock = self.inner_pb.read().await;
             let pb = pb_lock.as_ref().unwrap();
-            let commit = pb.invoke().await;
+            let commit = self.invoke_or_abandon(pb).await?;
             let mut _commit = self.commit.write().await;
             _commit.replace(commit);
         }
@@ -319,11 +325,21 @@ impl PPReceiver {
     }
 
     pub async fn abandon(&self) {
-        let mut inner_pb = self.inner_pb.write().await;
+        self.notify_abandon.notify_one();
+    }
 
-        if let Some(_) = &mut *inner_pb {
-            *inner_pb = None;
-        }
+    pub async fn invoke_or_abandon(&self, pb: &PBReceiver) -> PPResult<PPProposal> {
+        let notify_abandon = self.notify_abandon.clone();
+        let proposal = tokio::select! {
+            proposal = pb.invoke() => Some(proposal),
+            _ = notify_abandon.notified() => {
+                None
+            },
+        };
+
+        let proposal = proposal.ok_or_else(|| PPError::Abandoned)?;
+
+        Ok(proposal)
     }
 
     async fn init_pb(&self, step: PPStatus) {
