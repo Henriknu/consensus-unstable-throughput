@@ -166,7 +166,7 @@ impl<F: MVBASender + Sync + Send> MVBA<F> {
 
             let lock = self.elect.read().await;
 
-            let elect = lock.as_ref().unwrap();
+            let elect = lock.as_ref().expect("Elect should be initialized");
 
             info!("Party {} started electing phase for view: {}", index, view);
 
@@ -205,7 +205,7 @@ impl<F: MVBASender + Sync + Send> MVBA<F> {
 
             let lock = self.view_change.read().await;
 
-            let view_change = lock.as_ref().unwrap();
+            let view_change = lock.as_ref().expect("ViewChange should be initialized");
 
             info!("Party {} started view change for view: {}", index, view);
 
@@ -247,23 +247,17 @@ impl<F: MVBASender + Sync + Send> MVBA<F> {
 
         match message_type {
             messages::ProtocolMessageType::MVBADone => {
-                let inner: MVBADoneMessage = deserialize(&message_data).expect(
-                    "Could not deserialize MVBADone message when handling protocol message",
-                );
+                let inner: MVBADoneMessage = deserialize(&message_data)?;
 
                 self.on_done_message(send_id, inner).await?;
             }
             messages::ProtocolMessageType::MVBASkipShare => {
-                let inner: MVBASkipShareMessage = deserialize(&message_data).expect(
-                    "Could not deserialize MVBASkipShare message when handling protocol message",
-                );
+                let inner: MVBASkipShareMessage = deserialize(&message_data)?;
 
                 self.on_skip_share_message(send_id, inner).await?;
             }
             messages::ProtocolMessageType::MVBASkip => {
-                let inner: MVBASkipMessage = deserialize(&message_data).expect(
-                    "Could not deserialize MVBASkip message when handling protocol message",
-                );
+                let inner: MVBASkipMessage = deserialize(&message_data)?;
 
                 self.on_skip_message(inner).await?;
             }
@@ -271,9 +265,7 @@ impl<F: MVBASender + Sync + Send> MVBA<F> {
                 let pp_recvs = self.pp_recvs.read().await;
                 if let Some(pp_recvs) = &*pp_recvs {
                     if let Some(pp) = pp_recvs.get(&send_id) {
-                        let inner: PBSendMessage = deserialize(&message_data).expect(
-                            "Could not deserialize PBSend message when handling protocol message",
-                        );
+                        let inner: PBSendMessage = deserialize(&message_data)?;
 
                         match self.on_pb_send_message(pp, inner, send_id).await {
                             Ok(_) => return Ok(()),
@@ -307,9 +299,7 @@ impl<F: MVBASender + Sync + Send> MVBA<F> {
                 let pp_send = self.pp_send.read().await;
 
                 if let Some(pp_send) = &*pp_send {
-                    let inner: PBShareAckMessage = deserialize(&message_data).expect(
-                        "Could not deserialize PBShareAck message when handling protocol message",
-                    );
+                    let inner: PBShareAckMessage = deserialize(&message_data)?;
 
                     if let Err(PPError::NotReadyForShareAck) =
                         pp_send.on_share_ack(send_id, inner, &self.signer).await
@@ -327,9 +317,7 @@ impl<F: MVBASender + Sync + Send> MVBA<F> {
                 let elect = self.elect.read().await;
 
                 if let Some(elect) = &*elect {
-                    let inner: ElectCoinShareMessage = deserialize(&message_data).expect(
-                        "Could not deserialize ElectCoinShare message when handling protocol message",
-                    );
+                    let inner: ElectCoinShareMessage = deserialize(&message_data)?;
 
                     elect.on_coin_share_message(inner, &self.coin)?;
                 } else {
@@ -344,9 +332,7 @@ impl<F: MVBASender + Sync + Send> MVBA<F> {
                 let view_change = self.view_change.read().await;
 
                 if let Some(view_change) = &*view_change {
-                    let inner: ViewChangeMessage = deserialize(&message_data).expect(
-                        "Could not deserialize ViewChange message when handling protocol message",
-                    );
+                    let inner: ViewChangeMessage = deserialize(&message_data)?;
 
                     match view_change.on_view_change_message(&inner, &self.signer) {
                         Ok(_) => return Ok(()),
@@ -420,15 +406,10 @@ impl<F: MVBASender + Sync + Send> MVBA<F> {
             value,
         };
 
-        if !self.signer.verify_signature(
-            &sig.inner,
-            &serialize(&response_prev).map_err(|_| {
-                MVBAError::FailedSerialization(
-                    "PBResponse".to_string(),
-                    "on_done_message".to_string(),
-                )
-            })?,
-        ) {
+        if !self
+            .signer
+            .verify_signature(&sig.inner, &serialize(&response_prev)?)
+        {
             warn!(
                 "Party {} received a done message from Party {} with an invalid proof",
                 self.index, index,
@@ -534,9 +515,10 @@ impl<F: MVBASender + Sync + Send> MVBA<F> {
 
             // All signatures should have been individually verified. Expect that the signature is valid.
 
-            let skip_proof = self.signer.combine_signatures(&shares).expect(
-                "Invariant that enough valid skip signatures had been collected was broken",
-            );
+            let skip_proof = self
+                .signer
+                .combine_signatures(&shares)
+                .map_err(|_| MVBAError::InvalidSignature("on_skip_share".to_string()))?;
 
             let skip_message = MVBASkipMessage::new(id, SkipSig { inner: skip_proof });
 

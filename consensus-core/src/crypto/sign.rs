@@ -8,7 +8,9 @@ use rand_core::OsRng;
 
 pub use threshold_crypto::{Signature, SignatureShare};
 
-use threshold_crypto::{error::Error, PublicKeySet, PublicKeyShare, SecretKeySet, SecretKeyShare};
+pub use threshold_crypto::error::Error;
+use threshold_crypto::{PublicKeySet, SecretKeySet, SecretKeyShare};
+
 #[derive(Debug)]
 pub struct Signer {
     secret: SecretKeyShare,

@@ -82,8 +82,8 @@ impl PPSender {
         {
             self.init_pb(PPStatus::Step1, proposal.clone()).await;
             let lock = self.inner_pb.read().await;
-            let pb = lock.as_ref().unwrap();
-            proof_prev.replace(pb.broadcast(signer, send_handle).await);
+            let pb = lock.as_ref().expect("PB instance should be initialized");
+            proof_prev.replace(pb.broadcast(signer, send_handle).await?);
             proposal.proof.proof_prev = proof_prev.clone();
 
             let mut _key = self.key.write().await;
@@ -93,8 +93,8 @@ impl PPSender {
         {
             self.init_pb(PPStatus::Step2, proposal.clone()).await;
             let lock = self.inner_pb.read().await;
-            let pb = lock.as_ref().unwrap();
-            proof_prev.replace(pb.broadcast(signer, send_handle).await);
+            let pb = lock.as_ref().expect("PB instance should be initialized");
+            proof_prev.replace(pb.broadcast(signer, send_handle).await?);
             proposal.proof.proof_prev = proof_prev.clone();
 
             let mut _lock = self.lock.write().await;
@@ -104,8 +104,8 @@ impl PPSender {
         {
             self.init_pb(PPStatus::Step3, proposal.clone()).await;
             let lock = self.inner_pb.read().await;
-            let pb = lock.as_ref().unwrap();
-            proof_prev.replace(pb.broadcast(signer, send_handle).await);
+            let pb = lock.as_ref().expect("PB instance should be initialized");
+            proof_prev.replace(pb.broadcast(signer, send_handle).await.ok());
             proposal.proof.proof_prev = proof_prev.clone();
 
             let mut _commit = self.commit.write().await;
@@ -115,8 +115,8 @@ impl PPSender {
         {
             self.init_pb(PPStatus::Step4, proposal.clone()).await;
             let lock = self.inner_pb.read().await;
-            let pb = lock.as_ref().unwrap();
-            proof_prev.replace(pb.broadcast(signer, send_handle).await);
+            let pb = lock.as_ref().expect("PB instance should be initialized");
+            proof_prev.replace(pb.broadcast(signer, send_handle).await?);
         }
 
         proof_prev
@@ -205,7 +205,7 @@ impl PPReceiver {
             self.drain_buffer(&buff_handle).await?;
 
             let pb_lock = self.inner_pb.read().await;
-            let pb = pb_lock.as_ref().unwrap();
+            let pb = pb_lock.as_ref().expect("PB instance should be initialized");
             let _ = self.invoke_or_abandon(pb).await?;
         }
 
@@ -215,7 +215,7 @@ impl PPReceiver {
             self.drain_buffer(&buff_handle).await?;
 
             let pb_lock = self.inner_pb.read().await;
-            let pb = pb_lock.as_ref().unwrap();
+            let pb = pb_lock.as_ref().expect("PB instance should be initialized");
             let key = self.invoke_or_abandon(pb).await?;
             let mut _key = self.key.write().await;
             _key.replace(key);
@@ -227,7 +227,7 @@ impl PPReceiver {
             self.drain_buffer(&buff_handle).await?;
 
             let pb_lock = self.inner_pb.read().await;
-            let pb = pb_lock.as_ref().unwrap();
+            let pb = pb_lock.as_ref().expect("PB instance should be initialized");
             let lock = self.invoke_or_abandon(pb).await?;
             let mut _lock = self.lock.write().await;
             _lock.replace(lock);
@@ -239,7 +239,7 @@ impl PPReceiver {
             self.drain_buffer(&buff_handle).await?;
 
             let pb_lock = self.inner_pb.read().await;
-            let pb = pb_lock.as_ref().unwrap();
+            let pb = pb_lock.as_ref().expect("PB instance should be initialized");
             let commit = self.invoke_or_abandon(pb).await?;
             let mut _commit = self.commit.write().await;
             _commit.replace(commit);

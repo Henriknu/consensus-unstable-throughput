@@ -6,6 +6,8 @@ use super::{
     proposal_promotion::PPError, view_change::ViewChangeError,
 };
 
+use bincode::Error as BincodeError;
+
 pub type MVBAResult<Output> = Result<Output, MVBAError>;
 
 #[derive(Error, Debug)]
@@ -18,8 +20,8 @@ pub enum MVBAError {
     InvariantBroken(String),
     #[error("Received invalid signature for {0}")]
     InvalidSignature(String),
-    #[error("Failed to serialize {0} at {1}")]
-    FailedSerialization(String, String),
+    #[error(transparent)]
+    FailedSerialization(#[from] BincodeError),
     #[error("Not ready to handle message")]
     NotReadyForMessage(ProtocolMessage),
     #[error("Failed to send MVBABufferCommand from MVBA instance")]

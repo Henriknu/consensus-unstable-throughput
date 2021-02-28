@@ -1,4 +1,4 @@
-use consensus_core::crypto::sign::{Signature, SignatureShare, Signer};
+use consensus_core::crypto::sign::{Error, Signature, SignatureShare, Signer};
 use log::warn;
 
 use std::{collections::BTreeMap, sync::Arc};
@@ -29,6 +29,10 @@ pub enum PBError {
     ExpiredKeyIncluded,
     #[error("Value failed external validation checked")]
     FailedExternalValidation,
+    #[error(
+        "Invariant broken when combining signatures (too few shares or invalid index supplied)"
+    )]
+    CryptoError,
 }
 
 pub struct PBSender {
@@ -52,7 +56,11 @@ impl PBSender {
         }
     }
 
-    pub async fn broadcast<F: MVBASender>(&self, signer: &Signer, send_handle: &F) -> PBSig {
+    pub async fn broadcast<F: MVBASender>(
+        &self,
+        signer: &Signer,
+        send_handle: &F,
+    ) -> PBResult<PBSig> {
         //send <ID, SEND, value, proof> to all parties
 
         let pb_send = PBSendMessage::new(self.id, self.proposal.clone());
@@ -84,9 +92,11 @@ impl PBSender {
 
         drop(lock);
 
-        let signature = signer.combine_signatures(&shares).unwrap();
+        let signature = signer
+            .combine_signatures(&shares)
+            .map_err(|_| PBError::CryptoError)?;
 
-        PBSig { inner: signature }
+        Ok(PBSig { inner: signature })
     }
 
     pub async fn on_share_ack_message(
