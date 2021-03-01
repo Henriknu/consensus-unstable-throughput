@@ -67,7 +67,7 @@ impl PPSender {
         key: PBKey,
         signer: &Signer,
         send_handle: &F,
-    ) -> Option<PBSig> {
+    ) -> PPResult<Option<PBSig>> {
         let mut proof_prev: Option<PBSig> = None;
 
         let mut proposal = PPProposal {
@@ -105,7 +105,7 @@ impl PPSender {
             self.init_pb(PPStatus::Step3, proposal.clone()).await;
             let lock = self.inner_pb.read().await;
             let pb = lock.as_ref().expect("PB instance should be initialized");
-            proof_prev.replace(pb.broadcast(signer, send_handle).await.ok());
+            proof_prev.replace(pb.broadcast(signer, send_handle).await?);
             proposal.proof.proof_prev = proof_prev.clone();
 
             let mut _commit = self.commit.write().await;
@@ -119,7 +119,7 @@ impl PPSender {
             proof_prev.replace(pb.broadcast(signer, send_handle).await?);
         }
 
-        proof_prev
+        Ok(proof_prev)
     }
 
     pub async fn on_share_ack(

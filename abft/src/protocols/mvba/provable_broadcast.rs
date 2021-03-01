@@ -1,4 +1,4 @@
-use consensus_core::crypto::sign::{Error, Signature, SignatureShare, Signer};
+use consensus_core::crypto::sign::{Signature, SignatureShare, Signer};
 use log::warn;
 
 use std::{collections::BTreeMap, sync::Arc};

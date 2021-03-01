@@ -144,7 +144,7 @@ impl<F: MVBASender + Sync + Send> MVBA<F> {
                 );
 
                 let promotion_proof: Option<PBSig> = tokio::select! {
-                    proof = pp_send.promote(value, key, &self.signer, &self.send_handle) => proof,
+                    proof = pp_send.promote(value, key, &self.signer, &self.send_handle) => proof?,
                     _ = notify_skip.notified() => {
                         None
                     },
