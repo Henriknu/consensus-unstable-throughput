@@ -874,7 +874,7 @@ mod tests {
     use log::error;
 
     const N_PARTIES: usize = THRESHOLD * 3 + 1;
-    const THRESHOLD: usize = 5;
+    const THRESHOLD: usize = 1;
     const BUFFER_CAPACITY: usize = THRESHOLD * 30;
 
     struct ChannelSender {

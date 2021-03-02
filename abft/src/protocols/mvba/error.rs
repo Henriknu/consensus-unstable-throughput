@@ -18,7 +18,7 @@ pub enum MVBAError {
     #[error("An invariant was broken: {0}")]
     /// Something went horribly wrong that should not happen (e.g. check that value is not None, but error when unwrapping)
     InvariantBroken(String),
-    #[error("Received invalid signature for {0}")]
+    #[error("Produced/Received invalid signature for {0}")]
     InvalidSignature(String),
     #[error(transparent)]
     FailedSerialization(#[from] BincodeError),

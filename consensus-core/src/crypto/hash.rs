@@ -7,6 +7,26 @@ construct_uint! {
     pub struct U256(4);
 }
 
+pub trait Hashable {
+    fn hash(&self) -> H256;
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, PartialOrd)]
+pub struct H256 {
+    pub inner: [u8; 32],
+}
+
+impl H256 {
+    pub fn hash_together(first: H256, second: H256) -> H256 {
+        let mut sha3 = Sha3::v256();
+        let mut output = [0u8; 32];
+        sha3.update(&first.inner);
+        sha3.update(&second.inner);
+        sha3.finalize(&mut output);
+        H256 { inner: output }
+    }
+}
+
 pub fn hash_sha256(bytes: &[u8]) -> [u8; 32] {
     let mut sha3 = Sha3::v256();
     let mut output = [0u8; 32];
