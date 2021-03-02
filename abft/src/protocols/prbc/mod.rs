@@ -1,4 +1,7 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::Arc,
+};
 
 use log::warn;
 use tokio::sync::{Notify, RwLock};
@@ -23,7 +26,7 @@ pub struct PRBC {
     index: usize,
     n_parties: usize,
     value: RwLock<Option<Value>>,
-    shares: RwLock<HashMap<usize, PRBCSignatureShare>>,
+    shares: RwLock<BTreeMap<usize, SignatureShare>>,
     notify_shares: Arc<Notify>,
 }
 
@@ -57,7 +60,7 @@ impl PRBC {
 
         let share = signer.sign(&serialize(&value)?);
 
-        let done_message = PRBCDoneMessage::new(PRBCSignatureShare { inner: share });
+        let done_message = PRBCDoneMessage::new(share);
 
         send_handle
             .broadcast(self.id, self.index, self.n_parties, 0, done_message)
@@ -69,13 +72,8 @@ impl PRBC {
 
         let lock = self.shares.write().await;
 
-        let shares = lock
-            .iter()
-            .map(|(index, share)| (*index, share.inner.clone()))
-            .collect();
-
         let signature = signer
-            .combine_signatures(&shares)
+            .combine_signatures(&lock)
             .map_err(|_| PRBCError::InvalidSignature("PRBC Invoke".to_string()))?;
 
         Ok(PRBCSignature { inner: signature })
@@ -93,7 +91,7 @@ impl PRBC {
 
         let value = lock.ok_or_else(|| PRBCError::NotReadyForDoneMessage)?;
 
-        if !signer.verify_share(index, &message.share.inner, &serialize(&value)?) {
+        if !signer.verify_share(index, &message.share, &serialize(&value)?) {
             warn!(
                 "Party {} got invalid signature share from {} on PRBC value.",
                 self.index, index
@@ -119,11 +117,6 @@ impl PRBC {
 #[derive(Debug, Clone)]
 pub struct PRBCSignature {
     inner: Signature,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PRBCSignatureShare {
-    inner: SignatureShare,
 }
 
 #[derive(Error, Debug)]

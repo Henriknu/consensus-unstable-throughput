@@ -1,9 +1,9 @@
-use consensus_core::crypto::{hash::H256, merkle::MerkleBranch};
+use consensus_core::crypto::{hash::H256, merkle::MerkleBranch, sign::SignatureShare};
 use serde::{Deserialize, Serialize};
 
 use crate::messaging::{ProtocolMessageType, ToProtocolMessage};
 
-use super::{rbc::RBCBlock, PRBCSignatureShare};
+use super::rbc::RBCBlock;
 
 #[derive(Debug, Clone)]
 pub enum PRBCMessageType {
@@ -20,11 +20,11 @@ pub enum PRBCMessageType {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PRBCDoneMessage {
-    pub(crate) share: PRBCSignatureShare,
+    pub(crate) share: SignatureShare,
 }
 
 impl PRBCDoneMessage {
-    pub fn new(share: PRBCSignatureShare) -> Self {
+    pub fn new(share: SignatureShare) -> Self {
         Self { share }
     }
 }

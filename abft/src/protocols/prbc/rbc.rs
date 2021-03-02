@@ -59,44 +59,18 @@ impl RBC {
     ) -> RBCResult<Value> {
         let mut erasure = self.init_erasure()?;
 
-        // If we are the sender
         if let Some(value) = value {
-            let blocks = erasure
-                .encode(&serialize(&value)?)?
-                .into_iter()
-                .map(|inner| RBCBlock { inner })
-                .collect::<Vec<_>>();
-
-            let merkle = MerkleTree::new(&blocks);
-
-            let mut blocks = blocks.into_iter();
-
-            for j in 0..self.n_parties {
-                let block = blocks
-                    .next()
-                    .ok_or_else(|| RBCError::FaultyNumberOfErasureBlocks)?;
-                if j != self.index {
-                    let message =
-                        RBCValueMessage::new(*merkle.root(), block, get_branch(&merkle, j));
-
-                    send_handle.send(self.id, self.index, j, 0, message).await;
-                }
-            }
+            self.broadcast_value(value, &mut erasure, send_handle)
+                .await?;
         }
-
-        // wait for ready
 
         let notify_ready = self.notify_ready.clone();
 
         notify_ready.notified().await;
 
-        // wait for echo
-
         let notify_echo = self.notify_echo.clone();
 
         notify_echo.notified().await;
-
-        // When ready to return
 
         let value = self.decode_value(&mut erasure).await?;
 
@@ -219,6 +193,36 @@ impl RBC {
 
         if n_ready_messages >= (self.n_parties * 2 / 3 + 1) {
             self.notify_ready.notify_one();
+        }
+
+        Ok(())
+    }
+
+    async fn broadcast_value<F: ProtocolMessageSender>(
+        &self,
+        value: Value,
+        erasure: &mut ErasureCoder,
+        send_handle: &F,
+    ) -> RBCResult<()> {
+        let blocks = erasure
+            .encode(&serialize(&value)?)?
+            .into_iter()
+            .map(|inner| RBCBlock { inner })
+            .collect::<Vec<_>>();
+
+        let merkle = MerkleTree::new(&blocks);
+
+        let mut blocks = blocks.into_iter();
+
+        for j in 0..self.n_parties {
+            let block = blocks
+                .next()
+                .ok_or_else(|| RBCError::FaultyNumberOfErasureBlocks)?;
+            if j != self.index {
+                let message = RBCValueMessage::new(*merkle.root(), block, get_branch(&merkle, j));
+
+                send_handle.send(self.id, self.index, j, 0, message).await;
+            }
         }
 
         Ok(())
