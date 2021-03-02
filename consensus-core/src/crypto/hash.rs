@@ -20,7 +20,7 @@ impl Hashable for Vec<u8> {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, PartialOrd, Serialize, Deserialize, Eq, Hash)]
 pub struct H256 {
     pub inner: [u8; 32],
 }

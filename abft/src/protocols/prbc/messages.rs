@@ -3,10 +3,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::messaging::{ProtocolMessageType, ToProtocolMessage};
 
-use super::rbc::RBCBlock;
+use super::{rbc::RBCBlock, PRBCSignatureShare};
 
 #[derive(Debug, Clone)]
 pub enum PRBCMessageType {
+    //PRBC
+    PRBCDone,
+
     //RBC
     RBCEcho,
     RBCValue,
@@ -14,6 +17,22 @@ pub enum PRBCMessageType {
 }
 
 // Concrete Messages
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PRBCDoneMessage {
+    pub(crate) share: PRBCSignatureShare,
+}
+
+impl PRBCDoneMessage {
+    pub fn new(share: PRBCSignatureShare) -> Self {
+        Self { share }
+    }
+}
+
+impl ToProtocolMessage for PRBCDoneMessage {
+    const MESSAGE_TYPE: ProtocolMessageType = ProtocolMessageType::PRBC(PRBCMessageType::PRBCDone);
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RBCValueMessage {
     pub(crate) root: H256,
