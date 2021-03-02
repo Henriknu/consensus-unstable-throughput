@@ -1,5 +1,7 @@
+use crate::messaging::ProtocolMessageSender;
+
 use super::{
-    messages::{MVBASender, ViewChangeMessage},
+    messages::ViewChangeMessage,
     proposal_promotion::{PPProposal, PPStatus, PPID},
     provable_broadcast::{PBResponse, PBSig, PBID},
     Key, Value, MVBAID,
@@ -52,7 +54,7 @@ impl ViewChange {
         }
     }
 
-    pub async fn invoke<F: MVBASender>(
+    pub async fn invoke<F: ProtocolMessageSender>(
         &self,
         leader_key: Option<PPProposal>,
         leader_lock: Option<PPProposal>,

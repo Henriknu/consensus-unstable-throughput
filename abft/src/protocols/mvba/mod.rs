@@ -1,7 +1,7 @@
+use crate::messaging::{ProtocolMessage, ProtocolMessageHeader, ProtocolMessageSender};
 use bincode::{deserialize, serialize};
 use consensus_core::crypto::commoncoin::*;
 use consensus_core::crypto::sign::*;
-use messages::{ElectCoinShareMessage, PBSendMessage, PBShareAckMessage, ViewChangeMessage};
 use proposal_promotion::{PPProposal, PPReceiver, PPSender, PPStatus};
 use provable_broadcast::{PBKey, PBProof};
 use serde::{Deserialize, Serialize};
@@ -13,13 +13,17 @@ use tokio::sync::RwLock;
 use std::sync::Arc;
 use tokio::sync::{mpsc::Sender, Notify};
 
+use crate::Value;
+
+use crate::messaging::ProtocolMessageType;
+
 use self::{
     buffer::MVBABufferCommand,
     elect::Elect,
     error::{MVBAError, MVBAResult},
     messages::{
-        MVBADoneMessage, MVBASender, MVBASkipMessage, MVBASkipShareMessage, ProtocolMessage,
-        ProtocolMessageHeader,
+        ElectCoinShareMessage, MVBADoneMessage, MVBAMessageType, MVBASkipMessage,
+        MVBASkipShareMessage, PBSendMessage, PBShareAckMessage, ViewChangeMessage,
     },
     proposal_promotion::{PPError, PPLeader, PPResult, PPID},
     provable_broadcast::{PBResponse, PBSig, PBID},
@@ -27,15 +31,15 @@ use self::{
 };
 
 pub mod buffer;
-mod elect;
+pub mod elect;
 pub mod error;
 pub mod messages;
-mod proposal_promotion;
-mod provable_broadcast;
-mod view_change;
+pub mod proposal_promotion;
+pub mod provable_broadcast;
+pub mod view_change;
 
 /// Instance of Multi-valued Validated Byzantine Agreement
-pub struct MVBA<F: MVBASender + Sync + Send> {
+pub struct MVBA<F: ProtocolMessageSender + Sync + Send> {
     /// Identifier for protocol
     id: usize,
     index: usize,
@@ -56,7 +60,7 @@ pub struct MVBA<F: MVBASender + Sync + Send> {
     signer: Signer,
 }
 
-impl<F: MVBASender + Sync + Send> MVBA<F> {
+impl<F: ProtocolMessageSender + Sync + Send> MVBA<F> {
     pub fn init(
         id: usize,
         index: usize,
@@ -245,66 +249,50 @@ impl<F: MVBASender + Sync + Send> MVBA<F> {
             send_id, recv_id, message_type
         );
 
-        match message_type {
-            messages::ProtocolMessageType::MVBADone => {
-                let inner: MVBADoneMessage = deserialize(&message_data)?;
+        if let ProtocolMessageType::MVBA(mvba_message_type) = &message_type {
+            match mvba_message_type {
+                MVBAMessageType::MVBADone => {
+                    let inner: MVBADoneMessage = deserialize(&message_data)?;
 
-                self.on_done_message(send_id, inner).await?;
-            }
-            messages::ProtocolMessageType::MVBASkipShare => {
-                let inner: MVBASkipShareMessage = deserialize(&message_data)?;
+                    self.on_done_message(send_id, inner).await?;
+                }
+                MVBAMessageType::MVBASkipShare => {
+                    let inner: MVBASkipShareMessage = deserialize(&message_data)?;
 
-                self.on_skip_share_message(send_id, inner).await?;
-            }
-            messages::ProtocolMessageType::MVBASkip => {
-                let inner: MVBASkipMessage = deserialize(&message_data)?;
+                    self.on_skip_share_message(send_id, inner).await?;
+                }
+                MVBAMessageType::MVBASkip => {
+                    let inner: MVBASkipMessage = deserialize(&message_data)?;
 
-                self.on_skip_message(inner).await?;
-            }
-            messages::ProtocolMessageType::PBSend => {
-                let pp_recvs = self.pp_recvs.read().await;
-                if let Some(pp_recvs) = &*pp_recvs {
-                    if let Some(pp) = pp_recvs.get(&send_id) {
-                        let inner: PBSendMessage = deserialize(&message_data)?;
+                    self.on_skip_message(inner).await?;
+                }
+                MVBAMessageType::PBSend => {
+                    let pp_recvs = self.pp_recvs.read().await;
+                    if let Some(pp_recvs) = &*pp_recvs {
+                        if let Some(pp) = pp_recvs.get(&send_id) {
+                            let inner: PBSendMessage = deserialize(&message_data)?;
 
-                        match self.on_pb_send_message(pp, inner, send_id).await {
-                            Ok(_) => return Ok(()),
-                            Err(PPError::NotReadyForSend) => {
-                                return Err(MVBAError::NotReadyForMessage(ProtocolMessage {
-                                    header,
-                                    message_data,
-                                    message_type,
-                                }));
+                            match self.on_pb_send_message(pp, inner, send_id).await {
+                                Ok(_) => return Ok(()),
+                                Err(PPError::NotReadyForSend) => {
+                                    return Err(MVBAError::NotReadyForMessage(ProtocolMessage {
+                                        header,
+                                        message_data,
+                                        message_type,
+                                    }));
+                                }
+                                Err(e) => return Err(MVBAError::PPError(e)),
                             }
-                            Err(e) => return Err(MVBAError::PPError(e)),
+                        } else {
+                            warn!("Did not find PPReceiver {} for Party {}!", send_id, recv_id);
+                            return Err(MVBAError::NotReadyForMessage(ProtocolMessage {
+                                header,
+                                message_data,
+                                message_type,
+                            }));
                         }
                     } else {
-                        warn!("Did not find PPReceiver {} for Party {}!", send_id, recv_id);
-                        return Err(MVBAError::NotReadyForMessage(ProtocolMessage {
-                            header,
-                            message_data,
-                            message_type,
-                        }));
-                    }
-                } else {
-                    warn!("pprecvs was not initialized for Party {}!", recv_id);
-                    return Err(MVBAError::NotReadyForMessage(ProtocolMessage {
-                        header,
-                        message_data,
-                        message_type,
-                    }));
-                }
-            }
-            messages::ProtocolMessageType::PBShareAck => {
-                let pp_send = self.pp_send.read().await;
-
-                if let Some(pp_send) = &*pp_send {
-                    let inner: PBShareAckMessage = deserialize(&message_data)?;
-
-                    if let Err(PPError::NotReadyForShareAck) =
-                        pp_send.on_share_ack(send_id, inner, &self.signer).await
-                    {
-                        warn!("pp_send not ready for message at Party {}!", recv_id);
+                        warn!("pprecvs was not initialized for Party {}!", recv_id);
                         return Err(MVBAError::NotReadyForMessage(ProtocolMessage {
                             header,
                             message_data,
@@ -312,46 +300,68 @@ impl<F: MVBASender + Sync + Send> MVBA<F> {
                         }));
                     }
                 }
-            }
-            messages::ProtocolMessageType::ElectCoinShare => {
-                let elect = self.elect.read().await;
+                MVBAMessageType::PBShareAck => {
+                    let pp_send = self.pp_send.read().await;
 
-                if let Some(elect) = &*elect {
-                    let inner: ElectCoinShareMessage = deserialize(&message_data)?;
+                    if let Some(pp_send) = &*pp_send {
+                        let inner: PBShareAckMessage = deserialize(&message_data)?;
 
-                    elect.on_coin_share_message(inner, &self.coin)?;
-                } else {
-                    return Err(MVBAError::NotReadyForMessage(ProtocolMessage {
-                        header,
-                        message_data,
-                        message_type,
-                    }));
-                }
-            }
-            messages::ProtocolMessageType::ViewChange => {
-                let view_change = self.view_change.read().await;
-
-                if let Some(view_change) = &*view_change {
-                    let inner: ViewChangeMessage = deserialize(&message_data)?;
-
-                    match view_change.on_view_change_message(&inner, &self.signer) {
-                        Ok(_) => return Ok(()),
-                        Err(ViewChangeError::ResultAlreadyTaken) => {
-                            // If ViewChangeResult was taken, this should only happen if the result was returned
-                            // to the invoke task. It is therefore fine to ignore.
-                            return Ok(());
+                        if let Err(PPError::NotReadyForShareAck) =
+                            pp_send.on_share_ack(send_id, inner, &self.signer).await
+                        {
+                            warn!("pp_send not ready for message at Party {}!", recv_id);
+                            return Err(MVBAError::NotReadyForMessage(ProtocolMessage {
+                                header,
+                                message_data,
+                                message_type,
+                            }));
                         }
-                        Err(e) => return Err(MVBAError::ViewChangeError(e)),
-                    };
-                } else {
-                    return Err(MVBAError::NotReadyForMessage(ProtocolMessage {
-                        header,
-                        message_data,
-                        message_type,
-                    }));
+                    }
+                }
+                MVBAMessageType::ElectCoinShare => {
+                    let elect = self.elect.read().await;
+
+                    if let Some(elect) = &*elect {
+                        let inner: ElectCoinShareMessage = deserialize(&message_data)?;
+
+                        elect.on_coin_share_message(inner, &self.coin)?;
+                    } else {
+                        return Err(MVBAError::NotReadyForMessage(ProtocolMessage {
+                            header,
+                            message_data,
+                            message_type,
+                        }));
+                    }
+                }
+                MVBAMessageType::ViewChange => {
+                    let view_change = self.view_change.read().await;
+
+                    if let Some(view_change) = &*view_change {
+                        let inner: ViewChangeMessage = deserialize(&message_data)?;
+
+                        match view_change.on_view_change_message(&inner, &self.signer) {
+                            Ok(_) => return Ok(()),
+                            Err(ViewChangeError::ResultAlreadyTaken) => {
+                                // If ViewChangeResult was taken, this should only happen if the result was returned
+                                // to the invoke task. It is therefore fine to ignore.
+                                return Ok(());
+                            }
+                            Err(e) => return Err(MVBAError::ViewChangeError(e)),
+                        };
+                    } else {
+                        return Err(MVBAError::NotReadyForMessage(ProtocolMessage {
+                            header,
+                            message_data,
+                            message_type,
+                        }));
+                    }
                 }
             }
-            messages::ProtocolMessageType::Unknown => {}
+        } else {
+            warn!(
+                "Message with other ProtocolMessageType: {:?} than MVBA was passed to MVBA.",
+                message_type
+            )
         }
         Ok(())
     }
@@ -761,11 +771,6 @@ impl<F: MVBASender + Sync + Send> MVBA<F> {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, Default)]
-pub struct Value {
-    pub(crate) inner: usize,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default)]
 pub struct MVBAID {
     id: usize,
     index: usize,
@@ -863,8 +868,9 @@ mod tests {
 
     use futures::future::join_all;
 
+    use crate::messaging::ToProtocolMessage;
+
     use super::buffer::MVBABuffer;
-    use super::messages::ToProtocolMessage;
     use super::*;
 
     use consensus_core::crypto::{commoncoin::Coin, sign::Signer};
@@ -882,7 +888,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl MVBASender for ChannelSender {
+    impl ProtocolMessageSender for ChannelSender {
         async fn send<M: ToProtocolMessage + Send + Sync>(
             &self,
             id: usize,

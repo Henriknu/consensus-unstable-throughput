@@ -1,1 +1,2 @@
-mod rbc;
+pub mod messages;
+pub mod rbc;

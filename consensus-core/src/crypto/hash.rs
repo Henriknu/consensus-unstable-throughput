@@ -1,5 +1,6 @@
 use byteorder::{BigEndian, ReadBytesExt};
 use p256::{AffinePoint, EncodedPoint, FieldBytes, NistP256, Scalar};
+use serde::{Deserialize, Serialize};
 use tiny_keccak::{Hasher, Sha3};
 use uint::{construct_uint, unroll};
 
@@ -11,7 +12,15 @@ pub trait Hashable {
     fn hash(&self) -> H256;
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, PartialOrd)]
+impl Hashable for Vec<u8> {
+    fn hash(&self) -> H256 {
+        H256 {
+            inner: hash_sha256(&self),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub struct H256 {
     pub inner: [u8; 32],
 }

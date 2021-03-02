@@ -3,7 +3,9 @@ use std::sync::{Arc, Mutex};
 use consensus_core::crypto::commoncoin::*;
 use tokio::sync::Notify;
 
-use super::messages::{ElectCoinShareMessage, MVBASender};
+use crate::messaging::ProtocolMessageSender;
+
+use super::messages::ElectCoinShareMessage;
 use thiserror::Error;
 
 pub type ElectResult<T> = Result<T, ElectError>;
@@ -32,7 +34,11 @@ impl Elect {
         }
     }
 
-    pub async fn invoke<F: MVBASender>(&self, coin: &Coin, send_handle: &F) -> ElectResult<usize> {
+    pub async fn invoke<F: ProtocolMessageSender>(
+        &self,
+        coin: &Coin,
+        send_handle: &F,
+    ) -> ElectResult<usize> {
         let share = coin.generate_share(self.tag.as_bytes());
         let elect_message = ElectCoinShareMessage::new(share.into());
 

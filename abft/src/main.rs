@@ -1,6 +1,6 @@
-mod protocols;
+use abft::protocols::mvba::{error::MVBAError, messages, MVBA};
 
-use self::protocols::mvba::{error::MVBAError, messages, Value, MVBA};
+use abft::Value;
 
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
@@ -8,13 +8,13 @@ use async_trait::async_trait;
 
 use futures::future::join_all;
 
+use abft::protocols::mvba::buffer::{MVBABuffer, MVBABufferCommand};
 use consensus_core::{
     crypto::{commoncoin::Coin, sign::Signer},
     data::message_buffer::MessageBuffer,
 };
-use protocols::mvba::buffer::{MVBABuffer, MVBABufferCommand};
 
-use protocols::mvba::messages::{
+use abft::protocols::mvba::messages::{
     ElectCoinShareMessage, MVBASender, PBSendMessage, PBShareAckMessage, ProtocolMessage,
     ToProtocolMessage, ViewChangeMessage,
 };
@@ -123,7 +123,7 @@ async fn main() {
             0,
             i,
             N_PARTIES,
-            Value { inner: i * 1000 },
+            Value::new(i * 1000),
             f,
             signer,
             coin,

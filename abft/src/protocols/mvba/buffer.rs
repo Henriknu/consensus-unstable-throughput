@@ -2,7 +2,9 @@ use std::collections::HashMap;
 
 use consensus_core::data::message_buffer::MessageBuffer;
 
-use super::messages::{ProtocolMessage, ProtocolMessageType};
+use crate::messaging::{ProtocolMessage, ProtocolMessageType};
+
+use super::messages::MVBAMessageType;
 
 pub struct MVBABuffer {
     pp_recv: HashMap<usize, MessageBuffer<ProtocolMessage>>,
@@ -53,36 +55,37 @@ impl MVBABuffer {
     }
 
     pub fn store(&mut self, message: ProtocolMessage) {
-        match message.message_type {
-            ProtocolMessageType::PBSend => {
-                self.pp_recv
-                    .entry(message.header.send_id)
-                    .or_default()
-                    .epochs
-                    .entry(message.header.view)
-                    .or_default()
-                    .push(message);
-            }
-            ProtocolMessageType::ElectCoinShare => {
-                self.elect
-                    .epochs
-                    .entry(message.header.view)
-                    .or_default()
-                    .push(message);
-            }
-            ProtocolMessageType::ViewChange => {
-                self.view_change
-                    .epochs
-                    .entry(message.header.view)
-                    .or_default()
-                    .push(message);
-            }
+        if let ProtocolMessageType::MVBA(mvba_message_type) = &message.message_type {
+            match mvba_message_type {
+                MVBAMessageType::PBSend => {
+                    self.pp_recv
+                        .entry(message.header.send_id)
+                        .or_default()
+                        .epochs
+                        .entry(message.header.view)
+                        .or_default()
+                        .push(message);
+                }
+                MVBAMessageType::ElectCoinShare => {
+                    self.elect
+                        .epochs
+                        .entry(message.header.view)
+                        .or_default()
+                        .push(message);
+                }
+                MVBAMessageType::ViewChange => {
+                    self.view_change
+                        .epochs
+                        .entry(message.header.view)
+                        .or_default()
+                        .push(message);
+                }
 
-            ProtocolMessageType::MVBADone
-            | ProtocolMessageType::MVBASkipShare
-            | ProtocolMessageType::MVBASkip
-            | ProtocolMessageType::Unknown
-            | ProtocolMessageType::PBShareAck => {}
+                MVBAMessageType::MVBADone
+                | MVBAMessageType::MVBASkipShare
+                | MVBAMessageType::MVBASkip
+                | MVBAMessageType::PBShareAck => {}
+            }
         }
     }
 }

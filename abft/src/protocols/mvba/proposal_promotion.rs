@@ -7,9 +7,11 @@ use tokio::sync::{
 
 use tokio::sync::Notify;
 
+use crate::messaging::ProtocolMessageSender;
+
 use super::{
     buffer::MVBABufferCommand,
-    messages::{MVBASender, PBSendMessage, PBShareAckMessage},
+    messages::{PBSendMessage, PBShareAckMessage},
     provable_broadcast::*,
     Value, MVBAID,
 };
@@ -61,7 +63,7 @@ impl PPSender {
         }
     }
 
-    pub async fn promote<F: MVBASender>(
+    pub async fn promote<F: ProtocolMessageSender>(
         &self,
         value: Value,
         key: PBKey,
@@ -247,7 +249,7 @@ impl PPReceiver {
         Ok(())
     }
 
-    pub async fn on_value_send_message<F: MVBASender>(
+    pub async fn on_value_send_message<F: ProtocolMessageSender>(
         &self,
         index: usize,
         message: PBSendMessage,

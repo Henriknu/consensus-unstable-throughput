@@ -1,6 +1,6 @@
 use std::hash::Hash;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::hash::{Hashable, H256};
 
@@ -38,7 +38,7 @@ impl MerkleTree {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MerkleBranch {
     nodes: Vec<H256>,
 }
@@ -107,7 +107,7 @@ mod tests {
 
         let branch = get_branch(&merkle, index);
 
-        let input = Hashable::hash(&1u64);
+        let input = Hashable::hash(&data[index]);
 
         assert!(verify_branch(
             merkle.root(),

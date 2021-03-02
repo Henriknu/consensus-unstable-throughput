@@ -1,9 +1,11 @@
 use thiserror::Error;
 use tokio::sync::mpsc::error::SendError;
 
+use crate::messaging::ProtocolMessage;
+
 use super::{
-    buffer::MVBABufferCommand, elect::ElectError, messages::ProtocolMessage,
-    proposal_promotion::PPError, view_change::ViewChangeError,
+    buffer::MVBABufferCommand, elect::ElectError, proposal_promotion::PPError,
+    view_change::ViewChangeError,
 };
 
 use bincode::Error as BincodeError;

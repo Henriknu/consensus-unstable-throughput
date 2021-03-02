@@ -9,8 +9,10 @@ use num_traits::FromPrimitive;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::messaging::ProtocolMessageSender;
+
 use super::{
-    messages::{MVBASender, PBSendMessage, PBShareAckMessage},
+    messages::{PBSendMessage, PBShareAckMessage},
     proposal_promotion::{PPProposal, PPStatus, PPID},
     Value, MVBAID,
 };
@@ -56,7 +58,7 @@ impl PBSender {
         }
     }
 
-    pub async fn broadcast<F: MVBASender>(
+    pub async fn broadcast<F: ProtocolMessageSender>(
         &self,
         signer: &Signer,
         send_handle: &F,
@@ -167,7 +169,7 @@ impl PBReceiver {
             .expect("Proposal has been validated on arrival")
     }
 
-    pub async fn on_value_send_message<F: MVBASender>(
+    pub async fn on_value_send_message<F: ProtocolMessageSender>(
         &self,
         index: usize,
         message: PBSendMessage,
