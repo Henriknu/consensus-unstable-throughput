@@ -1,3 +1,5 @@
+use std::fmt::Display;
+
 use byteorder::{BigEndian, ReadBytesExt};
 use p256::{AffinePoint, EncodedPoint, FieldBytes, NistP256, Scalar};
 use serde::{Deserialize, Serialize};
@@ -20,7 +22,9 @@ impl Hashable for Vec<u8> {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, PartialOrd, Serialize, Deserialize, Eq, Hash)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, PartialOrd, Serialize, Deserialize, Eq, Hash, Ord,
+)]
 pub struct H256 {
     pub inner: [u8; 32],
 }
@@ -33,6 +37,16 @@ impl H256 {
         sha3.update(&second.inner);
         sha3.finalize(&mut output);
         H256 { inner: output }
+    }
+}
+
+impl Display for H256 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}{}..{}{}",
+            self.inner[0], self.inner[1], self.inner[30], self.inner[31],
+        )
     }
 }
 

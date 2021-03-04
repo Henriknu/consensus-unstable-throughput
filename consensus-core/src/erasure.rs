@@ -10,11 +10,6 @@ mod test {
         assert_eq!(erasure_example(), Ok(()))
     }
 
-    #[test]
-    fn test_reconstruct() {
-        assert_eq!(erasure_reconstruct(), Ok(()))
-    }
-
     fn erasure_example() -> Result<()> {
         let data_fragments = NonZeroUsize::new(4).ok_or("too few fragments").unwrap();
         let parity_fragments = NonZeroUsize::new(2).ok_or("too few fragments").unwrap();
@@ -38,6 +33,10 @@ mod test {
 
         Ok(())
     }
+    #[test]
+    fn test_reconstruct() {
+        assert_eq!(erasure_reconstruct(), Ok(()))
+    }
 
     fn erasure_reconstruct() -> Result<()> {
         let data_fragments = NonZeroUsize::new(4).ok_or("too few fragments").unwrap();
@@ -49,6 +48,45 @@ mod test {
         let fragments = coder.encode(&input)?;
 
         assert_eq!(fragments.len(), 6);
+
+        println!(
+            "Fragments len: {:?}",
+            fragments.iter().map(|f| f.len()).sum::<usize>()
+        );
+
+        // Some fragments were lost..
+
+        let mut available_fragments = fragments.clone();
+        available_fragments.remove(0);
+
+        let reconstructed_fragment = coder.reconstruct(0, available_fragments.iter()).unwrap();
+
+        assert_eq!(reconstructed_fragment, fragments[0]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_correct_number_of_fragments() {
+        assert_eq!(erasure_correct_number_of_fragments(), Ok(()))
+    }
+
+    fn erasure_correct_number_of_fragments() -> Result<()> {
+        let f = 3;
+
+        let n = 3 * f + 1;
+
+        let k = n - 2 * f;
+
+        let data_fragments = NonZeroUsize::new(n - k).ok_or("too few fragments").unwrap();
+        let parity_fragments = NonZeroUsize::new(k).ok_or("too few fragments").unwrap();
+        let mut coder = ErasureCoder::new(data_fragments, parity_fragments)?;
+        let input = vec![10];
+
+        // Encodes `input` to data and parity fragments
+        let fragments = coder.encode(&input)?;
+
+        assert_eq!(fragments.len(), n);
 
         println!(
             "Fragments len: {:?}",

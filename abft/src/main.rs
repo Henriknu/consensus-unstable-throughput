@@ -1,4 +1,13 @@
-use abft::protocols::mvba::{error::MVBAError, messages, MVBA};
+use abft::{
+    messaging::{ProtocolMessage, ProtocolMessageSender, ToProtocolMessage},
+    protocols::{
+        mvba::{error::MVBAError, messages, MVBA},
+        prbc::{
+            buffer::{PRBCBuffer, PRBCBufferCommand},
+            PRBCError, PRBC,
+        },
+    },
+};
 
 use abft::Value;
 
@@ -15,18 +24,17 @@ use consensus_core::{
 };
 
 use abft::protocols::mvba::messages::{
-    ElectCoinShareMessage, MVBASender, PBSendMessage, PBShareAckMessage, ProtocolMessage,
-    ToProtocolMessage, ViewChangeMessage,
+    ElectCoinShareMessage, PBSendMessage, PBShareAckMessage, ViewChangeMessage,
 };
 use tokio::sync::{
     mpsc::{self, Receiver, Sender},
     Mutex,
 };
 
-use log::{debug, error, warn};
+use log::{debug, error, info, warn};
 
 const N_PARTIES: usize = THRESHOLD * 3 + 1;
-const THRESHOLD: usize = 5;
+const THRESHOLD: usize = 20;
 const BUFFER_CAPACITY: usize = THRESHOLD * 30;
 
 struct ChannelSender {
@@ -34,7 +42,7 @@ struct ChannelSender {
 }
 
 #[async_trait]
-impl MVBASender for ChannelSender {
+impl ProtocolMessageSender for ChannelSender {
     async fn send<M: ToProtocolMessage + Send + Sync>(
         &self,
         id: usize,
@@ -85,11 +93,9 @@ impl MVBASender for ChannelSender {
 async fn main() {
     env_logger::init();
 
-    let mut signers = Signer::generate_signers(N_PARTIES, N_PARTIES - THRESHOLD - 1);
-    let mut coins = Coin::generate_coins(N_PARTIES, THRESHOLD + 1);
+    let mut signers = Signer::generate_signers(N_PARTIES, THRESHOLD);
 
     assert_eq!(signers.len(), N_PARTIES);
-    assert_eq!(coins.len(), N_PARTIES);
 
     let mut channels: Vec<_> = (0..N_PARTIES)
         .map(|_| {
@@ -115,38 +121,42 @@ async fn main() {
             .collect();
 
         let signer = signers.remove(0);
-        let coin = coins.remove(0);
 
         let f = ChannelSender { senders };
 
-        let mvba = Arc::new(MVBA::init(
-            0,
-            i,
-            N_PARTIES,
-            Value::new(i * 1000),
-            f,
-            signer,
-            coin,
-        ));
+        let value;
+        let send_id;
+
+        if i == 0 {
+            value = Some(Value::new(1000));
+            send_id = None;
+        } else {
+            value = None;
+            send_id = Some(0usize);
+        }
+
+        let prbc = Arc::new(PRBC::init(0, i, N_PARTIES, send_id, f, signer));
 
         // Setup buffer manager
 
-        let mut buffer = MVBABuffer::new();
+        let mut buffer = PRBCBuffer::new();
 
-        let buffer_mvba = mvba.clone();
+        let buffer_prbc = prbc.clone();
 
         let (buff_cmd_send, mut buff_cmd_recv) =
-            mpsc::channel::<MVBABufferCommand>(BUFFER_CAPACITY);
+            mpsc::channel::<PRBCBufferCommand>(BUFFER_CAPACITY);
 
-        let buffer_manager_handle = tokio::spawn(async move {
+        let _ = tokio::spawn(async move {
             while let Some(command) = buff_cmd_recv.recv().await {
                 let messages = buffer.execute(command);
 
+                info!("Buffer {} retrieved {} messages", i, messages.len());
+
                 for message in messages {
-                    match buffer_mvba.handle_protocol_message(message).await {
+                    match buffer_prbc.handle_protocol_message(message).await {
                         Ok(_) => {}
-                        Err(MVBAError::NotReadyForMessage(early_message)) => {
-                            buffer.execute(MVBABufferCommand::Store {
+                        Err(PRBCError::NotReadyForMessage(early_message)) => {
+                            buffer.execute(PRBCBufferCommand::Store {
                                 message: early_message,
                             });
                         }
@@ -164,15 +174,15 @@ async fn main() {
 
         let msg_buff_send = buff_cmd_send.clone();
 
-        let msg_mvba = mvba.clone();
+        let msg_prbc = prbc.clone();
 
-        let messaging_handle = tokio::spawn(async move {
+        let _ = tokio::spawn(async move {
             while let Some(message) = recv.recv().await {
                 debug!("Received message at {}", i);
-                match msg_mvba.handle_protocol_message(message).await {
+                match msg_prbc.handle_protocol_message(message).await {
                     Ok(_) => {}
-                    Err(MVBAError::NotReadyForMessage(early_message)) => msg_buff_send
-                        .send(MVBABufferCommand::Store {
+                    Err(PRBCError::NotReadyForMessage(early_message)) => msg_buff_send
+                        .send(PRBCBufferCommand::Store {
                             message: early_message,
                         })
                         .await
@@ -190,7 +200,15 @@ async fn main() {
 
         let main_buff_send = buff_cmd_send.clone();
 
-        let main_handle = tokio::spawn(async move { mvba.invoke(main_buff_send).await });
+        let main_handle = tokio::spawn(async move {
+            match prbc.invoke(value, main_buff_send).await {
+                Ok(value) => return Ok(value),
+                Err(e) => {
+                    error!("Party {} got error when invoking prbc: {}", i, e);
+                    return Err(e);
+                }
+            }
+        });
 
         handles.push(main_handle);
     }

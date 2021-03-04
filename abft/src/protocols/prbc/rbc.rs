@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashMap,
+    collections::BTreeMap,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -13,7 +13,7 @@ use consensus_core::crypto::{
     merkle::{get_branch, verify_branch, MerkleTree},
 };
 use consensus_core::erasure::{ErasureCoder, Error as ErasureCoderError, NonZeroUsize};
-use log::warn;
+use log::{info, warn};
 use thiserror::Error;
 use tokio::sync::{Notify, RwLock};
 
@@ -27,12 +27,11 @@ pub struct RBC {
     id: usize,
     index: usize,
     n_parties: usize,
-    root: RwLock<H256>,
-    echo_messages: RwLock<HashMap<usize, RBCEchoMessage>>,
-    ready_messages: RwLock<HashMap<H256, HashMap<usize, RBCReadyMessage>>>,
+    erasure: RwLock<ErasureCoder>,
+    echo_messages: RwLock<BTreeMap<H256, BTreeMap<usize, RBCEchoMessage>>>,
+    ready_messages: RwLock<BTreeMap<H256, BTreeMap<usize, RBCReadyMessage>>>,
     notify_echo: Arc<Notify>,
     notify_ready: Arc<Notify>,
-    has_seen_root: AtomicBool,
     has_sent_ready: AtomicBool,
 }
 
@@ -42,12 +41,14 @@ impl RBC {
             id,
             index,
             n_parties,
-            root: Default::default(),
+            erasure: RwLock::new(ErasureCoder::new(
+                NonZeroUsize::new(n_parties * 2 / 3).ok_or_else(|| RBCError::ZeroUsize)?,
+                NonZeroUsize::new(n_parties / 3 + 1).ok_or_else(|| RBCError::ZeroUsize)?,
+            )?),
             echo_messages: Default::default(),
             ready_messages: Default::default(),
             notify_echo: Arc::new(Notify::new()),
             notify_ready: Arc::new(Notify::new()),
-            has_seen_root: AtomicBool::new(false),
             has_sent_ready: AtomicBool::new(false),
         })
     }
@@ -57,22 +58,31 @@ impl RBC {
         value: Option<Value>,
         send_handle: &F,
     ) -> RBCResult<Value> {
-        let mut erasure = self.init_erasure()?;
-
         if let Some(value) = value {
-            self.broadcast_value(value, &mut erasure, send_handle)
-                .await?;
+            self.broadcast_value(value, send_handle).await?;
         }
 
         let notify_ready = self.notify_ready.clone();
 
         notify_ready.notified().await;
 
+        info!(
+            "Party {} done waiting on receiving ready messages. ",
+            self.index
+        );
+
         let notify_echo = self.notify_echo.clone();
 
         notify_echo.notified().await;
 
-        let value = self.decode_value(&mut erasure).await?;
+        info!(
+            "Party {} done waiting on receiving echo messages. ",
+            self.index
+        );
+
+        let value = self.decode_value().await?;
+
+        info!("Party {} decoded the value to be: {:?} ", self.index, value,);
 
         Ok(value)
     }
@@ -111,22 +121,22 @@ impl RBC {
             return Ok(());
         }
 
-        if !self.has_seen_root.load(Ordering::SeqCst) {
-            let mut lock = self.root.write().await;
-            *lock = message.root;
-            self.has_seen_root.store(true, Ordering::SeqCst);
-        }
-
         let n_echo_messages;
+        let root = message.root;
 
         {
             let mut lock = self.echo_messages.write().await;
 
-            if !lock.contains_key(&message.index) {
-                lock.insert(message.index, message);
+            if !lock
+                .entry(message.root)
+                .or_default()
+                .contains_key(&message.index)
+            {
+                lock.entry(message.root).and_modify(|map| {
+                    map.insert(message.index, message);
+                });
             }
-
-            n_echo_messages = lock.len();
+            n_echo_messages = lock.entry(root).or_default().len();
         }
 
         if n_echo_messages >= (self.n_parties / 3 + 1) {
@@ -136,16 +146,12 @@ impl RBC {
         if n_echo_messages >= (self.n_parties * 2 / 3 + 1)
             && !self.has_sent_ready.load(Ordering::SeqCst)
         {
-            let mut erasure = self.init_erasure()?;
-
-            let blocks = self.reconstruct_blocks(&mut erasure).await?;
+            let blocks = self.reconstruct_blocks_with_root(root).await?;
 
             let merkle2 = MerkleTree::new(&blocks);
 
             {
-                let lock = self.root.read().await;
-
-                if *merkle2.root() != *lock {
+                if *merkle2.root() != root {
                     return Err(RBCError::InvalidMerkleRootConstructed);
                 }
             }
@@ -155,6 +161,8 @@ impl RBC {
             send_handle
                 .broadcast(self.id, self.index, self.n_parties, 0, ready_message)
                 .await;
+
+            self.has_sent_ready.store(true, Ordering::SeqCst);
         }
 
         Ok(())
@@ -166,8 +174,7 @@ impl RBC {
         message: RBCReadyMessage,
         send_handle: &F,
     ) -> RBCResult<()> {
-        // validation
-
+        let root = message.root;
         let n_ready_messages;
 
         {
@@ -177,18 +184,19 @@ impl RBC {
                 lock.entry(message.root).or_default().insert(index, message);
             }
 
-            n_ready_messages = lock.len();
+            n_ready_messages = lock.entry(root).or_default().len();
         }
 
         if n_ready_messages >= (self.n_parties / 3 + 1)
             && !self.has_sent_ready.load(Ordering::SeqCst)
         {
-            let lock = self.root.read().await;
-            let ready_message = RBCReadyMessage::new(*lock);
+            let ready_message = RBCReadyMessage::new(root);
 
             send_handle
                 .broadcast(self.id, self.index, self.n_parties, 0, ready_message)
                 .await;
+
+            self.has_sent_ready.store(true, Ordering::SeqCst);
         }
 
         if n_ready_messages >= (self.n_parties * 2 / 3 + 1) {
@@ -201,55 +209,90 @@ impl RBC {
     async fn broadcast_value<F: ProtocolMessageSender>(
         &self,
         value: Value,
-        erasure: &mut ErasureCoder,
         send_handle: &F,
     ) -> RBCResult<()> {
+        let mut erasure = self.erasure.write().await;
+
         let blocks = erasure
             .encode(&serialize(&value)?)?
             .into_iter()
             .map(|inner| RBCBlock { inner })
             .collect::<Vec<_>>();
 
+        assert_eq!(blocks.len(), self.n_parties);
+
         let merkle = MerkleTree::new(&blocks);
 
         let mut blocks = blocks.into_iter();
+
+        info!(
+            "Party {} broadcasts value: {:?} in PRBC with root: {}",
+            self.index,
+            value,
+            merkle.root()
+        );
 
         for j in 0..self.n_parties {
             let block = blocks
                 .next()
                 .ok_or_else(|| RBCError::FaultyNumberOfErasureBlocks)?;
-            if j != self.index {
-                let message = RBCValueMessage::new(*merkle.root(), block, get_branch(&merkle, j));
 
+            let message = RBCValueMessage::new(*merkle.root(), block, get_branch(&merkle, j));
+            if j != self.index {
                 send_handle.send(self.id, self.index, j, 0, message).await;
+            } else {
+                self.on_value_message(message, send_handle).await?;
             }
         }
 
         Ok(())
     }
 
-    async fn reconstruct_blocks(&self, erasure: &mut ErasureCoder) -> RBCResult<Vec<RBCBlock>> {
+    async fn reconstruct_blocks_with_root(&self, root: H256) -> RBCResult<Vec<RBCBlock>> {
         // want to reconstruct whatever blocks sent out which have not been
-        let lock = self.echo_messages.read().await;
+        let mut lock = self.echo_messages.write().await;
+        let mut erasure = self.erasure.write().await;
 
-        let mut blocks: Vec<RBCBlock> =
-            lock.values().map(|message| message.block.clone()).collect();
+        let mut blocks: BTreeMap<usize, RBCBlock> = lock
+            .entry(root)
+            .or_default()
+            .iter()
+            .map(|(index, message)| (*index, message.block.clone()))
+            .collect();
 
         for j in 0..self.n_parties {
-            if !lock.contains_key(&j) {
-                blocks.push(RBCBlock {
-                    inner: erasure.reconstruct(j, blocks.iter())?,
-                });
+            if !lock.entry(root).or_default().contains_key(&j) {
+                blocks.insert(
+                    j,
+                    RBCBlock {
+                        inner: erasure.reconstruct(j, blocks.values())?,
+                    },
+                );
             }
         }
+
+        let blocks = blocks.into_iter().map(|(_, block)| block).collect();
 
         Ok(blocks)
     }
 
-    async fn decode_value(&self, erasure: &mut ErasureCoder) -> RBCResult<Value> {
-        let lock = self.echo_messages.read().await;
+    async fn decode_value(&self) -> RBCResult<Value> {
+        let root = self.get_ready_root().await?;
 
-        let blocks: Vec<RBCBlock> = lock.values().map(|message| message.block.clone()).collect();
+        let blocks: Vec<RBCBlock>;
+
+        {
+            let lock = self.echo_messages.read().await;
+
+            blocks = lock
+                .get(&root)
+                .ok_or_else(|| RBCError::NoReadyRootFound)?
+                .values()
+                .map(|message| message.block.clone())
+                .collect();
+        }
+
+        let mut erasure = self.erasure.write().await;
 
         let bytes = erasure.decode(&blocks)?;
 
@@ -258,11 +301,18 @@ impl RBC {
         Ok(value)
     }
 
-    fn init_erasure(&self) -> RBCResult<ErasureCoder> {
-        Ok(ErasureCoder::new(
-            NonZeroUsize::new(self.n_parties / 3 + 1).ok_or_else(|| RBCError::ZeroUsize)?,
-            NonZeroUsize::new(self.n_parties).ok_or_else(|| RBCError::ZeroUsize)?,
-        )?)
+    async fn get_ready_root(&self) -> RBCResult<H256> {
+        let lock = self.ready_messages.read().await;
+
+        for (root, map) in lock.iter() {
+            if map.len() >= (self.n_parties * 2 / 3 + 1) {
+                return Ok(*root);
+            }
+        }
+
+        warn!("Party {} could not find a ready root ", self.index);
+
+        Err(RBCError::NoReadyRootFound)
     }
 }
 
@@ -278,6 +328,8 @@ pub enum RBCError {
     InvalidMerkleRootConstructed,
     #[error("Reconstructed merkle root did not match original merkle root received by sender")]
     FaultyNumberOfErasureBlocks,
+    #[error("Reconstructed merkle root did not match original merkle root received by sender")]
+    NoReadyRootFound,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

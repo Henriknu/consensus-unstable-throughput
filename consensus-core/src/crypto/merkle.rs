@@ -64,7 +64,12 @@ pub fn verify_branch(
     branch: &MerkleBranch,
 ) -> bool {
     assert!(index <= leaf_width);
-    assert!(branch.nodes.len() as u32 == f64::log2(leaf_width as f64).ceil() as u32);
+    assert!(
+        branch.nodes.len() as u32 == f64::log2(leaf_width as f64).ceil() as u32,
+        "Branch len: {}, len from leafs: {}",
+        branch.nodes.len() as u32,
+        f64::log2(leaf_width as f64).ceil() as u32
+    );
 
     let mut tmp = *data;
     let mut tindex = index;
