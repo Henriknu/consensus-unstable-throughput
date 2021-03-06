@@ -34,7 +34,7 @@ use tokio::sync::{
 use log::{debug, error, info, warn};
 
 const N_PARTIES: usize = THRESHOLD * 3 + 1;
-const THRESHOLD: usize = 20;
+const THRESHOLD: usize = 1;
 const BUFFER_CAPACITY: usize = THRESHOLD * 30;
 
 struct ChannelSender {

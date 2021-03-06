@@ -3,8 +3,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::messaging::{ProtocolMessageType, ToProtocolMessage};
 
-use super::rbc::RBCBlock;
-
 #[derive(Debug, Clone)]
 pub enum PRBCMessageType {
     //PRBC
@@ -36,15 +34,15 @@ impl ToProtocolMessage for PRBCDoneMessage {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RBCValueMessage {
     pub(crate) root: H256,
-    pub(crate) block: RBCBlock,
+    pub(crate) fragment: Vec<u8>,
     pub(crate) branch: MerkleBranch,
 }
 
 impl RBCValueMessage {
-    pub fn new(root: H256, block: RBCBlock, branch: MerkleBranch) -> Self {
+    pub fn new(root: H256, fragment: Vec<u8>, branch: MerkleBranch) -> Self {
         Self {
             root,
-            block,
+            fragment,
             branch,
         }
     }
@@ -73,16 +71,16 @@ impl ToProtocolMessage for RBCReadyMessage {
 pub struct RBCEchoMessage {
     pub(crate) index: usize,
     pub(crate) root: H256,
-    pub(crate) block: RBCBlock,
+    pub(crate) fragment: Vec<u8>,
     pub(crate) branch: MerkleBranch,
 }
 
 impl RBCEchoMessage {
-    pub fn new(index: usize, root: H256, block: RBCBlock, branch: MerkleBranch) -> Self {
+    pub fn new(index: usize, root: H256, fragment: Vec<u8>, branch: MerkleBranch) -> Self {
         Self {
             index,
             root,
-            block,
+            fragment,
             branch,
         }
     }

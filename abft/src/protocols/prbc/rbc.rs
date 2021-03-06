@@ -12,7 +12,7 @@ use consensus_core::crypto::{
     hash::{Hashable, H256},
     merkle::{get_branch, verify_branch, MerkleTree},
 };
-use consensus_core::erasure::{ErasureCoder, Error as ErasureCoderError, NonZeroUsize};
+use consensus_core::erasure::{ErasureCoder, ErasureCoderError, NonZeroUsize};
 use log::{info, warn};
 use thiserror::Error;
 use tokio::sync::{Notify, RwLock};
@@ -93,7 +93,7 @@ impl RBC {
         send_handle: &F,
     ) -> RBCResult<()> {
         let echo_message =
-            RBCEchoMessage::new(self.index, message.root, message.block, message.branch);
+            RBCEchoMessage::new(self.index, message.root, message.fragment, message.branch);
 
         send_handle
             .broadcast(self.id, self.index, self.n_parties, 0, echo_message)
@@ -109,7 +109,7 @@ impl RBC {
     ) -> RBCResult<()> {
         if !verify_branch(
             &message.root,
-            &message.block.hash(),
+            &message.fragment.hash(),
             message.index,
             self.n_parties,
             &message.branch,
@@ -211,19 +211,15 @@ impl RBC {
         value: Value,
         send_handle: &F,
     ) -> RBCResult<()> {
-        let mut erasure = self.erasure.write().await;
+        let erasure = self.erasure.write().await;
 
-        let blocks = erasure
-            .encode(&serialize(&value)?)?
-            .into_iter()
-            .map(|inner| RBCBlock { inner })
-            .collect::<Vec<_>>();
+        let fragments = erasure.encode(&serialize(&value)?);
 
-        assert_eq!(blocks.len(), self.n_parties);
+        assert_eq!(fragments.len(), self.n_parties);
 
-        let merkle = MerkleTree::new(&blocks);
+        let merkle = MerkleTree::new(&fragments);
 
-        let mut blocks = blocks.into_iter();
+        let mut fragments = fragments.into_iter();
 
         info!(
             "Party {} broadcasts value: {:?} in PRBC with root: {}",
@@ -233,11 +229,11 @@ impl RBC {
         );
 
         for j in 0..self.n_parties {
-            let block = blocks
+            let fragment = fragments
                 .next()
                 .ok_or_else(|| RBCError::FaultyNumberOfErasureBlocks)?;
 
-            let message = RBCValueMessage::new(*merkle.root(), block, get_branch(&merkle, j));
+            let message = RBCValueMessage::new(*merkle.root(), fragment, get_branch(&merkle, j));
             if j != self.index {
                 send_handle.send(self.id, self.index, j, 0, message).await;
             } else {
@@ -248,53 +244,59 @@ impl RBC {
         Ok(())
     }
 
-    async fn reconstruct_blocks_with_root(&self, root: H256) -> RBCResult<Vec<RBCBlock>> {
+    async fn reconstruct_blocks_with_root(&self, root: H256) -> RBCResult<Vec<Vec<u8>>> {
         // want to reconstruct whatever blocks sent out which have not been
         let mut lock = self.echo_messages.write().await;
-        let mut erasure = self.erasure.write().await;
+        let erasure = self.erasure.write().await;
 
-        let mut blocks: BTreeMap<usize, RBCBlock> = lock
-            .entry(root)
-            .or_default()
-            .iter()
-            .map(|(index, message)| (*index, message.block.clone()))
-            .collect();
+        let root_map = lock.entry(root).or_default();
 
-        for j in 0..self.n_parties {
-            if !lock.entry(root).or_default().contains_key(&j) {
-                blocks.insert(
-                    j,
-                    RBCBlock {
-                        inner: erasure.reconstruct(j, blocks.values())?,
-                    },
-                );
+        let mut erasures = Vec::<i32>::with_capacity(self.n_parties);
+
+        for i in 0..self.n_parties {
+            if !root_map.contains_key(&i) {
+                erasures.push(i as i32);
             }
         }
 
-        let blocks = blocks.into_iter().map(|(_, block)| block).collect();
+        let fragments = root_map
+            .iter()
+            .map(|(_, message)| message.fragment.clone())
+            .collect::<Vec<Vec<u8>>>();
 
-        Ok(blocks)
+        let fragments = erasure.reconstruct(&fragments, erasures)?;
+
+        Ok(fragments)
     }
 
     async fn decode_value(&self) -> RBCResult<Value> {
         let root = self.get_ready_root().await?;
 
-        let blocks: Vec<RBCBlock>;
+        let fragments: Vec<Vec<u8>>;
+        let mut erasures = Vec::<i32>::with_capacity(self.n_parties);
 
         {
             let lock = self.echo_messages.read().await;
 
-            blocks = lock
+            let root_map = lock.get(&root).ok_or_else(|| RBCError::NoReadyRootFound)?;
+
+            for i in 0..self.n_parties {
+                if !root_map.contains_key(&i) {
+                    erasures.push(i as i32);
+                }
+            }
+
+            fragments = lock
                 .get(&root)
                 .ok_or_else(|| RBCError::NoReadyRootFound)?
                 .values()
-                .map(|message| message.block.clone())
+                .map(|message| message.fragment.clone())
                 .collect();
         }
 
-        let mut erasure = self.erasure.write().await;
+        let erasure = self.erasure.write().await;
 
-        let bytes = erasure.decode(&blocks)?;
+        let bytes = erasure.decode(&fragments, erasures)?;
 
         let value: Value = deserialize(&bytes)?;
 
@@ -330,21 +332,4 @@ pub enum RBCError {
     FaultyNumberOfErasureBlocks,
     #[error("Reconstructed merkle root did not match original merkle root received by sender")]
     NoReadyRootFound,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct RBCBlock {
-    inner: Vec<u8>,
-}
-
-impl Hashable for RBCBlock {
-    fn hash(&self) -> H256 {
-        self.inner.hash()
-    }
-}
-
-impl AsRef<[u8]> for RBCBlock {
-    fn as_ref(&self) -> &[u8] {
-        &self.inner
-    }
 }

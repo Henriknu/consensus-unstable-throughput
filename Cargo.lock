@@ -253,7 +253,7 @@ dependencies = [
  "criterion",
  "frost",
  "hex",
- "liberasurecode",
+ "libjerasure",
  "openssl",
  "p256",
  "rand 0.6.5",
@@ -837,11 +837,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b7282d924be3275cec7f6756ff4121987bc6481325397dde6ba3e7802b1a8b1c"
 
 [[package]]
-name = "liberasurecode"
-version = "1.0.3"
-source = "git+https://github.com/Henriknu/liberasurecode#d3d4924a32507c7740a5e6c39641bde2fdc844cd"
+name = "libjerasure"
+version = "0.1.0"
+source = "git+https://github.com/Henriknu/libjerasure?branch=main#b795830d1eb53ecc0e613ea8223a338b3d667508"
 dependencies = [
  "libc",
+ "thiserror",
 ]
 
 [[package]]
