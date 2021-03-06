@@ -839,8 +839,9 @@ checksum = "b7282d924be3275cec7f6756ff4121987bc6481325397dde6ba3e7802b1a8b1c"
 [[package]]
 name = "libjerasure"
 version = "0.1.0"
-source = "git+https://github.com/Henriknu/libjerasure?branch=main#b795830d1eb53ecc0e613ea8223a338b3d667508"
+source = "git+https://github.com/Henriknu/libjerasure?branch=main#d29feca57fef2fd3997ba6a2275aaae901a7cef5"
 dependencies = [
+ "lazy_static",
  "libc",
  "thiserror",
 ]
