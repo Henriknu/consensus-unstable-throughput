@@ -75,8 +75,8 @@ impl ProtocolMessageSender for ChannelSender {
     }
 }
 
-#[tokio::main]
-async fn main() {
+#[tokio::test]
+async fn mvba_correctness() {
     env_logger::init();
 
     let mut signers = Signer::generate_signers(N_PARTIES, N_PARTIES - THRESHOLD - 1);
@@ -212,9 +212,26 @@ async fn main() {
     println!("-------------------------------------------------------------");
     println!();
 
-    for (i, result) in results.iter().enumerate() {
-        if let Ok(value) = result {
-            println!("Value returned party {} = {:?}", i, value);
+    let mut cmp_value = None;
+
+    for (i, join_result) in results.iter().enumerate() {
+        match join_result {
+            Ok(mvba_result) => match mvba_result {
+                Ok(value) => {
+                    println!("Value returned party {} = {:?}", i, value);
+                    if let None = cmp_value {
+                        cmp_value.replace(*value);
+                    }
+                    assert_eq!(*value, cmp_value.unwrap());
+                }
+
+                Err(e) => {
+                    panic!("Party {} got a error when runningm mvba: {}", i, e);
+                }
+            },
+            Err(e) => {
+                panic!("Party {} got a error when joining: {}", i, e);
+            }
         }
     }
 }

@@ -39,7 +39,7 @@ pub mod provable_broadcast;
 pub mod view_change;
 
 /// Instance of Multi-valued Validated Byzantine Agreement
-pub struct MVBA<F: ProtocolMessageSender + Sync + Send> {
+pub struct MVBA {
     /// Identifier for protocol
     id: usize,
     index: usize,
@@ -53,23 +53,10 @@ pub struct MVBA<F: ProtocolMessageSender + Sync + Send> {
     pp_recvs: RwLock<Option<HashMap<usize, Arc<PPReceiver>>>>,
     elect: RwLock<Option<Elect>>,
     view_change: RwLock<Option<ViewChange>>,
-
-    // Infrastructure
-    send_handle: F,
-    coin: Coin,
-    signer: Signer,
 }
 
-impl<F: ProtocolMessageSender + Sync + Send> MVBA<F> {
-    pub fn init(
-        id: usize,
-        index: usize,
-        n_parties: usize,
-        value: Value,
-        send_handle: F,
-        signer: Signer,
-        coin: Coin,
-    ) -> Self {
+impl MVBA {
+    pub fn init(id: usize, index: usize, n_parties: usize, value: Value) -> Self {
         Self {
             id,
             index,
@@ -80,13 +67,16 @@ impl<F: ProtocolMessageSender + Sync + Send> MVBA<F> {
             pp_recvs: RwLock::new(None),
             elect: RwLock::new(None),
             view_change: RwLock::new(None),
-            coin,
-            signer,
-            send_handle,
         }
     }
 
-    pub async fn invoke(&self, buff_handle: Sender<MVBABufferCommand>) -> MVBAResult<Value> {
+    pub async fn invoke<F: ProtocolMessageSender + Sync + Send>(
+        &self,
+        buff_handle: Sender<MVBABufferCommand>,
+        send_handle: &F,
+        signer: &Signer,
+        coin: &Coin,
+    ) -> MVBAResult<Value> {
         loop {
             let (id, index) = (self.id, self.index);
 
@@ -148,7 +138,7 @@ impl<F: ProtocolMessageSender + Sync + Send> MVBA<F> {
                 );
 
                 let promotion_proof: Option<PBSig> = tokio::select! {
-                    proof = pp_send.promote(value, key, &self.signer, &self.send_handle) => proof?,
+                    proof = pp_send.promote(value, key, signer, send_handle) => proof?,
                     _ = notify_skip.notified() => {
                         None
                     },
@@ -159,7 +149,8 @@ impl<F: ProtocolMessageSender + Sync + Send> MVBA<F> {
                     index, promotion_proof
                 );
 
-                self.send_done_if_not_skip(promotion_proof).await?;
+                self.send_done_if_not_skip(promotion_proof, send_handle)
+                    .await?;
             }
 
             // ***** LEADER ELECTION *****
@@ -178,7 +169,7 @@ impl<F: ProtocolMessageSender + Sync + Send> MVBA<F> {
                 .send(MVBABufferCommand::ElectCoinShare { view })
                 .await?;
 
-            let leader = elect.invoke(&self.coin, &self.send_handle).await?;
+            let leader = elect.invoke(coin, send_handle).await?;
 
             info!(
                 "Party {} finished electing phase for view: {}, electing the leader: {} ",
@@ -214,7 +205,7 @@ impl<F: ProtocolMessageSender + Sync + Send> MVBA<F> {
             info!("Party {} started view change for view: {}", index, view);
 
             let changes = view_change
-                .invoke(result.key, result.lock, result.commit, &self.send_handle)
+                .invoke(result.key, result.lock, result.commit, send_handle)
                 .await?;
 
             info!("Party {} succesfully completed view change in view: {}. Leader: {}, with result: {:?}", index, view, leader, changes);
@@ -234,7 +225,13 @@ impl<F: ProtocolMessageSender + Sync + Send> MVBA<F> {
         }
     }
 
-    pub async fn handle_protocol_message(&self, message: ProtocolMessage) -> MVBAResult<()> {
+    pub async fn handle_protocol_message<F: ProtocolMessageSender + Sync + Send>(
+        &self,
+        message: ProtocolMessage,
+        send_handle: &F,
+        signer: &Signer,
+        coin: &Coin,
+    ) -> MVBAResult<()> {
         let ProtocolMessage {
             header,
             message_data,
@@ -254,17 +251,19 @@ impl<F: ProtocolMessageSender + Sync + Send> MVBA<F> {
                 MVBAMessageType::MVBADone => {
                     let inner: MVBADoneMessage = deserialize(&message_data)?;
 
-                    self.on_done_message(send_id, inner).await?;
+                    self.on_done_message(send_id, inner, send_handle, signer)
+                        .await?;
                 }
                 MVBAMessageType::MVBASkipShare => {
                     let inner: MVBASkipShareMessage = deserialize(&message_data)?;
 
-                    self.on_skip_share_message(send_id, inner).await?;
+                    self.on_skip_share_message(send_id, inner, send_handle, signer)
+                        .await?;
                 }
                 MVBAMessageType::MVBASkip => {
                     let inner: MVBASkipMessage = deserialize(&message_data)?;
 
-                    self.on_skip_message(inner).await?;
+                    self.on_skip_message(inner, send_handle, signer).await?;
                 }
                 MVBAMessageType::PBSend => {
                     let pp_recvs = self.pp_recvs.read().await;
@@ -272,7 +271,10 @@ impl<F: ProtocolMessageSender + Sync + Send> MVBA<F> {
                         if let Some(pp) = pp_recvs.get(&send_id) {
                             let inner: PBSendMessage = deserialize(&message_data)?;
 
-                            match self.on_pb_send_message(pp, inner, send_id).await {
+                            match self
+                                .on_pb_send_message(pp, inner, send_id, send_handle, signer)
+                                .await
+                            {
                                 Ok(_) => return Ok(()),
                                 Err(PPError::NotReadyForSend) => {
                                     return Err(MVBAError::NotReadyForMessage(ProtocolMessage {
@@ -307,7 +309,7 @@ impl<F: ProtocolMessageSender + Sync + Send> MVBA<F> {
                         let inner: PBShareAckMessage = deserialize(&message_data)?;
 
                         if let Err(PPError::NotReadyForShareAck) =
-                            pp_send.on_share_ack(send_id, inner, &self.signer).await
+                            pp_send.on_share_ack(send_id, inner, signer).await
                         {
                             warn!("pp_send not ready for message at Party {}!", recv_id);
                             return Err(MVBAError::NotReadyForMessage(ProtocolMessage {
@@ -324,7 +326,7 @@ impl<F: ProtocolMessageSender + Sync + Send> MVBA<F> {
                     if let Some(elect) = &*elect {
                         let inner: ElectCoinShareMessage = deserialize(&message_data)?;
 
-                        elect.on_coin_share_message(inner, &self.coin)?;
+                        elect.on_coin_share_message(inner, coin)?;
                     } else {
                         return Err(MVBAError::NotReadyForMessage(ProtocolMessage {
                             header,
@@ -339,7 +341,7 @@ impl<F: ProtocolMessageSender + Sync + Send> MVBA<F> {
                     if let Some(view_change) = &*view_change {
                         let inner: ViewChangeMessage = deserialize(&message_data)?;
 
-                        match view_change.on_view_change_message(&inner, &self.signer) {
+                        match view_change.on_view_change_message(&inner, signer) {
                             Ok(_) => return Ok(()),
                             Err(ViewChangeError::ResultAlreadyTaken) => {
                                 // If ViewChangeResult was taken, this should only happen if the result was returned
@@ -366,7 +368,13 @@ impl<F: ProtocolMessageSender + Sync + Send> MVBA<F> {
         Ok(())
     }
 
-    pub async fn on_done_message(&self, index: usize, message: MVBADoneMessage) -> MVBAResult<()> {
+    pub async fn on_done_message<F: ProtocolMessageSender + Sync + Send>(
+        &self,
+        index: usize,
+        message: MVBADoneMessage,
+        send_handle: &F,
+        signer: &Signer,
+    ) -> MVBAResult<()> {
         let MVBADoneMessage { id, proposal } = message;
         let PPProposal { value, proof } = proposal;
         let PBProof { proof_prev, .. } = proof;
@@ -416,10 +424,7 @@ impl<F: ProtocolMessageSender + Sync + Send> MVBA<F> {
             value,
         };
 
-        if !self
-            .signer
-            .verify_signature(&sig.inner, &serialize(&response_prev)?)
-        {
+        if !signer.verify_signature(&sig.inner, &serialize(&response_prev)?) {
             warn!(
                 "Party {} received a done message from Party {} with an invalid proof",
                 self.index, index,
@@ -447,12 +452,12 @@ impl<F: ProtocolMessageSender + Sync + Send> MVBA<F> {
             let tag = self.tag_skip_share(id.id, id.view);
 
             let share = SkipShare {
-                inner: self.signer.sign(&tag.as_bytes()),
+                inner: signer.sign(&tag.as_bytes()),
             };
 
             let skip_share_message = MVBASkipShareMessage::new(id, share);
 
-            self.send_handle
+            send_handle
                 .broadcast(
                     id.id,
                     self.index,
@@ -468,10 +473,12 @@ impl<F: ProtocolMessageSender + Sync + Send> MVBA<F> {
         Ok(())
     }
 
-    pub async fn on_skip_share_message(
+    pub async fn on_skip_share_message<F: ProtocolMessageSender + Sync + Send>(
         &self,
         index: usize,
         message: MVBASkipShareMessage,
+        send_handle: &F,
+        signer: &Signer,
     ) -> MVBAResult<()> {
         let MVBASkipShareMessage { id, share } = message;
 
@@ -495,10 +502,7 @@ impl<F: ProtocolMessageSender + Sync + Send> MVBA<F> {
 
         let tag = self.tag_skip_share(id.id, id.view);
 
-        if !self
-            .signer
-            .verify_share(index, &share.inner, &tag.as_bytes())
-        {
+        if !signer.verify_share(index, &share.inner, &tag.as_bytes()) {
             return Ok(());
         }
 
@@ -525,8 +529,7 @@ impl<F: ProtocolMessageSender + Sync + Send> MVBA<F> {
 
             // All signatures should have been individually verified. Expect that the signature is valid.
 
-            let skip_proof = self
-                .signer
+            let skip_proof = signer
                 .combine_signatures(&shares)
                 .map_err(|_| MVBAError::InvalidSignature("on_skip_share".to_string()))?;
 
@@ -534,21 +537,26 @@ impl<F: ProtocolMessageSender + Sync + Send> MVBA<F> {
 
             state.has_sent_skip.insert(id.view, true);
 
-            self.send_handle
+            send_handle
                 .broadcast(id.id, self.index, self.n_parties, state.view, skip_message)
                 .await;
         }
         Ok(())
     }
 
-    pub async fn on_skip_message(&self, message: MVBASkipMessage) -> MVBAResult<()> {
+    pub async fn on_skip_message<F: ProtocolMessageSender + Sync + Send>(
+        &self,
+        message: MVBASkipMessage,
+        send_handle: &F,
+        signer: &Signer,
+    ) -> MVBAResult<()> {
         let MVBASkipMessage { id, sig } = message;
 
         // Assert that the skip signature is valid
 
         let tag = self.tag_skip_share(id.id, id.view);
 
-        if !self.signer.verify_signature(&sig.inner, tag.as_bytes()) {
+        if !signer.verify_signature(&sig.inner, tag.as_bytes()) {
             return Err(MVBAError::InvalidSignature("skip message".to_string()));
         }
 
@@ -561,7 +569,7 @@ impl<F: ProtocolMessageSender + Sync + Send> MVBA<F> {
         if !*state.has_sent_skip.entry(id.view).or_default() {
             let skip_message = MVBASkipMessage { id, sig };
 
-            self.send_handle
+            send_handle
                 .broadcast(id.id, self.index, self.n_parties, state.view, skip_message)
                 .await;
 
@@ -577,11 +585,13 @@ impl<F: ProtocolMessageSender + Sync + Send> MVBA<F> {
         Ok(())
     }
 
-    pub async fn on_pb_send_message(
+    pub async fn on_pb_send_message<F: ProtocolMessageSender + Sync + Send>(
         &self,
         pp: &Arc<PPReceiver>,
         message: PBSendMessage,
         send_id: usize,
+        send_handle: &F,
+        signer: &Signer,
     ) -> PPResult<()> {
         let state = self.state.read().await;
 
@@ -607,8 +617,8 @@ impl<F: ProtocolMessageSender + Sync + Send> MVBA<F> {
             &id,
             leader_index,
             lock,
-            &self.signer,
-            &self.send_handle,
+            signer,
+            send_handle,
         )
         .await?;
 
@@ -647,7 +657,11 @@ impl<F: ProtocolMessageSender + Sync + Send> MVBA<F> {
         }
     }
 
-    async fn send_done_if_not_skip(&self, promotion_proof: Option<PBSig>) -> MVBAResult<()> {
+    async fn send_done_if_not_skip<F: ProtocolMessageSender + Sync + Send>(
+        &self,
+        promotion_proof: Option<PBSig>,
+        send_handle: &F,
+    ) -> MVBAResult<()> {
         let state = self.state.read().await;
 
         if let Ok(false) = state
@@ -675,7 +689,7 @@ impl<F: ProtocolMessageSender + Sync + Send> MVBA<F> {
                 proposal,
             );
 
-            self.send_handle
+            send_handle
                 .broadcast(self.id, self.index, self.n_parties, state.view, mvba_done)
                 .await;
 
@@ -858,205 +872,4 @@ pub struct SkipShare {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SkipSig {
     inner: Signature,
-}
-
-#[cfg(test)]
-mod tests {
-    use std::collections::HashMap;
-
-    use async_trait::async_trait;
-
-    use futures::future::join_all;
-
-    use crate::messaging::ToProtocolMessage;
-
-    use super::buffer::MVBABuffer;
-    use super::*;
-
-    use consensus_core::crypto::{commoncoin::Coin, sign::Signer};
-    use tokio::sync::mpsc::{self, Sender};
-    use tokio::test;
-
-    use log::error;
-
-    const N_PARTIES: usize = THRESHOLD * 3 + 1;
-    const THRESHOLD: usize = 1;
-    const BUFFER_CAPACITY: usize = THRESHOLD * 30;
-
-    struct ChannelSender {
-        senders: HashMap<usize, Sender<ProtocolMessage>>,
-    }
-
-    #[async_trait]
-    impl ProtocolMessageSender for ChannelSender {
-        async fn send<M: ToProtocolMessage + Send + Sync>(
-            &self,
-            id: usize,
-            send_id: usize,
-            recv_id: usize,
-            view: usize,
-            message: M,
-        ) {
-            if !self.senders.contains_key(&recv_id) {
-                return;
-            }
-
-            let sender = &self.senders[&recv_id];
-            if let Err(e) = sender
-                .send(message.to_protocol_message(id, send_id, recv_id, view))
-                .await
-            {
-                error!("Got error when sending message: {}", e);
-            }
-        }
-
-        async fn broadcast<M: ToProtocolMessage + Send + Sync>(
-            &self,
-            id: usize,
-            send_id: usize,
-            n_parties: usize,
-            view: usize,
-            message: M,
-        ) {
-            let message = message.to_protocol_message(id, send_id, 0, view);
-
-            for i in (0..n_parties) {
-                if !self.senders.contains_key(&i) {
-                    continue;
-                }
-                let mut inner = message.clone();
-                inner.header.recv_id = i;
-                let sender = &self.senders[&i];
-                if let Err(e) = sender.send(inner).await {
-                    error!("Got error when sending message: {}", e);
-                }
-            }
-        }
-    }
-
-    #[test]
-    async fn test_correctness() {
-        env_logger::init();
-
-        let mut signers = Signer::generate_signers(N_PARTIES, N_PARTIES - THRESHOLD - 1);
-        let mut coins = Coin::generate_coins(N_PARTIES, THRESHOLD + 1);
-
-        assert_eq!(signers.len(), N_PARTIES);
-        assert_eq!(coins.len(), N_PARTIES);
-
-        let mut channels: Vec<_> = (0..N_PARTIES)
-            .map(|_| {
-                let (tx, rx) = mpsc::channel(BUFFER_CAPACITY);
-                (tx, Some(rx))
-            })
-            .collect();
-
-        let mut handles = Vec::with_capacity(N_PARTIES);
-
-        for i in 0..N_PARTIES {
-            let mut recv = channels[i].1.take().unwrap();
-            let senders: HashMap<usize, Sender<_>> = channels
-                .iter()
-                .enumerate()
-                .filter_map(|(j, channel)| {
-                    if i != j {
-                        Some((j, channel.0.clone()))
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-
-            let signer = signers.remove(0);
-            let coin = coins.remove(0);
-
-            let f = ChannelSender { senders };
-
-            let mvba = Arc::new(MVBA::init(
-                0,
-                i,
-                N_PARTIES,
-                Value { inner: i * 1000 },
-                f,
-                signer,
-                coin,
-            ));
-
-            // Setup buffer manager
-
-            let mut buffer = MVBABuffer::new();
-
-            let buffer_mvba = mvba.clone();
-
-            let (buff_cmd_send, mut buff_cmd_recv) =
-                mpsc::channel::<MVBABufferCommand>(BUFFER_CAPACITY);
-
-            tokio::spawn(async move {
-                while let Some(command) = buff_cmd_recv.recv().await {
-                    let messages = buffer.execute(command);
-
-                    for message in messages {
-                        match buffer_mvba.handle_protocol_message(message).await {
-                            Ok(_) => {}
-                            Err(MVBAError::NotReadyForMessage(early_message)) => {
-                                buffer.execute(MVBABufferCommand::Store {
-                                    message: early_message,
-                                });
-                            }
-
-                            Err(e) => error!(
-                                "Party {} got error when handling protocol message: {}",
-                                i, e
-                            ),
-                        }
-                    }
-                }
-            });
-
-            // Setup messaging manager
-
-            let msg_buff_send = buff_cmd_send.clone();
-
-            let msg_mvba = mvba.clone();
-
-            tokio::spawn(async move {
-                while let Some(message) = recv.recv().await {
-                    match msg_mvba.handle_protocol_message(message).await {
-                        Ok(_) => {}
-                        Err(MVBAError::NotReadyForMessage(early_message)) => msg_buff_send
-                            .send(MVBABufferCommand::Store {
-                                message: early_message,
-                            })
-                            .await
-                            .unwrap(),
-
-                        Err(e) => error!(
-                            "Party {} got error when handling protocol message: {}",
-                            i, e
-                        ),
-                    }
-                }
-            });
-
-            // setup main thread
-
-            let main_buff_send = buff_cmd_send.clone();
-
-            let main_handle = tokio::spawn(async move { mvba.invoke(main_buff_send).await });
-
-            handles.push(main_handle);
-        }
-
-        let results = join_all(handles).await;
-
-        println!();
-        println!("-------------------------------------------------------------");
-        println!();
-
-        for (i, result) in results.iter().enumerate() {
-            if let Ok(value) = result {
-                println!("Value returned party {} = {:?}", i, value);
-            }
-        }
-    }
 }
