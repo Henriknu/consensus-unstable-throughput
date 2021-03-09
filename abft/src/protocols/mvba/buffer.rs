@@ -1,10 +1,12 @@
 use std::collections::HashMap;
 
+use async_trait::async_trait;
+
 use consensus_core::data::message_buffer::MessageBuffer;
 
 use crate::messaging::{ProtocolMessage, ProtocolMessageType};
 
-use super::messages::MVBAMessageType;
+use super::{error::MVBAResult, messages::MVBAMessageType, proposal_promotion::PPResult};
 
 pub struct MVBABuffer {
     pp_recv: HashMap<usize, MessageBuffer<ProtocolMessage>>,
@@ -98,4 +100,13 @@ pub enum MVBABufferCommand {
     ViewChange { view: usize },
 
     Store { message: ProtocolMessage },
+}
+
+#[async_trait]
+pub trait MVBAReceiver {
+    async fn drain_pp_receive(&self, view: usize, send_id: usize) -> PPResult<()>;
+
+    async fn drain_elect(&self, view: usize) -> MVBAResult<()>;
+
+    async fn drain_view_change(&self, view: usize) -> MVBAResult<()>;
 }

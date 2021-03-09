@@ -1,9 +1,12 @@
 use consensus_core::data::message_buffer::MessageBuffer;
 
+use async_trait::async_trait;
+
 use crate::messaging::{ProtocolMessage, ProtocolMessageType};
 
-use super::messages::PRBCMessageType;
+use super::{messages::PRBCMessageType, PRBCResult};
 
+#[derive(Debug, Default)]
 pub struct PRBCBuffer {
     inner: MessageBuffer<ProtocolMessage>,
 }
@@ -50,4 +53,11 @@ pub enum PRBCBufferCommand {
     PRBC,
 
     Store { message: ProtocolMessage },
+}
+
+#[async_trait]
+pub trait PRBCReceiver {
+    async fn drain_rbc(&self, send_id: usize) -> PRBCResult<()>;
+
+    async fn drain_prbc_done(&self, send_id: usize) -> PRBCResult<()>;
 }

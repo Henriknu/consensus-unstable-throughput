@@ -7,7 +7,7 @@ use futures::future::join_all;
 use abft::{
     messaging::{ProtocolMessage, ProtocolMessageSender, ToProtocolMessage},
     protocols::mvba::{
-        buffer::{MVBABuffer, MVBABufferCommand},
+        buffer::{MVBABuffer, MVBABufferCommand, MVBAReceiver},
         error::MVBAError,
         MVBA,
     },
@@ -75,6 +75,41 @@ impl ProtocolMessageSender for ChannelSender {
     }
 }
 
+struct MVBABufferManager {
+    sender: Sender<MVBABufferCommand>,
+}
+
+#[async_trait]
+impl MVBAReceiver for MVBABufferManager {
+    async fn drain_pp_receive(
+        &self,
+        view: usize,
+        send_id: usize,
+    ) -> abft::protocols::mvba::proposal_promotion::PPResult<()> {
+        self.sender
+            .send(MVBABufferCommand::PPReceive { view, send_id })
+            .await?;
+
+        Ok(())
+    }
+
+    async fn drain_elect(&self, view: usize) -> abft::protocols::mvba::error::MVBAResult<()> {
+        self.sender
+            .send(MVBABufferCommand::ElectCoinShare { view })
+            .await?;
+
+        Ok(())
+    }
+
+    async fn drain_view_change(&self, view: usize) -> abft::protocols::mvba::error::MVBAResult<()> {
+        self.sender
+            .send(MVBABufferCommand::ViewChange { view })
+            .await?;
+
+        Ok(())
+    }
+}
+
 #[tokio::test]
 async fn mvba_correctness() {
     env_logger::init();
@@ -129,6 +164,10 @@ async fn mvba_correctness() {
 
         let (buff_cmd_send, mut buff_cmd_recv) =
             mpsc::channel::<MVBABufferCommand>(BUFFER_CAPACITY);
+
+        let r = Arc::new(MVBABufferManager {
+            sender: buff_cmd_send.clone(),
+        });
 
         tokio::spawn(async move {
             while let Some(command) = buff_cmd_recv.recv().await {
@@ -199,9 +238,7 @@ async fn mvba_correctness() {
         let main_buff_send = buff_cmd_send.clone();
 
         let main_handle =
-            tokio::spawn(
-                async move { mvba.invoke(main_buff_send, f.deref(), &signer, &coin).await },
-            );
+            tokio::spawn(async move { mvba.invoke(r, f.deref(), &signer, &coin).await });
 
         handles.push(main_handle);
     }

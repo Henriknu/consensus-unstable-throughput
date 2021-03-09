@@ -84,9 +84,9 @@ impl ACS {
                 };
 
                 tokio::spawn(async move {
-                    prbc_clone
-                        .invoke(value, buff_clone, send_clone, signer_clone)
-                        .await;
+                    //prbc_clone
+                    // .invoke(value, buff_clone, send_clone, signer_clone)
+                    //  .await;
                 });
             }
         }
@@ -140,7 +140,9 @@ impl ACS {
         }
     }
 
-    async fn on_prbc_finished(&self) -> ACSResult<()> {}
+    async fn on_prbc_finished(&self) -> ACSResult<()> {
+        Ok(())
+    }
 
     async fn init_prbc(&self) -> ACSResult<()> {
         Ok(())

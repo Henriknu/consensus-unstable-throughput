@@ -1,13 +1,10 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use log::{info, warn};
-use tokio::sync::{
-    mpsc::{error::SendError, Sender},
-    Notify, RwLock,
-};
+use tokio::sync::{mpsc::error::SendError, Notify, RwLock};
 
 use self::{
-    buffer::PRBCBufferCommand,
+    buffer::{PRBCBufferCommand, PRBCReceiver},
     messages::{
         PRBCDoneMessage, PRBCMessageType, RBCEchoMessage, RBCReadyMessage, RBCValueMessage,
     },
@@ -33,7 +30,7 @@ pub struct PRBC {
     id: usize,
     index: usize,
     n_parties: usize,
-    send_id: Option<usize>,
+    send_id: usize,
     value: RwLock<Option<Value>>,
     shares: RwLock<BTreeMap<usize, SignatureShare>>,
     notify_shares: Arc<Notify>,
@@ -43,7 +40,7 @@ pub struct PRBC {
 }
 
 impl PRBC {
-    pub fn init(id: usize, index: usize, n_parties: usize, send_id: Option<usize>) -> Self {
+    pub fn init(id: usize, index: usize, n_parties: usize, send_id: usize) -> Self {
         Self {
             id,
             index,
@@ -56,10 +53,10 @@ impl PRBC {
         }
     }
 
-    pub async fn invoke<F: ProtocolMessageSender + Sync + Send>(
+    pub async fn invoke<F: ProtocolMessageSender + Sync + Send, R: PRBCReceiver>(
         &self,
         value: Option<Value>,
-        buff_handle: Sender<PRBCBufferCommand>,
+        recv_handle: &R,
         send_handle: &F,
         signer: &Signer,
     ) -> PRBCResult<PRBCSignature> {
@@ -68,7 +65,7 @@ impl PRBC {
         let lock = self.rbc.read().await;
         let rbc = lock.as_ref().expect("RBC should be initialized");
 
-        buff_handle.send(PRBCBufferCommand::RBC).await?;
+        recv_handle.drain_rbc(self.send_id).await?;
 
         let value = rbc.invoke(value, send_handle).await?;
 
@@ -78,7 +75,7 @@ impl PRBC {
             lock.replace(value);
         }
 
-        buff_handle.send(PRBCBufferCommand::PRBC).await?;
+        recv_handle.drain_prbc_done(self.send_id).await?;
 
         let share = signer.sign(&serialize(&value)?);
 

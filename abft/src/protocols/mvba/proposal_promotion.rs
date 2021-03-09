@@ -10,7 +10,7 @@ use tokio::sync::Notify;
 use crate::messaging::ProtocolMessageSender;
 
 use super::{
-    buffer::MVBABufferCommand,
+    buffer::{MVBABufferCommand, MVBAReceiver},
     messages::{PBSendMessage, PBShareAckMessage},
     provable_broadcast::*,
     Value, MVBAID,
@@ -200,11 +200,13 @@ impl PPReceiver {
         }
     }
 
-    pub async fn invoke(&self, buff_handle: Sender<MVBABufferCommand>) -> PPResult<()> {
+    pub async fn invoke<R: MVBAReceiver>(&self, recv_handle: &R) -> PPResult<()> {
         // Step 1: Sender broadcasts value and mvba key
         {
             self.init_pb(PPStatus::Step1).await;
-            self.drain_buffer(&buff_handle).await?;
+            recv_handle
+                .drain_pp_receive(self.id.inner.view, self.send_id)
+                .await?;
 
             let pb_lock = self.inner_pb.read().await;
             let pb = pb_lock.as_ref().expect("PB instance should be initialized");
@@ -214,7 +216,9 @@ impl PPReceiver {
         // Step 2: Sender broadcasts key proposal
         {
             self.init_pb(PPStatus::Step2).await;
-            self.drain_buffer(&buff_handle).await?;
+            recv_handle
+                .drain_pp_receive(self.id.inner.view, self.send_id)
+                .await?;
 
             let pb_lock = self.inner_pb.read().await;
             let pb = pb_lock.as_ref().expect("PB instance should be initialized");
@@ -226,7 +230,9 @@ impl PPReceiver {
         // Step 3: Sender broadcasts lock proposal
         {
             self.init_pb(PPStatus::Step3).await;
-            self.drain_buffer(&buff_handle).await?;
+            recv_handle
+                .drain_pp_receive(self.id.inner.view, self.send_id)
+                .await?;
 
             let pb_lock = self.inner_pb.read().await;
             let pb = pb_lock.as_ref().expect("PB instance should be initialized");
@@ -238,7 +244,9 @@ impl PPReceiver {
         // Step 4: Sender broadcasts commit proposal
         {
             self.init_pb(PPStatus::Step4).await;
-            self.drain_buffer(&buff_handle).await?;
+            recv_handle
+                .drain_pp_receive(self.id.inner.view, self.send_id)
+                .await?;
 
             let pb_lock = self.inner_pb.read().await;
             let pb = pb_lock.as_ref().expect("PB instance should be initialized");
@@ -328,17 +336,6 @@ impl PPReceiver {
         let mut inner_pb = self.inner_pb.write().await;
 
         inner_pb.replace(new_pb);
-    }
-
-    async fn drain_buffer(&self, buff_handle: &Sender<MVBABufferCommand>) -> PPResult<()> {
-        buff_handle
-            .send(MVBABufferCommand::PPReceive {
-                send_id: self.send_id,
-                view: self.id.inner.view,
-            })
-            .await?;
-
-        Ok(())
     }
 }
 
