@@ -40,9 +40,6 @@ pub struct PRBC {
 
     // Sub-protocol instances
     rbc: RwLock<Option<RBC>>,
-    // Infrastructure
-    //send_handle: F,
-    //signer: Signer,
 }
 
 impl PRBC {

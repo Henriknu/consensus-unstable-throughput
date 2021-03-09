@@ -53,10 +53,6 @@ pub struct MVBA {
     pp_recvs: RwLock<Option<HashMap<usize, Arc<PPReceiver>>>>,
     elect: RwLock<Option<Elect>>,
     view_change: RwLock<Option<ViewChange>>,
-    // Infrastructure
-    //send_handle: F,
-    //coin: Coin,
-    //signer: Signer,
 }
 
 impl MVBA {
