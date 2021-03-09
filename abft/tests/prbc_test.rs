@@ -1,8 +1,8 @@
 use abft::{
     messaging::{ProtocolMessage, ProtocolMessageSender, ToProtocolMessage},
     protocols::prbc::{
-        buffer::{PRBCBuffer, PRBCBufferCommand},
-        PRBCError, PRBC,
+        buffer::{PRBCBuffer, PRBCBufferCommand, PRBCReceiver},
+        PRBCError, PRBCResult, PRBC,
     },
 };
 
@@ -76,8 +76,25 @@ impl ProtocolMessageSender for ChannelSender {
     }
 }
 
+struct PRBCBufferManager {
+    sender: Sender<PRBCBufferCommand>,
+}
+
+#[async_trait]
+impl PRBCReceiver for PRBCBufferManager {
+    async fn drain_rbc(&self, _send_id: usize) -> PRBCResult<()> {
+        self.sender.send(PRBCBufferCommand::RBC).await?;
+        Ok(())
+    }
+
+    async fn drain_prbc_done(&self, _send_id: usize) -> PRBCResult<()> {
+        self.sender.send(PRBCBufferCommand::PRBC).await?;
+        Ok(())
+    }
+}
+
 #[tokio::test]
-async fn main() {
+async fn prbc_correctness() {
     env_logger::init();
 
     let mut signers = Signer::generate_signers(N_PARTIES, THRESHOLD);
@@ -112,17 +129,14 @@ async fn main() {
         let f = Arc::new(ChannelSender { senders });
 
         let value;
-        let send_id;
 
         if i == 0 {
             value = Some(Value::new(1000));
-            send_id = None;
         } else {
             value = None;
-            send_id = Some(0usize);
         }
 
-        let prbc = Arc::new(PRBC::init(0, i, N_PARTIES, send_id));
+        let prbc = Arc::new(PRBC::init(0, i, N_PARTIES, 0));
 
         // Setup buffer manager
 
@@ -136,6 +150,10 @@ async fn main() {
 
         let (buff_cmd_send, mut buff_cmd_recv) =
             mpsc::channel::<PRBCBufferCommand>(BUFFER_CAPACITY);
+
+        let r = Arc::new(PRBCBufferManager {
+            sender: buff_cmd_send.clone(),
+        });
 
         let _ = tokio::spawn(async move {
             while let Some(command) = buff_cmd_recv.recv().await {
@@ -199,10 +217,10 @@ async fn main() {
 
         // setup main thread
 
-        let main_buff_send = buff_cmd_send.clone();
+        let main_receiver = r.clone();
 
         let main_handle = tokio::spawn(async move {
-            match prbc.invoke(value, main_buff_send, &*f, &signer).await {
+            match prbc.invoke(value, &*main_receiver, &*f, &signer).await {
                 Ok(value) => return Ok(value),
                 Err(e) => {
                     error!("Party {} got error when invoking prbc: {}", i, e);

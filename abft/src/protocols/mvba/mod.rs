@@ -18,7 +18,7 @@ use crate::Value;
 use crate::messaging::ProtocolMessageType;
 
 use self::{
-    buffer::MVBABufferCommand,
+    buffer::{MVBABufferCommand, MVBAReceiver},
     elect::Elect,
     error::{MVBAError, MVBAResult},
     messages::{
@@ -70,9 +70,12 @@ impl MVBA {
         }
     }
 
-    pub async fn invoke<F: ProtocolMessageSender + Sync + Send>(
+    pub async fn invoke<
+        F: ProtocolMessageSender + Sync + Send,
+        R: MVBAReceiver + Sync + Send + 'static,
+    >(
         &self,
-        buff_handle: Sender<MVBABufferCommand>,
+        recv_handle: Arc<R>,
         send_handle: &F,
         signer: &Signer,
         coin: &Coin,
@@ -104,11 +107,11 @@ impl MVBA {
 
                 for pp_recv in pp_recvs.values() {
                     let pp_clone = pp_recv.clone();
-                    let buff_clone = buff_handle.clone();
+                    let recv_clone = recv_handle.clone();
                     let index = self.index;
 
                     tokio::spawn(async move {
-                        match pp_clone.invoke(buff_clone).await {
+                        match pp_clone.invoke(&*recv_clone).await {
                             Ok(_) => {}
                             Err(PPError::Abandoned) => {}
                             Err(e) => {
@@ -165,9 +168,7 @@ impl MVBA {
 
             info!("Party {} started electing phase for view: {}", index, view);
 
-            buff_handle
-                .send(MVBABufferCommand::ElectCoinShare { view })
-                .await?;
+            recv_handle.drain_elect(view).await?;
 
             let leader = elect.invoke(coin, send_handle).await?;
 
@@ -194,9 +195,7 @@ impl MVBA {
 
             self.init_view_change(index, id_leader, view).await;
 
-            buff_handle
-                .send(MVBABufferCommand::ViewChange { view })
-                .await?;
+            recv_handle.drain_view_change(view).await?;
 
             let lock = self.view_change.read().await;
 
