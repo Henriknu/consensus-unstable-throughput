@@ -115,7 +115,10 @@ impl<F: ProtocolMessageSender + Sync + Send> PRBC<F> {
             self.index, signature
         );
 
-        Ok(PRBCSignature { inner: signature })
+        Ok(PRBCSignature {
+            value,
+            inner: signature,
+        })
     }
 
     pub async fn handle_protocol_message(&self, message: ProtocolMessage) -> PRBCResult<()> {
@@ -259,6 +262,7 @@ impl<F: ProtocolMessageSender + Sync + Send> PRBC<F> {
 
 #[derive(Debug, Clone)]
 pub struct PRBCSignature {
+    value: Value,
     inner: Signature,
 }
 
