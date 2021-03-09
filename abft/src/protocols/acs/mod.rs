@@ -14,7 +14,7 @@ pub struct ACS<F: ProtocolMessageSender + Sync + Send> {
     value: Value,
 
     // sub-protocols
-    prbcs: RwLock<Option<HashMap<usize, Arc<PRBC<F>>>>>,
+    prbcs: RwLock<Option<HashMap<usize, Arc<PRBC>>>>,
     mvba: RwLock<Option<MVBA>>,
 
     // Infrastructure
