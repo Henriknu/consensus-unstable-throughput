@@ -1,4 +1,3 @@
-use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
     sync::{
@@ -27,7 +26,7 @@ pub struct RBC {
     id: usize,
     index: usize,
     n_parties: usize,
-    erasure: RwLock<ErasureCoder>,
+    erasure: ErasureCoder,
     echo_messages: RwLock<BTreeMap<H256, BTreeMap<usize, RBCEchoMessage>>>,
     ready_messages: RwLock<BTreeMap<H256, BTreeMap<usize, RBCReadyMessage>>>,
     notify_echo: Arc<Notify>,
@@ -41,10 +40,10 @@ impl RBC {
             id,
             index,
             n_parties,
-            erasure: RwLock::new(ErasureCoder::new(
-                NonZeroUsize::new(n_parties * 2 / 3).ok_or_else(|| RBCError::ZeroUsize)?,
+            erasure: ErasureCoder::new(
                 NonZeroUsize::new(n_parties / 3 + 1).ok_or_else(|| RBCError::ZeroUsize)?,
-            )?),
+                NonZeroUsize::new(n_parties * 2 / 3).ok_or_else(|| RBCError::ZeroUsize)?,
+            )?,
             echo_messages: Default::default(),
             ready_messages: Default::default(),
             notify_echo: Arc::new(Notify::new()),
@@ -211,9 +210,7 @@ impl RBC {
         value: Value,
         send_handle: &F,
     ) -> RBCResult<()> {
-        let erasure = self.erasure.write().await;
-
-        let fragments = erasure.encode(&serialize(&value)?);
+        let fragments = self.erasure.encode(&serialize(&value)?);
 
         assert_eq!(fragments.len(), self.n_parties);
 
@@ -247,7 +244,6 @@ impl RBC {
     async fn reconstruct_blocks_with_root(&self, root: H256) -> RBCResult<Vec<Vec<u8>>> {
         // want to reconstruct whatever blocks sent out which have not been
         let mut lock = self.echo_messages.write().await;
-        let erasure = self.erasure.write().await;
 
         let root_map = lock.entry(root).or_default();
 
@@ -264,7 +260,7 @@ impl RBC {
             .map(|(_, message)| message.fragment.clone())
             .collect::<Vec<Vec<u8>>>();
 
-        let fragments = erasure.reconstruct(&fragments, erasures)?;
+        let fragments = self.erasure.reconstruct(&fragments, erasures)?;
 
         Ok(fragments)
     }
@@ -294,9 +290,7 @@ impl RBC {
                 .collect();
         }
 
-        let erasure = self.erasure.write().await;
-
-        let bytes = erasure.decode(&fragments, erasures)?;
+        let bytes = self.erasure.decode(&fragments, erasures)?;
 
         let value: Value = deserialize(&bytes)?;
 
