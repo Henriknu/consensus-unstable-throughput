@@ -50,6 +50,10 @@ impl Signer {
     pub fn verify_signature(&self, sig: &Signature, data: &[u8]) -> bool {
         self.publics.public_key().verify(sig, data)
     }
+
+    pub fn threshold(&self) -> usize {
+        self.threshold
+    }
 }
 
 #[cfg(test)]

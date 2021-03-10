@@ -4,13 +4,37 @@ use std::{collections::HashSet, ops::Deref, str};
 
 use super::hash::threshold::{hash1, hash2, hash4};
 
-/// Generate keyset -> Public key, public verification key, secret keys.
-pub struct Dealer {}
+pub struct KeySet {
+    public: PublicK,
+    verify: VerifyK,
+    secrets: Vec<SecretK>,
+}
 
-impl Dealer {
-    /// Generate keys for a TDH2 threshold scheme.
-    /// Invariant 1 <= threshold <= n_actors must hold.
-    pub fn generate_keys(n_actors: usize, threshold: usize) -> KeySet {
+#[derive(Clone, Copy)]
+struct PublicK {
+    g: AffinePoint,
+    g1: AffinePoint,
+    h: AffinePoint,
+}
+#[derive(Clone)]
+struct VerifyK {
+    elements: Vec<AffinePoint>,
+}
+#[derive(Clone, Copy)]
+struct SecretK {
+    secret_scalar: Scalar,
+}
+
+/// Actor within the threshold cryptosystem. Has access to public key, verification key, and their own secret key.
+pub struct Encrypter {
+    index: usize,
+    public: PublicK,
+    verify: VerifyK,
+    secret: SecretK,
+}
+
+impl Encrypter {
+    pub fn generate_keys(n_actors: usize, threshold: usize) -> Vec<Encrypter> {
         // Should generate the keyset, to be used in a trusted setup environment.
 
         assert!(threshold > 0);
@@ -55,44 +79,16 @@ impl Dealer {
             .map(|secret_scalar| SecretK { secret_scalar })
             .collect();
 
-        KeySet {
-            public,
-            verify,
-            secrets,
-        }
+        (0..n_actors)
+            .map(|index| Encrypter {
+                index,
+                public,
+                verify: verify.clone(),
+                secret: secrets[index],
+            })
+            .collect()
     }
-}
 
-pub struct KeySet {
-    public: PublicK,
-    verify: VerifyK,
-    secrets: Vec<SecretK>,
-}
-
-#[derive(Clone, Copy)]
-struct PublicK {
-    g: AffinePoint,
-    g1: AffinePoint,
-    h: AffinePoint,
-}
-#[derive(Clone)]
-struct VerifyK {
-    elements: Vec<AffinePoint>,
-}
-#[derive(Clone, Copy)]
-struct SecretK {
-    secret_scalar: Scalar,
-}
-
-/// Actor within the threshold cryptosystem. Has access to public key, verification key, and their own secret key.
-pub struct Actor {
-    index: usize,
-    public: PublicK,
-    verify: VerifyK,
-    secret: SecretK,
-}
-
-impl Actor {
     pub fn encrypt(&self, data: &[u8; 32], label: &[u8; 32]) -> Ciphertext {
         let r = NonZeroScalar::random(&mut OsRng);
         let s = NonZeroScalar::random(&mut OsRng);
@@ -284,17 +280,7 @@ mod tests {
 
     #[test]
     fn test_proof_valid() {
-        let keyset = Dealer::generate_keys(N_ACTORS_MULTIPLE, THRESHOLD_MULTIPLE);
-
-        let actors: Vec<Actor> = (0..N_ACTORS_MULTIPLE)
-            .into_iter()
-            .map(|index| Actor {
-                index,
-                public: keyset.public,
-                verify: keyset.verify.clone(),
-                secret: keyset.secrets[index],
-            })
-            .collect();
+        let actors = Encrypter::generate_keys(N_ACTORS_MULTIPLE, THRESHOLD_MULTIPLE);
 
         let message = "Hello world! Hello world! Hello!";
 
@@ -342,17 +328,7 @@ mod tests {
     }
 
     fn threshold_crypto_scenario(n_actors: usize, threshold: usize) {
-        let keyset = Dealer::generate_keys(n_actors, threshold);
-
-        let actors: Vec<Actor> = (0..n_actors)
-            .into_iter()
-            .map(|index| Actor {
-                index,
-                public: keyset.public,
-                verify: keyset.verify.clone(),
-                secret: keyset.secrets[index],
-            })
-            .collect();
+        let actors = Encrypter::generate_keys(n_actors, threshold);
 
         let message = "Hello world! Hello world! Hello!";
 
