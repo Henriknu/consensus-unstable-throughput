@@ -21,6 +21,7 @@ pub trait ProtocolMessageSender {
         send_id: usize,
         recv_id: usize,
         view: usize,
+        prbc_index: usize,
         message: M,
     );
     async fn broadcast<M: ToProtocolMessage + Send + Sync>(
@@ -29,6 +30,7 @@ pub trait ProtocolMessageSender {
         send_id: usize,
         n_parties: usize,
         view: usize,
+        prbc_index: usize,
         message: M,
     );
 }
@@ -58,11 +60,12 @@ impl ProtocolMessage {
         send_id: usize,
         recv_id: usize,
         view: usize,
+        prbc_index: usize,
         message_type: ProtocolMessageType,
         message_data: Vec<u8>,
     ) -> Self {
         Self {
-            header: ProtocolMessageHeader::new(protocol_id, send_id, recv_id, view),
+            header: ProtocolMessageHeader::new(protocol_id, send_id, recv_id, view, prbc_index),
             message_type,
             message_data,
         }
@@ -75,15 +78,23 @@ pub struct ProtocolMessageHeader {
     pub send_id: usize,
     pub recv_id: usize,
     pub view: usize,
+    pub prbc_index: usize,
 }
 
 impl ProtocolMessageHeader {
-    pub fn new(protocol_id: usize, send_id: usize, recv_id: usize, view: usize) -> Self {
+    pub fn new(
+        protocol_id: usize,
+        send_id: usize,
+        recv_id: usize,
+        view: usize,
+        prbc_index: usize,
+    ) -> Self {
         Self {
             protocol_id,
             recv_id,
             send_id,
             view,
+            prbc_index,
         }
     }
 }
@@ -107,6 +118,7 @@ where
         send_id: usize,
         recv_id: usize,
         view: usize,
+        prbc_index: usize,
     ) -> ProtocolMessage {
         let message_data = serialize(self).expect("Could not serialize inner of Protocol message");
 
@@ -115,6 +127,7 @@ where
             send_id,
             recv_id,
             view,
+            prbc_index,
             Self::MESSAGE_TYPE,
             message_data,
         )

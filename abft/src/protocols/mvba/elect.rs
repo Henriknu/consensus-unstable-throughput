@@ -48,6 +48,7 @@ impl Elect {
                 self.index,
                 self.n_parties,
                 self.view,
+                0,
                 elect_message,
             )
             .await;

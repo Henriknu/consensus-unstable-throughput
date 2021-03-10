@@ -26,6 +26,7 @@ pub struct RBC {
     id: usize,
     index: usize,
     n_parties: usize,
+    send_id: usize,
     erasure: ErasureCoder,
     echo_messages: RwLock<BTreeMap<H256, BTreeMap<usize, RBCEchoMessage>>>,
     ready_messages: RwLock<BTreeMap<H256, BTreeMap<usize, RBCReadyMessage>>>,
@@ -35,11 +36,12 @@ pub struct RBC {
 }
 
 impl RBC {
-    pub fn init(id: usize, index: usize, n_parties: usize) -> RBCResult<Self> {
+    pub fn init(id: usize, index: usize, n_parties: usize, send_id: usize) -> RBCResult<Self> {
         Ok(Self {
             id,
             index,
             n_parties,
+            send_id,
             erasure: ErasureCoder::new(
                 NonZeroUsize::new(n_parties / 3 + 1).ok_or_else(|| RBCError::ZeroUsize)?,
                 NonZeroUsize::new(n_parties * 2 / 3).ok_or_else(|| RBCError::ZeroUsize)?,
@@ -95,7 +97,14 @@ impl RBC {
             RBCEchoMessage::new(self.index, message.root, message.fragment, message.branch);
 
         send_handle
-            .broadcast(self.id, self.index, self.n_parties, 0, echo_message)
+            .broadcast(
+                self.id,
+                self.index,
+                self.n_parties,
+                0,
+                self.send_id,
+                echo_message,
+            )
             .await;
 
         Ok(())
@@ -158,7 +167,14 @@ impl RBC {
             let ready_message = RBCReadyMessage::new(*merkle2.root());
 
             send_handle
-                .broadcast(self.id, self.index, self.n_parties, 0, ready_message)
+                .broadcast(
+                    self.id,
+                    self.index,
+                    self.n_parties,
+                    0,
+                    self.send_id,
+                    ready_message,
+                )
                 .await;
 
             self.has_sent_ready.store(true, Ordering::SeqCst);
@@ -192,7 +208,14 @@ impl RBC {
             let ready_message = RBCReadyMessage::new(root);
 
             send_handle
-                .broadcast(self.id, self.index, self.n_parties, 0, ready_message)
+                .broadcast(
+                    self.id,
+                    self.index,
+                    self.n_parties,
+                    0,
+                    self.send_id,
+                    ready_message,
+                )
                 .await;
 
             self.has_sent_ready.store(true, Ordering::SeqCst);
@@ -232,7 +255,9 @@ impl RBC {
 
             let message = RBCValueMessage::new(*merkle.root(), fragment, get_branch(&merkle, j));
             if j != self.index {
-                send_handle.send(self.id, self.index, j, 0, message).await;
+                send_handle
+                    .send(self.id, self.index, j, 0, self.send_id, message)
+                    .await;
             } else {
                 self.on_value_message(message, send_handle).await?;
             }

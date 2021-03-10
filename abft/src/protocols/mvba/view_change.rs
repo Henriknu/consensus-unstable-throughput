@@ -77,6 +77,7 @@ impl<V: ABFTValue> ViewChange<V> {
                 self.index,
                 self.n_parties,
                 self.view,
+                0,
                 vc_message,
             )
             .await;

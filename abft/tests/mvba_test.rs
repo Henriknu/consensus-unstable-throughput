@@ -6,10 +6,13 @@ use futures::future::join_all;
 
 use abft::{
     messaging::{ProtocolMessage, ProtocolMessageSender, ToProtocolMessage},
-    protocols::mvba::{
-        buffer::{MVBABuffer, MVBABufferCommand, MVBAReceiver},
-        error::MVBAError,
-        MVBA,
+    protocols::{
+        acs::SignatureVector,
+        mvba::{
+            buffer::{MVBABuffer, MVBABufferCommand, MVBAReceiver},
+            error::MVBAError,
+            MVBA,
+        },
     },
     Value,
 };
@@ -36,6 +39,7 @@ impl ProtocolMessageSender for ChannelSender {
         send_id: usize,
         recv_id: usize,
         view: usize,
+        prbc_index: usize,
         message: M,
     ) {
         if !self.senders.contains_key(&recv_id) {
@@ -44,7 +48,7 @@ impl ProtocolMessageSender for ChannelSender {
 
         let sender = &self.senders[&recv_id];
         if let Err(e) = sender
-            .send(message.to_protocol_message(id, send_id, recv_id, view))
+            .send(message.to_protocol_message(id, send_id, recv_id, view, prbc_index))
             .await
         {
             error!("Got error when sending message: {}", e);
@@ -57,9 +61,10 @@ impl ProtocolMessageSender for ChannelSender {
         send_id: usize,
         n_parties: usize,
         view: usize,
+        prbc_index: usize,
         message: M,
     ) {
-        let message = message.to_protocol_message(id, send_id, 0, view);
+        let message = message.to_protocol_message(id, send_id, 0, view, prbc_index);
 
         for i in (0..n_parties) {
             if !self.senders.contains_key(&i) {
@@ -148,7 +153,11 @@ async fn mvba_correctness() {
 
         let f = Arc::new(ChannelSender { senders });
 
-        let mvba = Arc::new(MVBA::init(0, i, N_PARTIES, Value::new(i * 1000)));
+        let signature_vector = SignatureVector {
+            inner: Default::default(),
+        };
+
+        let mvba = Arc::new(MVBA::init(0, i, N_PARTIES, signature_vector));
 
         // Setup buffer manager
 
@@ -256,10 +265,10 @@ async fn mvba_correctness() {
             Ok(mvba_result) => match mvba_result {
                 Ok(value) => {
                     println!("Value returned party {} = {:?}", i, value);
-                    if let None = cmp_value {
-                        cmp_value.replace(*value);
+                    if cmp_value.is_none() {
+                        cmp_value.replace(value.clone());
                     }
-                    assert_eq!(*value, cmp_value.unwrap());
+                    assert_eq!(*value, cmp_value.clone().unwrap());
                 }
 
                 Err(e) => {

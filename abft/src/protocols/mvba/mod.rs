@@ -310,6 +310,8 @@ impl<V: ABFTValue> MVBA<V> {
                     if let Some(pp_send) = &*pp_send {
                         let inner: PBShareAckMessage = deserialize(&message_data)?;
 
+                        warn!("Party {} deserialized message", self.index);
+
                         if let Err(PPError::NotReadyForShareAck) =
                             pp_send.on_share_ack(send_id, inner, signer).await
                         {
@@ -465,6 +467,7 @@ impl<V: ABFTValue> MVBA<V> {
                     self.index,
                     self.n_parties,
                     state.view,
+                    0,
                     skip_share_message,
                 )
                 .await;
@@ -540,7 +543,14 @@ impl<V: ABFTValue> MVBA<V> {
             state.has_sent_skip.insert(id.view, true);
 
             send_handle
-                .broadcast(id.id, self.index, self.n_parties, state.view, skip_message)
+                .broadcast(
+                    id.id,
+                    self.index,
+                    self.n_parties,
+                    state.view,
+                    0,
+                    skip_message,
+                )
                 .await;
         }
         Ok(())
@@ -572,7 +582,14 @@ impl<V: ABFTValue> MVBA<V> {
             let skip_message = MVBASkipMessage { id, sig };
 
             send_handle
-                .broadcast(id.id, self.index, self.n_parties, state.view, skip_message)
+                .broadcast(
+                    id.id,
+                    self.index,
+                    self.n_parties,
+                    state.view,
+                    0,
+                    skip_message,
+                )
                 .await;
 
             state.has_sent_skip.insert(id.view, true);
@@ -692,7 +709,14 @@ impl<V: ABFTValue> MVBA<V> {
             );
 
             send_handle
-                .broadcast(self.id, self.index, self.n_parties, state.view, mvba_done)
+                .broadcast(
+                    self.id,
+                    self.index,
+                    self.n_parties,
+                    state.view,
+                    0,
+                    mvba_done,
+                )
                 .await;
 
             drop(state);

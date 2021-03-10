@@ -1,10 +1,19 @@
-use serde::{de::DeserializeOwned, Serialize};
-use std::{collections::HashMap, sync::Arc};
+use serde::{Deserialize, Serialize};
+use std::{
+    collections::HashMap,
+    sync::{mpsc::channel, Arc},
+};
 use thiserror::Error;
 
-use consensus_core::crypto::{commoncoin::Coin, sign::Signer};
+use consensus_core::crypto::{
+    commoncoin::Coin,
+    sign::{Signature, Signer},
+};
 use log::{error, info};
-use tokio::sync::{mpsc::Sender, Notify, RwLock};
+use tokio::sync::{
+    mpsc::{Receiver, Sender},
+    Notify, RwLock,
+};
 
 use crate::{
     messaging::{
@@ -13,11 +22,9 @@ use crate::{
     ABFTValue, Value,
 };
 
-use self::buffer::ACSBufferCommand;
-
 use super::{
-    mvba::{buffer::MVBAReceiver, MVBA},
-    prbc::{buffer::PRBCReceiver, PRBCSignature, PRBC},
+    mvba::{buffer::MVBAReceiver, error::MVBAError, MVBA},
+    prbc::{buffer::PRBCReceiver, PRBCError, PRBCSignature, PRBC},
 };
 
 pub type ACSResult<T> = Result<T, ACSError>;
@@ -29,25 +36,20 @@ pub struct ACS<V: ABFTValue> {
     index: usize,
     n_parties: usize,
     value: V,
-    prbc_signatures: RwLock<HashMap<usize, PRBCSignature<V>>>,
-    notify_new_signature: Arc<Notify>,
-    notify_enough_signatures: Arc<Notify>,
 
     // sub-protocols
     prbcs: RwLock<Option<HashMap<usize, Arc<PRBC<V>>>>>,
-    mvba: RwLock<Option<MVBA<V>>>,
+    mvba: RwLock<Option<MVBA<SignatureVector>>>,
 }
 
 impl<V: ABFTValue> ACS<V> {
-    pub fn new(id: usize, index: usize, n_parties: usize, value: V) -> Self {
+    pub fn init(id: usize, index: usize, n_parties: usize, value: V) -> Self {
         Self {
             id,
             index,
             n_parties,
             value,
-            prbc_signatures: Default::default(),
-            notify_new_signature: Default::default(),
-            notify_enough_signatures: Default::default(),
+
             prbcs: RwLock::const_new(None),
             mvba: RwLock::const_new(None),
         }
@@ -63,7 +65,7 @@ impl<V: ABFTValue> ACS<V> {
         signer_prbc: Arc<Signer>,
         signer_mvba: &Signer,
         coin: &Coin,
-    ) -> ACSResult<()> {
+    ) -> ACSResult<ValueVector<V>> {
         // Spin up n-1 PRBC instances, receiving values from other parties
 
         // broadcast value using PRBC
@@ -72,6 +74,7 @@ impl<V: ABFTValue> ACS<V> {
 
         self.init_prbc().await;
 
+        let (sig_send, mut sig_recv) = tokio::sync::mpsc::channel(self.n_parties);
         {
             let prbc_lock = self.prbcs.read().await;
 
@@ -81,6 +84,7 @@ impl<V: ABFTValue> ACS<V> {
                 let prbc_clone = prbc.clone();
                 let recv_clone = recv_handle.clone();
                 let send_clone = send_handle.clone();
+                let sig_send_clone = sig_send.clone();
                 let signer_clone = signer_prbc.clone();
                 let index_copy = self.index;
 
@@ -97,7 +101,9 @@ impl<V: ABFTValue> ACS<V> {
                         .invoke(value, &*recv_clone, &*send_clone, &*signer_clone)
                         .await
                     {
-                        Ok(_) => {}
+                        Ok(signature) => {
+                            let _ = sig_send_clone.send((prbc_clone.send_id, signature)).await;
+                        }
                         Err(e) => {
                             error!(
                                 "Party {} received error on invoking pp_recv: {}",
@@ -111,33 +117,44 @@ impl<V: ABFTValue> ACS<V> {
 
         // when received n - f signatures, we have enough values to propose for MVBA
 
-        let notify_signatures = self.notify_enough_signatures.clone();
+        let mut signatures = HashMap::new();
 
-        notify_signatures.notified().await;
+        while let Some((index, signature)) = sig_recv.recv().await {
+            if !signatures.contains_key(&index) {
+                signatures.insert(index, signature);
+            }
+
+            if signatures.len() >= (self.n_parties * 2 / 3 + 1) {
+                break;
+            }
+        }
 
         // Propose W = set ( (value, sig)) to MVBA
 
-        //self.init_mvba().await;
+        let vector = self.to_signature_vector(&signatures).await;
+
+        self.init_mvba(vector).await;
 
         // Wait for mvba to return some W*, proposed by one of the parties.
 
-        {
+        let elected_vector = {
             let mvba_lock = self.mvba.read().await;
 
             let mvba = mvba_lock.as_ref().expect("MVBA should be init");
 
-            let result = mvba
-                .invoke(recv_handle, &*send_handle, signer_mvba, coin)
-                .await;
-        }
+            mvba.invoke(recv_handle, &*send_handle, signer_mvba, coin)
+                .await?
+        };
 
         // Wait to receive values from each and every party contained in the W vector.
 
-        //let result = self.retrieve_values().await;
+        let result = self
+            .retrieve_values(elected_vector, signatures, sig_recv)
+            .await;
 
         // Return the combined values of all the parties in the W vector.
 
-        Ok(())
+        Ok(result)
     }
 
     pub async fn handle_protocol_message<F: ProtocolMessageSender + Sync + Send>(
@@ -147,93 +164,119 @@ impl<V: ABFTValue> ACS<V> {
         signer_prbc: &Signer,
         signer_mvba: &Signer,
         coin: &Coin,
-    ) {
-        let ProtocolMessage {
-            header,
-            message_data,
-            message_type,
-        } = message;
-        let ProtocolMessageHeader {
-            send_id, recv_id, ..
-        } = header;
-
+    ) -> ACSResult<()> {
         info!(
             "Handling message from {} to {} with message_type {:?}",
-            send_id, recv_id, message_type
+            message.header.send_id, message.header.recv_id, message.message_type
         );
 
-        match message_type {
+        match message.message_type {
             ProtocolMessageType::PRBC(_) => {
-
                 // pass to correct PRBC instance
+
+                let prbcs = self.prbcs.read().await;
+
+                if let Some(prbcs) = &*prbcs {
+                    if let Some(prbc) = prbcs.get(&message.header.prbc_index) {
+                        match prbc
+                            .handle_protocol_message(message, send_handle, signer_prbc)
+                            .await
+                        {
+                            Ok(_) => {}
+                            Err(PRBCError::NotReadyForMessage(message)) => {
+                                return Err(ACSError::NotReadyForPRBCMessage(message));
+                            }
+                            Err(e) => return Err(ACSError::PRBCError(e)),
+                        }
+                    } else {
+                        return Err(ACSError::NotReadyForPRBCMessage(message));
+                    }
+                } else {
+                    return Err(ACSError::NotReadyForPRBCMessage(message));
+                }
             }
             ProtocolMessageType::MVBA(_) => {
-
                 // pass to MVBA instance
+                let mvba = self.mvba.read().await;
+
+                if let Some(mvba) = &*mvba {
+                    match mvba
+                        .handle_protocol_message(message, send_handle, signer_mvba, coin)
+                        .await
+                    {
+                        Ok(_) => {}
+                        Err(MVBAError::NotReadyForMessage(message)) => {
+                            return Err(ACSError::NotReadyForMVBAMessage(message));
+                        }
+                        Err(e) => return Err(ACSError::MVBAError(e)),
+                    }
+                } else {
+                    return Err(ACSError::NotReadyForMVBAMessage(message));
+                }
             }
             ProtocolMessageType::Default => {
 
                 // ignore
             }
         }
+
+        Ok(())
     }
 
-    async fn retrieve_values(&self, vector: Vec<usize>) -> HashMap<usize, V> {
+    async fn to_signature_vector(
+        &self,
+        signatures: &HashMap<usize, PRBCSignature<V>>,
+    ) -> SignatureVector {
+        let inner = signatures
+            .iter()
+            .map(|(k, v)| (*k, v.inner.clone()))
+            .collect();
+
+        SignatureVector { inner }
+    }
+
+    async fn retrieve_values(
+        &self,
+        vector: SignatureVector,
+        signatures: HashMap<usize, PRBCSignature<V>>,
+        mut sig_recv: Receiver<(usize, PRBCSignature<V>)>,
+    ) -> ValueVector<V> {
         let mut result: HashMap<usize, V> = HashMap::new();
 
         // Add all values we currently have
         {
-            let signatures = self.prbc_signatures.read().await;
-            for index in &vector {
+            for index in vector.inner.keys() {
                 if signatures.contains_key(index) {
-                    result.insert(*index, signatures.get(index).clone().unwrap().value.clone());
+                    result.insert(*index, signatures.get(index).unwrap().value.clone());
                 }
             }
         }
 
-        let mut remaining = Vec::with_capacity(vector.len());
+        if result.len() == vector.inner.len() {
+            return ValueVector { inner: result };
+        }
 
-        // If we have outstanding values, add indices to remaining list.
+        // Need to get outstainding values
 
-        if result.len() != vector.len() {
-            for index in &vector {
-                if !result.contains_key(index) {
-                    remaining.push(*index);
-                }
+        let mut remaining = Vec::with_capacity(vector.inner.len());
+
+        for index in vector.inner.keys() {
+            if !result.contains_key(index) {
+                remaining.push(*index);
             }
         }
 
-        loop {
-            // If we have all the values needed, break and return.
-            if result.len() == vector.len() {
+        while let Some((index, signature)) = sig_recv.recv().await {
+            if !result.contains_key(&index) && remaining.contains(&index) {
+                result.insert(index, signature.value);
+                remaining.retain(|i| *i != index);
+            }
+            if result.len() == vector.inner.len() {
                 break;
             }
-
-            // If not, we wait for a new value to arrive.
-
-            let notify_new_signature = self.notify_new_signature.clone();
-
-            notify_new_signature.notified().await;
-
-            let signatures = self.prbc_signatures.read().await;
-            let mut i = 0;
-
-            let remaining2 = remaining.clone();
-
-            for index in &remaining2 {
-                if signatures.contains_key(index) {
-                    result.insert(*index, signatures.get(index).clone().unwrap().value.clone());
-                    remaining.remove(i);
-                }
-                i += 1;
-            }
         }
 
-        result
-    }
-
-    async fn on_prbc_finished(&self) -> ACSResult<()> {
-        Ok(())
+        ValueVector { inner: result }
     }
 
     async fn init_prbc(&self) {
@@ -250,7 +293,7 @@ impl<V: ABFTValue> ACS<V> {
         lock.replace(prbcs);
     }
 
-    async fn init_mvba(&self, value: V) {
+    async fn init_mvba(&self, value: SignatureVector) {
         let mvba = MVBA::init(self.id, self.index, self.n_parties, value);
 
         let mut lock = self.mvba.write().await;
@@ -260,4 +303,24 @@ impl<V: ABFTValue> ACS<V> {
 }
 
 #[derive(Error, Debug)]
-pub enum ACSError {}
+pub enum ACSError {
+    #[error("Not ready to handle PRBC message")]
+    NotReadyForPRBCMessage(ProtocolMessage),
+    #[error("Not ready to handle PRBC message")]
+    NotReadyForMVBAMessage(ProtocolMessage),
+    // Errors propogated from sub-protocol instances
+    #[error(transparent)]
+    MVBAError(#[from] MVBAError),
+    #[error(transparent)]
+    PRBCError(#[from] PRBCError),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct SignatureVector {
+    pub inner: HashMap<usize, Signature>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ValueVector<V: ABFTValue> {
+    inner: HashMap<usize, V>,
+}

@@ -73,6 +73,7 @@ impl<V: ABFTValue> PBSender<V> {
                 self.index,
                 self.n_parties,
                 self.id.id.inner.view,
+                0,
                 pb_send,
             )
             .await;
@@ -123,6 +124,10 @@ impl<V: ABFTValue> PBSender<V> {
         ) {
             shares.insert(index, share);
         } else {
+            warn!(
+                "Party {} got InvalidShareAckSignature from {}",
+                self.index, index
+            );
             return Err(PBError::InvalidShareAckSignature);
         }
 
@@ -205,6 +210,7 @@ impl<V: ABFTValue> PBReceiver<V> {
                     self.index,
                     index,
                     self.id.id.inner.view,
+                    0,
                     pb_ack,
                 )
                 .await;

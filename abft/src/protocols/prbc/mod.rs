@@ -30,7 +30,7 @@ pub struct PRBC<V: ABFTValue> {
     id: usize,
     index: usize,
     n_parties: usize,
-    send_id: usize,
+    pub(crate) send_id: usize,
     value: RwLock<Option<V>>,
     shares: RwLock<BTreeMap<usize, SignatureShare>>,
     notify_shares: Arc<Notify>,
@@ -82,7 +82,14 @@ impl<V: ABFTValue> PRBC<V> {
         let done_message = PRBCDoneMessage::new(share);
 
         send_handle
-            .broadcast(self.id, self.index, self.n_parties, 0, done_message)
+            .broadcast(
+                self.id,
+                self.index,
+                self.n_parties,
+                0,
+                self.send_id,
+                done_message,
+            )
             .await;
 
         let notify_shares = self.notify_shares.clone();
@@ -241,7 +248,7 @@ impl<V: ABFTValue> PRBC<V> {
     }
 
     async fn init_rbc(&self) -> PRBCResult<()> {
-        let rbc = RBC::init(self.id, self.index, self.n_parties)?;
+        let rbc = RBC::init(self.id, self.index, self.n_parties, self.send_id)?;
 
         let mut lock = self.rbc.write().await;
 
