@@ -251,8 +251,8 @@ impl PRBC {
 
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
 pub struct PRBCSignature {
-    value: Value,
-    inner: Signature,
+    pub(crate) value: Value,
+    pub(crate) inner: Signature,
 }
 
 #[derive(Error, Debug)]

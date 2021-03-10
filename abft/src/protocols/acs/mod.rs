@@ -2,8 +2,8 @@ use std::{collections::HashMap, sync::Arc};
 use thiserror::Error;
 
 use consensus_core::crypto::{commoncoin::Coin, sign::Signer};
-use log::info;
-use tokio::sync::{mpsc::Sender, RwLock};
+use log::{error, info};
+use tokio::sync::{mpsc::Sender, Notify, RwLock};
 
 use crate::{
     messaging::{
@@ -15,8 +15,8 @@ use crate::{
 use self::buffer::ACSBufferCommand;
 
 use super::{
-    mvba::MVBA,
-    prbc::{PRBCSignature, PRBC},
+    mvba::{buffer::MVBAReceiver, MVBA},
+    prbc::{buffer::PRBCReceiver, PRBCSignature, PRBC},
 };
 
 pub type ACSResult<T> = Result<T, ACSError>;
@@ -29,6 +29,8 @@ pub struct ACS {
     n_parties: usize,
     value: Value,
     prbc_signatures: RwLock<HashMap<usize, PRBCSignature>>,
+    notify_new_signature: Arc<Notify>,
+    notify_enough_signatures: Arc<Notify>,
 
     // sub-protocols
     prbcs: RwLock<Option<HashMap<usize, Arc<PRBC>>>>,
@@ -43,19 +45,24 @@ impl ACS {
             n_parties,
             value,
             prbc_signatures: Default::default(),
+            notify_new_signature: Default::default(),
+            notify_enough_signatures: Default::default(),
             prbcs: RwLock::const_new(None),
             mvba: RwLock::const_new(None),
         }
     }
 
-    pub async fn invoke<F: ProtocolMessageSender + Sync + Send>(
+    pub async fn invoke<
+        F: ProtocolMessageSender + Sync + Send + 'static,
+        R: PRBCReceiver + MVBAReceiver + Send + Sync + 'static,
+    >(
         &self,
-        buff_handle: Sender<ACSBufferCommand>,
-        send_handle: &F,
-        signer_prbc: &Signer,
+        recv_handle: Arc<R>,
+        send_handle: Arc<F>,
+        signer_prbc: Arc<Signer>,
         signer_mvba: &Signer,
         coin: &Coin,
-    ) {
+    ) -> ACSResult<()> {
         // Spin up n-1 PRBC instances, receiving values from other parties
 
         // broadcast value using PRBC
@@ -71,9 +78,10 @@ impl ACS {
 
             for (index, prbc) in prbcs {
                 let prbc_clone = prbc.clone();
-                let buff_clone = buff_handle.clone();
+                let recv_clone = recv_handle.clone();
                 let send_clone = send_handle.clone();
                 let signer_clone = signer_prbc.clone();
+                let index_copy = self.index;
 
                 let value = {
                     if *index == self.index {
@@ -84,22 +92,51 @@ impl ACS {
                 };
 
                 tokio::spawn(async move {
-                    //prbc_clone
-                    // .invoke(value, buff_clone, send_clone, signer_clone)
-                    //  .await;
+                    match prbc_clone
+                        .invoke(value, &*recv_clone, &*send_clone, &*signer_clone)
+                        .await
+                    {
+                        Ok(_) => {}
+                        Err(e) => {
+                            error!(
+                                "Party {} received error on invoking pp_recv: {}",
+                                index_copy, e
+                            );
+                        }
+                    }
                 });
             }
         }
 
         // when received n - f signatures, we have enough values to propose for MVBA
 
+        let notify_signatures = self.notify_enough_signatures.clone();
+
+        notify_signatures.notified().await;
+
         // Propose W = set ( (value, sig)) to MVBA
+
+        self.init_mvba().await;
 
         // Wait for mvba to return some W*, proposed by one of the parties.
 
+        {
+            let mvba_lock = self.mvba.read().await;
+
+            let mvba = mvba_lock.as_ref().expect("MVBA should be init");
+
+            let result = mvba
+                .invoke(recv_handle, &*send_handle, signer_mvba, coin)
+                .await;
+        }
+
         // Wait to receive values from each and every party contained in the W vector.
 
+        let result = self.retrieve_values().await;
+
         // Return the combined values of all the parties in the W vector.
+
+        Ok(())
     }
 
     pub async fn handle_protocol_message<F: ProtocolMessageSender + Sync + Send>(
@@ -140,12 +177,84 @@ impl ACS {
         }
     }
 
+    async fn retrieve_values(&self, vector: Vec<usize>) -> HashMap<usize, Value> {
+        let mut result: HashMap<usize, Value> = HashMap::new();
+
+        // Add all values we currently have
+        {
+            let signatures = self.prbc_signatures.read().await;
+            for index in &vector {
+                if signatures.contains_key(index) {
+                    result.insert(*index, signatures.get(index).clone().unwrap().value);
+                }
+            }
+        }
+
+        let mut remaining = Vec::with_capacity(vector.len());
+
+        // If we have outstanding values, add indices to remaining list.
+
+        if result.len() != vector.len() {
+            for index in &vector {
+                if !result.contains_key(index) {
+                    remaining.push(*index);
+                }
+            }
+        }
+
+        loop {
+            // If we have all the values needed, break and return.
+            if result.len() == vector.len() {
+                break;
+            }
+
+            // If not, we wait for a new value to arrive.
+
+            let notify_new_signature = self.notify_new_signature.clone();
+
+            notify_new_signature.notified().await;
+
+            let signatures = self.prbc_signatures.read().await;
+            let mut i = 0;
+
+            let remaining2 = remaining.clone();
+
+            for index in &remaining2 {
+                if signatures.contains_key(index) {
+                    result.insert(*index, signatures.get(index).clone().unwrap().value);
+                    remaining.remove(i);
+                }
+                i += 1;
+            }
+        }
+
+        result
+    }
+
     async fn on_prbc_finished(&self) -> ACSResult<()> {
         Ok(())
     }
 
-    async fn init_prbc(&self) -> ACSResult<()> {
-        Ok(())
+    async fn init_prbc(&self) {
+        let prbcs = (0..self.n_parties)
+            .map(|i| {
+                (
+                    i,
+                    Arc::new(PRBC::init(self.id, self.index, self.n_parties, i)),
+                )
+            })
+            .collect();
+
+        let mut lock = self.prbcs.write().await;
+        lock.replace(prbcs);
+    }
+
+    async fn init_mvba(&self, value: Value) {
+        let mvba = MVBA::init(self.id, self.index, self.n_parties, value);
+
+        let mut lock = self.mvba.write().await;
+
+        lock.replace(mvba);
     }
 }
 
