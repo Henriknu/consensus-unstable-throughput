@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     sync::{mpsc::channel, Arc},
 };
 use thiserror::Error;
@@ -117,7 +117,7 @@ impl<V: ABFTValue> ACS<V> {
 
         // when received n - f signatures, we have enough values to propose for MVBA
 
-        let mut signatures = HashMap::new();
+        let mut signatures = BTreeMap::new();
 
         while let Some((index, signature)) = sig_recv.recv().await {
             if !signatures.contains_key(&index) {
@@ -225,7 +225,7 @@ impl<V: ABFTValue> ACS<V> {
 
     async fn to_signature_vector(
         &self,
-        signatures: &HashMap<usize, PRBCSignature<V>>,
+        signatures: &BTreeMap<usize, PRBCSignature<V>>,
     ) -> SignatureVector {
         let inner = signatures
             .iter()
@@ -238,10 +238,10 @@ impl<V: ABFTValue> ACS<V> {
     async fn retrieve_values(
         &self,
         vector: SignatureVector,
-        signatures: HashMap<usize, PRBCSignature<V>>,
+        signatures: BTreeMap<usize, PRBCSignature<V>>,
         mut sig_recv: Receiver<(usize, PRBCSignature<V>)>,
     ) -> ValueVector<V> {
-        let mut result: HashMap<usize, V> = HashMap::new();
+        let mut result: BTreeMap<usize, V> = BTreeMap::new();
 
         // Add all values we currently have
         {
@@ -317,10 +317,10 @@ pub enum ACSError {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct SignatureVector {
-    pub inner: HashMap<usize, Signature>,
+    pub inner: BTreeMap<usize, Signature>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ValueVector<V: ABFTValue> {
-    inner: HashMap<usize, V>,
+    inner: BTreeMap<usize, V>,
 }

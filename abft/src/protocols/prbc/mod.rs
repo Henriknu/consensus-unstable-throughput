@@ -65,6 +65,10 @@ impl<V: ABFTValue> PRBC<V> {
         let lock = self.rbc.read().await;
         let rbc = lock.as_ref().expect("RBC should be initialized");
 
+        info!(
+            "Party {} draining rbc messages from buffer, for PRBC {}",
+            self.index, self.send_id
+        );
         recv_handle.drain_rbc(self.send_id).await?;
 
         let value = rbc.invoke(value, send_handle).await?;
@@ -125,12 +129,15 @@ impl<V: ABFTValue> PRBC<V> {
             message_type,
         } = message;
         let ProtocolMessageHeader {
-            send_id, recv_id, ..
+            send_id,
+            recv_id,
+            prbc_index,
+            ..
         } = header;
 
         info!(
-            "Handling message from {} to {} with message_type {:?}",
-            send_id, recv_id, message_type
+            "Handling PRBC message from {} to {}, in PRBC instance {}, with message_type {:?}",
+            send_id, recv_id, prbc_index, message_type
         );
 
         if let ProtocolMessageType::PRBC(prbc_message_type) = &message_type {

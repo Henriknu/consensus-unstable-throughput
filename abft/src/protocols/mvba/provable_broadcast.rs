@@ -125,8 +125,10 @@ impl<V: ABFTValue> PBSender<V> {
             shares.insert(index, share);
         } else {
             warn!(
-                "Party {} got InvalidShareAckSignature from {}",
-                self.index, index
+                "Party {} got InvalidShareAckSignature from {}, with signer with threshold: {}",
+                self.index,
+                index,
+                signer.threshold()
             );
             return Err(PBError::InvalidShareAckSignature);
         }

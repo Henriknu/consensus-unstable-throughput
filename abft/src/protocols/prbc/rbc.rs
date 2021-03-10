@@ -115,6 +115,11 @@ impl RBC {
         message: RBCEchoMessage,
         send_handle: &F,
     ) -> RBCResult<()> {
+        warn!(
+            "Party {} treating echo message from: {}",
+            self.index, message.index
+        );
+
         if !verify_branch(
             &message.root,
             &message.fragment.hash(),
@@ -147,6 +152,14 @@ impl RBC {
             n_echo_messages = lock.entry(root).or_default().len();
         }
 
+        warn!(
+            "Party {} has received {} echo message in instance {}. Need {} to send ready.",
+            self.index,
+            self.send_id,
+            n_echo_messages,
+            (self.n_parties * 2 / 3 + 1)
+        );
+
         if n_echo_messages >= (self.n_parties / 3 + 1) {
             self.notify_echo.notify_one();
         }
@@ -164,6 +177,10 @@ impl RBC {
                 }
             }
 
+            warn!(
+                "Party {} broadcasting ready in instance {}",
+                self.index, self.send_id,
+            );
             let ready_message = RBCReadyMessage::new(*merkle2.root());
 
             send_handle
@@ -178,6 +195,11 @@ impl RBC {
                 .await;
 
             self.has_sent_ready.store(true, Ordering::SeqCst);
+
+            warn!(
+                "Party {} done broadcasting ready in instance {}",
+                self.index, self.send_id,
+            );
         }
 
         Ok(())

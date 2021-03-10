@@ -310,8 +310,6 @@ impl<V: ABFTValue> MVBA<V> {
                     if let Some(pp_send) = &*pp_send {
                         let inner: PBShareAckMessage = deserialize(&message_data)?;
 
-                        warn!("Party {} deserialized message", self.index);
-
                         if let Err(PPError::NotReadyForShareAck) =
                             pp_send.on_share_ack(send_id, inner, signer).await
                         {

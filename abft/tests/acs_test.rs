@@ -28,8 +28,8 @@ use tokio::sync::mpsc::{self, Sender};
 use log::{debug, error, info};
 
 const N_PARTIES: usize = THRESHOLD * 3 + 1;
-const THRESHOLD: usize = 1;
-const BUFFER_CAPACITY: usize = THRESHOLD * 30;
+const THRESHOLD: usize = 10;
+const BUFFER_CAPACITY: usize = N_PARTIES * N_PARTIES * 50 + 100;
 
 struct ChannelSender {
     senders: HashMap<usize, Sender<ProtocolMessage>>,
@@ -168,7 +168,7 @@ impl MVBAReceiver for ACSBufferManager {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn acs_correctness() {
     env_logger::init();
 
