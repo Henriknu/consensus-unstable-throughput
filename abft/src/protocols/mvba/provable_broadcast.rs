@@ -6,10 +6,10 @@ use tokio::sync::{Mutex, Notify};
 
 use bincode::serialize;
 use num_traits::FromPrimitive;
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::messaging::ProtocolMessageSender;
+use crate::{messaging::ProtocolMessageSender, ABFTValue};
 
 use super::{
     messages::{PBSendMessage, PBShareAckMessage},
@@ -37,17 +37,17 @@ pub enum PBError {
     CryptoError,
 }
 
-pub struct PBSender {
+pub struct PBSender<V: ABFTValue> {
     id: PBID,
     index: usize,
     n_parties: usize,
     notify_shares: Arc<Notify>,
-    proposal: PPProposal,
+    proposal: PPProposal<V>,
     shares: Mutex<BTreeMap<usize, PBSigShare>>,
 }
 
-impl PBSender {
-    pub fn init(id: PBID, index: usize, n_parties: usize, proposal: PPProposal) -> Self {
+impl<V: ABFTValue> PBSender<V> {
+    pub fn init(id: PBID, index: usize, n_parties: usize, proposal: PPProposal<V>) -> Self {
         Self {
             id,
             index,
@@ -111,7 +111,7 @@ impl PBSender {
 
         let response = PBResponse {
             id: self.id,
-            value: self.proposal.value,
+            value: self.proposal.value.clone(),
         };
 
         let mut shares = self.shares.lock().await;
@@ -134,15 +134,15 @@ impl PBSender {
     }
 }
 
-pub struct PBReceiver {
+pub struct PBReceiver<V: ABFTValue> {
     pub id: PBID,
     index: usize,
     should_stop: Mutex<bool>,
-    proposal: Mutex<Option<PPProposal>>,
+    proposal: Mutex<Option<PPProposal<V>>>,
     notify_proposal: Arc<Notify>,
 }
 
-impl PBReceiver {
+impl<V: ABFTValue> PBReceiver<V> {
     pub fn init(id: PBID, index: usize) -> Self {
         Self {
             id,
@@ -153,7 +153,7 @@ impl PBReceiver {
         }
     }
 
-    pub async fn invoke(&self) -> PPProposal {
+    pub async fn invoke(&self) -> PPProposal<V> {
         // wait for a valid proposal to arrive
 
         let notify_proposal = self.notify_proposal.clone();
@@ -172,7 +172,7 @@ impl PBReceiver {
     pub async fn on_value_send_message<F: ProtocolMessageSender>(
         &self,
         index: usize,
-        message: PBSendMessage,
+        message: PBSendMessage<V>,
         mvba_id: &MVBAID,
         leader_index: usize,
         lock: usize,
@@ -190,7 +190,7 @@ impl PBReceiver {
             drop(should_stop);
             let response = PBResponse {
                 id: message.id,
-                value: proposal.value,
+                value: proposal.value.clone(),
             };
 
             let inner = signer.sign(
@@ -220,7 +220,7 @@ impl PBReceiver {
 
     fn evaluate_pb_val(
         &self,
-        proposal: &PPProposal,
+        proposal: &PPProposal<V>,
         message_id: PBID,
         mvba_id: &MVBAID,
         leader_index: usize,
@@ -242,7 +242,7 @@ impl PBReceiver {
                 id: message_id.id,
                 step: FromPrimitive::from_u8(message_id.step as u8 - 1).expect("Expect step > 1"),
             },
-            value: proposal.value,
+            value: proposal.value.clone(),
         };
 
         // If later step, verify that the proof provided is valid for the previous step.
@@ -262,7 +262,7 @@ impl PBReceiver {
 
     fn check_key(
         &self,
-        value: &Value,
+        value: &V,
         key: &PBKey,
         id: &MVBAID,
         leader_index: usize,
@@ -290,7 +290,7 @@ impl PBReceiver {
                 },
                 step: PPStatus::Step1,
             },
-            value: *value,
+            value: value.clone(),
         };
 
         // Verify the validity of the key provided
@@ -315,7 +315,7 @@ impl PBReceiver {
     }
 }
 
-fn eval_mvba_val(_value: &Value) -> bool {
+fn eval_mvba_val<V: ABFTValue>(_value: &V) -> bool {
     //TODO
     true
 }
@@ -332,9 +332,10 @@ pub struct PBID {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct PBResponse {
+pub struct PBResponse<V: ABFTValue> {
     pub(crate) id: PBID,
-    pub(crate) value: Value,
+    #[serde(deserialize_with = "V::deserialize")]
+    pub(crate) value: V,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

@@ -14,7 +14,7 @@ use crate::{
     messaging::{
         ProtocolMessage, ProtocolMessageHeader, ProtocolMessageSender, ProtocolMessageType,
     },
-    Value,
+    ABFTValue, Value,
 };
 use bincode::{deserialize, serialize, Error as BincodeError};
 use consensus_core::crypto::sign::{Signature, SignatureShare, Signer};
@@ -26,12 +26,12 @@ pub mod rbc;
 
 pub type PRBCResult<T> = Result<T, PRBCError>;
 
-pub struct PRBC {
+pub struct PRBC<V: ABFTValue> {
     id: usize,
     index: usize,
     n_parties: usize,
     send_id: usize,
-    value: RwLock<Option<Value>>,
+    value: RwLock<Option<V>>,
     shares: RwLock<BTreeMap<usize, SignatureShare>>,
     notify_shares: Arc<Notify>,
 
@@ -39,7 +39,7 @@ pub struct PRBC {
     rbc: RwLock<Option<RBC>>,
 }
 
-impl PRBC {
+impl<V: ABFTValue> PRBC<V> {
     pub fn init(id: usize, index: usize, n_parties: usize, send_id: usize) -> Self {
         Self {
             id,
@@ -55,11 +55,11 @@ impl PRBC {
 
     pub async fn invoke<F: ProtocolMessageSender + Sync + Send, R: PRBCReceiver>(
         &self,
-        value: Option<Value>,
+        value: Option<V>,
         recv_handle: &R,
         send_handle: &F,
         signer: &Signer,
-    ) -> PRBCResult<PRBCSignature> {
+    ) -> PRBCResult<PRBCSignature<V>> {
         self.init_rbc().await?;
 
         let lock = self.rbc.read().await;
@@ -72,7 +72,7 @@ impl PRBC {
         {
             let mut lock = self.value.write().await;
 
-            lock.replace(value);
+            lock.replace(value.clone());
         }
 
         recv_handle.drain_prbc_done(self.send_id).await?;
@@ -214,7 +214,9 @@ impl PRBC {
 
         let lock = self.value.read().await;
 
-        let value = lock.ok_or_else(|| PRBCError::NotReadyForDoneMessage)?;
+        let value = lock
+            .as_ref()
+            .ok_or_else(|| PRBCError::NotReadyForDoneMessage)?;
 
         if !signer.verify_share(index, &message.share, &serialize(&value)?) {
             warn!(
@@ -250,8 +252,8 @@ impl PRBC {
 }
 
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
-pub struct PRBCSignature {
-    pub(crate) value: Value,
+pub struct PRBCSignature<V: ABFTValue> {
+    pub(crate) value: V,
     pub(crate) inner: Signature,
 }
 

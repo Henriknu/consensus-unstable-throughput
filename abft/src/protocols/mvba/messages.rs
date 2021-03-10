@@ -1,10 +1,11 @@
 use consensus_core::crypto::commoncoin::EncodedCoinShare;
 
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 use crate::{
     messaging::{ProtocolMessageType, ToProtocolMessage},
     protocols::mvba::proposal_promotion::PPProposal,
+    ABFTValue,
 };
 
 use crate::protocols::mvba::provable_broadcast::{PBSigShare, PBID};
@@ -30,18 +31,19 @@ pub enum MVBAMessageType {
 
 // Concrete Messages
 #[derive(Debug, Serialize, Deserialize)]
-pub struct PBSendMessage {
+pub struct PBSendMessage<V: ABFTValue> {
     pub id: PBID,
-    pub proposal: PPProposal,
+    #[serde(bound = "")]
+    pub proposal: PPProposal<V>,
 }
 
-impl PBSendMessage {
-    pub fn new(id: PBID, proposal: PPProposal) -> Self {
+impl<V: ABFTValue> PBSendMessage<V> {
+    pub fn new(id: PBID, proposal: PPProposal<V>) -> Self {
         Self { id, proposal }
     }
 }
 
-impl ToProtocolMessage for PBSendMessage {
+impl<V: ABFTValue> ToProtocolMessage for PBSendMessage<V> {
     const MESSAGE_TYPE: ProtocolMessageType = ProtocolMessageType::MVBA(MVBAMessageType::PBSend);
 }
 
@@ -79,23 +81,26 @@ impl ToProtocolMessage for ElectCoinShareMessage {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct ViewChangeMessage {
+pub struct ViewChangeMessage<V: ABFTValue> {
     pub id: usize,
     pub index: usize,
     pub view: usize,
-    pub leader_key: Option<PPProposal>,
-    pub leader_lock: Option<PPProposal>,
-    pub leader_commit: Option<PPProposal>,
+    #[serde(bound = "")]
+    pub leader_key: Option<PPProposal<V>>,
+    #[serde(bound = "")]
+    pub leader_lock: Option<PPProposal<V>>,
+    #[serde(bound = "")]
+    pub leader_commit: Option<PPProposal<V>>,
 }
 
-impl ViewChangeMessage {
+impl<V: ABFTValue> ViewChangeMessage<V> {
     pub fn new(
         id: usize,
         index: usize,
         view: usize,
-        leader_key: Option<PPProposal>,
-        leader_lock: Option<PPProposal>,
-        leader_commit: Option<PPProposal>,
+        leader_key: Option<PPProposal<V>>,
+        leader_lock: Option<PPProposal<V>>,
+        leader_commit: Option<PPProposal<V>>,
     ) -> Self {
         Self {
             id,
@@ -108,24 +113,25 @@ impl ViewChangeMessage {
     }
 }
 
-impl ToProtocolMessage for ViewChangeMessage {
+impl<V: ABFTValue> ToProtocolMessage for ViewChangeMessage<V> {
     const MESSAGE_TYPE: ProtocolMessageType =
         ProtocolMessageType::MVBA(MVBAMessageType::ViewChange);
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct MVBADoneMessage {
+pub struct MVBADoneMessage<V: ABFTValue> {
     pub id: MVBAID,
-    pub proposal: PPProposal,
+    #[serde(bound = "")]
+    pub proposal: PPProposal<V>,
 }
 
-impl MVBADoneMessage {
-    pub fn new(id: MVBAID, proposal: PPProposal) -> Self {
+impl<V: ABFTValue> MVBADoneMessage<V> {
+    pub fn new(id: MVBAID, proposal: PPProposal<V>) -> Self {
         Self { id, proposal }
     }
 }
 
-impl ToProtocolMessage for MVBADoneMessage {
+impl<V: ABFTValue> ToProtocolMessage for MVBADoneMessage<V> {
     const MESSAGE_TYPE: ProtocolMessageType = ProtocolMessageType::MVBA(MVBAMessageType::MVBADone);
 }
 

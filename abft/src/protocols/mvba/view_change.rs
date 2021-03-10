@@ -1,4 +1,4 @@
-use crate::messaging::ProtocolMessageSender;
+use crate::{messaging::ProtocolMessageSender, ABFTValue};
 
 use super::{
     messages::ViewChangeMessage,
@@ -9,6 +9,7 @@ use super::{
 use bincode::serialize;
 use consensus_core::crypto::sign::Signer;
 use log::warn;
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
     Arc, Mutex,
@@ -18,20 +19,20 @@ use tokio::sync::Notify;
 
 pub type ViewChangeResult<T> = Result<T, ViewChangeError>;
 
-pub struct ViewChange {
+pub struct ViewChange<V: ABFTValue> {
     id: MVBAID,
     index: usize,
     view: usize,
     n_parties: usize,
     current_key_view: usize,
     current_lock: usize,
-    result: Mutex<Option<Changes>>,
+    result: Mutex<Option<Changes<V>>>,
     done: AtomicBool,
     num_messages: AtomicUsize,
     notify_messages: Arc<Notify>,
 }
 
-impl ViewChange {
+impl<V: ABFTValue> ViewChange<V> {
     pub fn init(
         id: MVBAID,
         index: usize,
@@ -56,11 +57,11 @@ impl ViewChange {
 
     pub async fn invoke<F: ProtocolMessageSender>(
         &self,
-        leader_key: Option<PPProposal>,
-        leader_lock: Option<PPProposal>,
-        leader_commit: Option<PPProposal>,
+        leader_key: Option<PPProposal<V>>,
+        leader_lock: Option<PPProposal<V>>,
+        leader_commit: Option<PPProposal<V>>,
         send_handle: &F,
-    ) -> ViewChangeResult<Changes> {
+    ) -> ViewChangeResult<Changes<V>> {
         let vc_message = ViewChangeMessage::new(
             self.id.id,
             self.id.index,
@@ -100,7 +101,7 @@ impl ViewChange {
 
     pub fn on_view_change_message(
         &self,
-        message: &ViewChangeMessage,
+        message: &ViewChangeMessage<V>,
         signer: &Signer,
     ) -> ViewChangeResult<()> {
         // Check if result already taken
@@ -116,7 +117,8 @@ impl ViewChange {
                     .leader_commit
                     .as_ref()
                     .expect("Asserted that message had valid commit")
-                    .value,
+                    .value
+                    .clone(),
             );
             self.update(new_result)?;
             self.notify_messages.notify_one();
@@ -148,7 +150,7 @@ impl ViewChange {
         Ok(())
     }
 
-    fn update(&self, new_result: Changes) -> ViewChangeResult<()> {
+    fn update(&self, new_result: Changes<V>) -> ViewChangeResult<()> {
         let mut result_lock = self
             .result
             .lock()
@@ -170,7 +172,7 @@ impl ViewChange {
         Ok(())
     }
 
-    fn has_valid_commit(&self, message: &ViewChangeMessage, signer: &Signer) -> bool {
+    fn has_valid_commit(&self, message: &ViewChangeMessage<V>, signer: &Signer) -> bool {
         if let Some((value, sig)) = try_unpack_value_and_sig(&message.leader_commit) {
             let response = PBResponse {
                 id: PBID {
@@ -194,7 +196,7 @@ impl ViewChange {
         false
     }
 
-    fn has_valid_lock(&self, message: &ViewChangeMessage, signer: &Signer) -> bool {
+    fn has_valid_lock(&self, message: &ViewChangeMessage<V>, signer: &Signer) -> bool {
         if let Some((value, sig)) = try_unpack_value_and_sig(&message.leader_lock) {
             let response = PBResponse {
                 id: PBID {
@@ -219,7 +221,7 @@ impl ViewChange {
         false
     }
 
-    fn has_valid_key(&self, message: &ViewChangeMessage, signer: &Signer) -> bool {
+    fn has_valid_key(&self, message: &ViewChangeMessage<V>, signer: &Signer) -> bool {
         if let Some((value, sig)) = try_unpack_value_and_sig(&message.leader_key) {
             let response = PBResponse {
                 id: PBID {
@@ -246,10 +248,10 @@ impl ViewChange {
 }
 
 /// Utility function to unpack value and view_key_proof from proposal, if proposal and proofs are Some.
-fn try_unpack_value_and_sig(proposal: &Option<PPProposal>) -> Option<(Value, PBSig)> {
+fn try_unpack_value_and_sig<V: ABFTValue>(proposal: &Option<PPProposal<V>>) -> Option<(V, PBSig)> {
     if let Some(PPProposal { value, proof }) = proposal {
         if let Some(sig) = &proof.proof_prev {
-            return Some((*value, sig.clone()));
+            return Some((value.clone(), sig.clone()));
         }
     }
     warn!("Could not unpack value and proof from ViewChange Message");
@@ -257,10 +259,10 @@ fn try_unpack_value_and_sig(proposal: &Option<PPProposal>) -> Option<(Value, PBS
 }
 
 #[derive(Debug, Default)]
-pub struct Changes {
-    pub(crate) value: Option<Value>,
+pub struct Changes<V: ABFTValue> {
+    pub(crate) value: Option<V>,
     pub(crate) lock: Option<usize>,
-    pub(crate) key: Option<Key>,
+    pub(crate) key: Option<Key<V>>,
 }
 
 #[derive(Error, Debug)]

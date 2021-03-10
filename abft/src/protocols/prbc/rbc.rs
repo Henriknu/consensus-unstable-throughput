@@ -16,7 +16,7 @@ use log::{info, warn};
 use thiserror::Error;
 use tokio::sync::{Notify, RwLock};
 
-use crate::{messaging::ProtocolMessageSender, Value};
+use crate::{messaging::ProtocolMessageSender, ABFTValue, Value};
 
 use super::messages::{RBCEchoMessage, RBCReadyMessage, RBCValueMessage};
 
@@ -52,11 +52,11 @@ impl RBC {
         })
     }
 
-    pub async fn invoke<F: ProtocolMessageSender>(
+    pub async fn invoke<F: ProtocolMessageSender, V: ABFTValue>(
         &self,
-        value: Option<Value>,
+        value: Option<V>,
         send_handle: &F,
-    ) -> RBCResult<Value> {
+    ) -> RBCResult<V> {
         if let Some(value) = value {
             self.broadcast_value(value, send_handle).await?;
         }
@@ -205,9 +205,9 @@ impl RBC {
         Ok(())
     }
 
-    async fn broadcast_value<F: ProtocolMessageSender>(
+    async fn broadcast_value<F: ProtocolMessageSender, V: ABFTValue>(
         &self,
-        value: Value,
+        value: V,
         send_handle: &F,
     ) -> RBCResult<()> {
         let fragments = self.erasure.encode(&serialize(&value)?);
@@ -265,7 +265,7 @@ impl RBC {
         Ok(fragments)
     }
 
-    async fn decode_value(&self) -> RBCResult<Value> {
+    async fn decode_value<V: ABFTValue>(&self) -> RBCResult<V> {
         let root = self.get_ready_root().await?;
 
         let fragments: Vec<Vec<u8>>;
@@ -292,7 +292,7 @@ impl RBC {
 
         let bytes = self.erasure.decode(&fragments, erasures)?;
 
-        let value: Value = deserialize(&bytes)?;
+        let value: V = deserialize(&bytes)?;
 
         Ok(value)
     }

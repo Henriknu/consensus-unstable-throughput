@@ -7,7 +7,7 @@ use tokio::sync::{
 
 use tokio::sync::Notify;
 
-use crate::messaging::ProtocolMessageSender;
+use crate::{messaging::ProtocolMessageSender, ABFTValue};
 
 use super::{
     buffer::{MVBABufferCommand, MVBAReceiver},
@@ -17,7 +17,7 @@ use super::{
 };
 use consensus_core::crypto::sign::Signer;
 use num_derive::FromPrimitive;
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -40,17 +40,17 @@ pub enum PPError {
 
 pub type PPResult<T> = Result<T, PPError>;
 
-pub struct PPSender {
+pub struct PPSender<V: ABFTValue> {
     id: PPID,
     index: usize,
     n_parties: usize,
-    key: RwLock<Option<PPProposal>>,
-    lock: RwLock<Option<PPProposal>>,
-    commit: RwLock<Option<PPProposal>>,
-    inner_pb: RwLock<Option<PBSender>>,
+    key: RwLock<Option<PPProposal<V>>>,
+    lock: RwLock<Option<PPProposal<V>>>,
+    commit: RwLock<Option<PPProposal<V>>>,
+    inner_pb: RwLock<Option<PBSender<V>>>,
 }
 
-impl PPSender {
+impl<V: ABFTValue> PPSender<V> {
     pub fn init(id: PPID, index: usize, n_parties: usize) -> Self {
         Self {
             id,
@@ -65,7 +65,7 @@ impl PPSender {
 
     pub async fn promote<F: ProtocolMessageSender>(
         &self,
-        value: Value,
+        value: V,
         key: PBKey,
         signer: &Signer,
         send_handle: &F,
@@ -139,7 +139,7 @@ impl PPSender {
         Ok(())
     }
 
-    pub async fn result(&self) -> PPLeader {
+    pub async fn result(&self) -> PPLeader<V> {
         let (key, lock, commit);
 
         {
@@ -160,7 +160,7 @@ impl PPSender {
         PPLeader { key, lock, commit }
     }
 
-    async fn init_pb(&self, step: PPStatus, proposal: PPProposal) {
+    async fn init_pb(&self, step: PPStatus, proposal: PPProposal<V>) {
         let pb = PBSender::init(
             PBID { id: self.id, step },
             self.index,
@@ -175,18 +175,18 @@ impl PPSender {
 }
 
 #[derive(Default)]
-pub struct PPReceiver {
+pub struct PPReceiver<V: ABFTValue> {
     id: PPID,
     index: usize,
     send_id: usize,
-    key: RwLock<Option<PPProposal>>,
-    lock: RwLock<Option<PPProposal>>,
-    commit: RwLock<Option<PPProposal>>,
-    inner_pb: RwLock<Option<PBReceiver>>,
+    key: RwLock<Option<PPProposal<V>>>,
+    lock: RwLock<Option<PPProposal<V>>>,
+    commit: RwLock<Option<PPProposal<V>>>,
+    inner_pb: RwLock<Option<PBReceiver<V>>>,
     notify_abandon: Arc<Notify>,
 }
 
-impl PPReceiver {
+impl<V: ABFTValue> PPReceiver<V> {
     pub fn init(id: PPID, index: usize, send_id: usize) -> Self {
         Self {
             id,
@@ -260,7 +260,7 @@ impl PPReceiver {
     pub async fn on_value_send_message<F: ProtocolMessageSender>(
         &self,
         index: usize,
-        message: PBSendMessage,
+        message: PBSendMessage<V>,
         id: &MVBAID,
         leader_index: usize,
         lock: usize,
@@ -280,7 +280,7 @@ impl PPReceiver {
         Ok(())
     }
 
-    fn check_step(message: &PBSendMessage, pb: &PBReceiver) -> PPResult<()> {
+    fn check_step(message: &PBSendMessage<V>, pb: &PBReceiver<V>) -> PPResult<()> {
         match message.id.step.partial_cmp(&pb.id.step) {
             Some(Ordering::Equal) => Ok(()),
             Some(Ordering::Greater) => Err(PPError::NotReadyForSend),
@@ -289,7 +289,7 @@ impl PPReceiver {
         }
     }
 
-    pub async fn result(&self) -> PPLeader {
+    pub async fn result(&self) -> PPLeader<V> {
         let (key, lock, commit);
 
         {
@@ -314,7 +314,7 @@ impl PPReceiver {
         self.notify_abandon.notify_one();
     }
 
-    pub async fn invoke_or_abandon(&self, pb: &PBReceiver) -> PPResult<PPProposal> {
+    pub async fn invoke_or_abandon(&self, pb: &PBReceiver<V>) -> PPResult<PPProposal<V>> {
         let notify_abandon = self.notify_abandon.clone();
         let proposal = tokio::select! {
             proposal = pb.invoke() => Some(proposal),
@@ -345,8 +345,9 @@ pub struct PPID {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
-pub struct PPProposal {
-    pub(crate) value: Value,
+pub struct PPProposal<V: ABFTValue> {
+    #[serde(deserialize_with = "V::deserialize")]
+    pub(crate) value: V,
     pub(crate) proof: PBProof,
 }
 
@@ -358,10 +359,10 @@ pub enum PPStatus {
     Step4,
 }
 
-pub struct PPLeader {
-    pub key: Option<PPProposal>,
-    pub lock: Option<PPProposal>,
-    pub commit: Option<PPProposal>,
+pub struct PPLeader<V: ABFTValue> {
+    pub key: Option<PPProposal<V>>,
+    pub lock: Option<PPProposal<V>>,
+    pub commit: Option<PPProposal<V>>,
 }
 
 impl fmt::Display for PPStatus {

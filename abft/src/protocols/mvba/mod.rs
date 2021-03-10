@@ -1,10 +1,13 @@
-use crate::messaging::{ProtocolMessage, ProtocolMessageHeader, ProtocolMessageSender};
+use crate::{
+    messaging::{ProtocolMessage, ProtocolMessageHeader, ProtocolMessageSender},
+    ABFTValue,
+};
 use bincode::{deserialize, serialize};
 use consensus_core::crypto::commoncoin::*;
 use consensus_core::crypto::sign::*;
 use proposal_promotion::{PPProposal, PPReceiver, PPSender, PPStatus};
 use provable_broadcast::{PBKey, PBProof};
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::collections::HashMap;
 
 use log::{error, info, warn};
@@ -39,24 +42,24 @@ pub mod provable_broadcast;
 pub mod view_change;
 
 /// Instance of Multi-valued Validated Byzantine Agreement
-pub struct MVBA {
+pub struct MVBA<V: ABFTValue> {
     /// Identifier for protocol
     id: usize,
     index: usize,
     n_parties: usize,
     /// Internal state
-    state: RwLock<MVBAState>,
+    state: RwLock<MVBAState<V>>,
     notify_skip: Arc<Notify>,
 
     // Sub-protocol instances
-    pp_send: RwLock<Option<PPSender>>,
-    pp_recvs: RwLock<Option<HashMap<usize, Arc<PPReceiver>>>>,
+    pp_send: RwLock<Option<PPSender<V>>>,
+    pp_recvs: RwLock<Option<HashMap<usize, Arc<PPReceiver<V>>>>>,
     elect: RwLock<Option<Elect>>,
-    view_change: RwLock<Option<ViewChange>>,
+    view_change: RwLock<Option<ViewChange<V>>>,
 }
 
-impl MVBA {
-    pub fn init(id: usize, index: usize, n_parties: usize, value: Value) -> Self {
+impl<V: ABFTValue> MVBA<V> {
+    pub fn init(id: usize, index: usize, n_parties: usize, value: V) -> Self {
         Self {
             id,
             index,
@@ -79,7 +82,7 @@ impl MVBA {
         send_handle: &F,
         signer: &Signer,
         coin: &Coin,
-    ) -> MVBAResult<Value> {
+    ) -> MVBAResult<V> {
         loop {
             let (id, index) = (self.id, self.index);
 
@@ -248,7 +251,7 @@ impl MVBA {
         if let ProtocolMessageType::MVBA(mvba_message_type) = &message_type {
             match mvba_message_type {
                 MVBAMessageType::MVBADone => {
-                    let inner: MVBADoneMessage = deserialize(&message_data)?;
+                    let inner: MVBADoneMessage<V> = deserialize(&message_data)?;
 
                     self.on_done_message(send_id, inner, send_handle, signer)
                         .await?;
@@ -268,7 +271,7 @@ impl MVBA {
                     let pp_recvs = self.pp_recvs.read().await;
                     if let Some(pp_recvs) = &*pp_recvs {
                         if let Some(pp) = pp_recvs.get(&send_id) {
-                            let inner: PBSendMessage = deserialize(&message_data)?;
+                            let inner: PBSendMessage<V> = deserialize(&message_data)?;
 
                             match self
                                 .on_pb_send_message(pp, inner, send_id, send_handle, signer)
@@ -338,7 +341,7 @@ impl MVBA {
                     let view_change = self.view_change.read().await;
 
                     if let Some(view_change) = &*view_change {
-                        let inner: ViewChangeMessage = deserialize(&message_data)?;
+                        let inner: ViewChangeMessage<V> = deserialize(&message_data)?;
 
                         match view_change.on_view_change_message(&inner, signer) {
                             Ok(_) => return Ok(()),
@@ -370,7 +373,7 @@ impl MVBA {
     pub async fn on_done_message<F: ProtocolMessageSender + Sync + Send>(
         &self,
         index: usize,
-        message: MVBADoneMessage,
+        message: MVBADoneMessage<V>,
         send_handle: &F,
         signer: &Signer,
     ) -> MVBAResult<()> {
@@ -586,8 +589,8 @@ impl MVBA {
 
     pub async fn on_pb_send_message<F: ProtocolMessageSender + Sync + Send>(
         &self,
-        pp: &Arc<PPReceiver>,
-        message: PBSendMessage,
+        pp: &Arc<PPReceiver<V>>,
+        message: PBSendMessage<V>,
         send_id: usize,
         send_handle: &F,
         signer: &Signer,
@@ -624,7 +627,7 @@ impl MVBA {
         Ok(())
     }
 
-    async fn get_key_value_view(&self) -> (PBKey, Value, usize) {
+    async fn get_key_value_view(&self) -> (PBKey, V, usize) {
         let state = self.state.read().await;
 
         let key = PBKey {
@@ -632,14 +635,14 @@ impl MVBA {
             view_key_proof: state.KEY.proof.clone(),
         };
 
-        let value = state.KEY.value;
+        let value = state.KEY.value.clone();
 
         let view = state.view;
 
         (key, value, view)
     }
 
-    async fn get_leader_result(&self, leader: usize) -> MVBAResult<PPLeader> {
+    async fn get_leader_result(&self, leader: usize) -> MVBAResult<PPLeader<V>> {
         if leader == self.index {
             let lock = self.pp_send.read().await;
             let pp_send = lock
@@ -669,7 +672,7 @@ impl MVBA {
             .ok_or_else(|| MVBAError::UninitState("skip".to_string()))
         {
             let proposal = PPProposal {
-                value: state.KEY.value,
+                value: state.KEY.value.clone(),
                 proof: PBProof {
                     key: PBKey {
                         view: state.KEY.view,
@@ -792,12 +795,12 @@ pub struct MVBAID {
 
 // Keep LOCK and KEY variable consistent with paper
 #[allow(non_snake_case)]
-struct MVBAState {
+struct MVBAState<V: ABFTValue> {
     /// Number of parties taking part in protocol
     view: usize,
     n_parties: usize,
     LOCK: usize,
-    KEY: Key,
+    KEY: Key<V>,
     /// Index of elected leader per view, if existing.
     leaders: HashMap<usize, Option<usize>>,
     /// Whether a MVBADoneMessage has been received from a certain party, for a particular view.
@@ -816,8 +819,8 @@ struct MVBAState {
     skip: HashMap<usize, bool>,
 }
 
-impl MVBAState {
-    fn new(n_parties: usize, value: Value) -> Self {
+impl<V: ABFTValue> MVBAState<V> {
+    fn new(n_parties: usize, value: V) -> Self {
         Self {
             view: 0,
             n_parties,
@@ -857,9 +860,9 @@ impl MVBAState {
 }
 
 #[derive(Debug, Clone)]
-pub struct Key {
+pub struct Key<V: ABFTValue> {
     view: usize,
-    value: Value,
+    value: V,
     proof: Option<PBSig>,
 }
 

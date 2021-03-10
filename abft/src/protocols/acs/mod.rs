@@ -1,3 +1,4 @@
+use serde::{de::DeserializeOwned, Serialize};
 use std::{collections::HashMap, sync::Arc};
 use thiserror::Error;
 
@@ -9,7 +10,7 @@ use crate::{
     messaging::{
         ProtocolMessage, ProtocolMessageHeader, ProtocolMessageSender, ProtocolMessageType,
     },
-    Value,
+    ABFTValue, Value,
 };
 
 use self::buffer::ACSBufferCommand;
@@ -23,22 +24,22 @@ pub type ACSResult<T> = Result<T, ACSError>;
 
 pub mod buffer;
 
-pub struct ACS {
+pub struct ACS<V: ABFTValue> {
     id: usize,
     index: usize,
     n_parties: usize,
-    value: Value,
-    prbc_signatures: RwLock<HashMap<usize, PRBCSignature>>,
+    value: V,
+    prbc_signatures: RwLock<HashMap<usize, PRBCSignature<V>>>,
     notify_new_signature: Arc<Notify>,
     notify_enough_signatures: Arc<Notify>,
 
     // sub-protocols
-    prbcs: RwLock<Option<HashMap<usize, Arc<PRBC>>>>,
-    mvba: RwLock<Option<MVBA>>,
+    prbcs: RwLock<Option<HashMap<usize, Arc<PRBC<V>>>>>,
+    mvba: RwLock<Option<MVBA<V>>>,
 }
 
-impl ACS {
-    pub fn new(id: usize, index: usize, n_parties: usize, value: Value) -> Self {
+impl<V: ABFTValue> ACS<V> {
+    pub fn new(id: usize, index: usize, n_parties: usize, value: V) -> Self {
         Self {
             id,
             index,
@@ -85,7 +86,7 @@ impl ACS {
 
                 let value = {
                     if *index == self.index {
-                        Some(self.value)
+                        Some(self.value.clone())
                     } else {
                         None
                     }
@@ -116,7 +117,7 @@ impl ACS {
 
         // Propose W = set ( (value, sig)) to MVBA
 
-        self.init_mvba().await;
+        //self.init_mvba().await;
 
         // Wait for mvba to return some W*, proposed by one of the parties.
 
@@ -132,7 +133,7 @@ impl ACS {
 
         // Wait to receive values from each and every party contained in the W vector.
 
-        let result = self.retrieve_values().await;
+        //let result = self.retrieve_values().await;
 
         // Return the combined values of all the parties in the W vector.
 
@@ -177,15 +178,15 @@ impl ACS {
         }
     }
 
-    async fn retrieve_values(&self, vector: Vec<usize>) -> HashMap<usize, Value> {
-        let mut result: HashMap<usize, Value> = HashMap::new();
+    async fn retrieve_values(&self, vector: Vec<usize>) -> HashMap<usize, V> {
+        let mut result: HashMap<usize, V> = HashMap::new();
 
         // Add all values we currently have
         {
             let signatures = self.prbc_signatures.read().await;
             for index in &vector {
                 if signatures.contains_key(index) {
-                    result.insert(*index, signatures.get(index).clone().unwrap().value);
+                    result.insert(*index, signatures.get(index).clone().unwrap().value.clone());
                 }
             }
         }
@@ -221,7 +222,7 @@ impl ACS {
 
             for index in &remaining2 {
                 if signatures.contains_key(index) {
-                    result.insert(*index, signatures.get(index).clone().unwrap().value);
+                    result.insert(*index, signatures.get(index).clone().unwrap().value.clone());
                     remaining.remove(i);
                 }
                 i += 1;
@@ -249,7 +250,7 @@ impl ACS {
         lock.replace(prbcs);
     }
 
-    async fn init_mvba(&self, value: Value) {
+    async fn init_mvba(&self, value: V) {
         let mvba = MVBA::init(self.id, self.index, self.n_parties, value);
 
         let mut lock = self.mvba.write().await;
