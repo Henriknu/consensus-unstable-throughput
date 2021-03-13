@@ -1,6 +1,11 @@
-use p256::{AffinePoint, NonZeroScalar, ProjectivePoint, Scalar};
+use p256::{
+    elliptic_curve::sec1::FromEncodedPoint, AffinePoint, EncodedPoint, FieldBytes, NonZeroScalar,
+    ProjectivePoint, Scalar,
+};
 use rand_core::OsRng;
 use std::{collections::HashSet, ops::Deref, str};
+
+use serde::{Deserialize, Serialize};
 
 use super::hash::threshold::{hash1, hash2, hash4};
 
@@ -250,6 +255,7 @@ impl Encrypter {
     }
 }
 
+#[derive(Default, Debug, Clone)]
 pub struct Ciphertext {
     c: Vec<u8>,
     label: Vec<u8>,
@@ -259,11 +265,128 @@ pub struct Ciphertext {
     f: Scalar,
 }
 
+#[derive(Default, Debug, Clone, Serialize, Deserialize)]
+pub struct EncodedCiphertext {
+    c: Vec<u8>,
+    label: Vec<u8>,
+    u: Vec<u8>,
+    u1: Vec<u8>,
+    e: Vec<u8>,
+    f: Vec<u8>,
+}
+
+impl From<Ciphertext> for EncodedCiphertext {
+    fn from(ciphetext: Ciphertext) -> Self {
+        let Ciphertext {
+            c,
+            label,
+            u,
+            u1,
+            e,
+            f,
+        } = ciphetext;
+
+        let u = EncodedPoint::from(u).as_bytes().to_vec();
+        let u1 = EncodedPoint::from(u1).as_bytes().to_vec();
+
+        let e = e.to_bytes().as_slice().to_vec();
+
+        let f = f.to_bytes().as_slice().to_vec();
+
+        Self {
+            c,
+            label,
+            u,
+            u1,
+            e,
+            f,
+        }
+    }
+}
+
+impl From<EncodedCiphertext> for Ciphertext {
+    fn from(encoded: EncodedCiphertext) -> Self {
+        let EncodedCiphertext {
+            c,
+            label,
+            u,
+            u1,
+            e,
+            f,
+        } = encoded;
+
+        let u = AffinePoint::from_encoded_point(
+            &EncodedPoint::from_bytes(u)
+                .expect("Could not deserialize Sec1 encoded string to encoded point"),
+        )
+        .expect("Could not decode encoded point as affine point");
+
+        let u1 = AffinePoint::from_encoded_point(
+            &EncodedPoint::from_bytes(u1)
+                .expect("Could not deserialize Sec1 encoded string to encoded point"),
+        )
+        .expect("Could not decode encoded point as affine point");
+
+        let e = Scalar::from_bytes_reduced(FieldBytes::from_slice(&e));
+
+        let f = Scalar::from_bytes_reduced(FieldBytes::from_slice(&f));
+
+        Self {
+            c,
+            label,
+            u,
+            u1,
+            e,
+            f,
+        }
+    }
+}
+
 pub struct DecryptionShare {
     index: usize,
     uu: AffinePoint,
     ee: Scalar,
     ff: Scalar,
+}
+
+#[derive(Default, Debug, Clone, Serialize, Deserialize)]
+pub struct EncodedDecryptionShare {
+    index: usize,
+    uu: Vec<u8>,
+    ee: Vec<u8>,
+    ff: Vec<u8>,
+}
+
+impl From<DecryptionShare> for EncodedDecryptionShare {
+    fn from(share: DecryptionShare) -> Self {
+        let DecryptionShare { index, uu, ee, ff } = share;
+
+        let uu = EncodedPoint::from(uu).as_bytes().to_vec();
+
+        let ee = ee.to_bytes().as_slice().to_vec();
+
+        let ff = ff.to_bytes().as_slice().to_vec();
+
+        Self { index, uu, ee, ff }
+    }
+}
+
+impl From<EncodedDecryptionShare> for DecryptionShare {
+    fn from(encoded: EncodedDecryptionShare) -> Self {
+        let EncodedDecryptionShare { index, uu, ee, ff } = encoded;
+
+        let uu = AffinePoint::from_encoded_point(
+            &EncodedPoint::from_bytes(uu)
+                .expect("Could not deserialize Sec1 encoded string to encoded point"),
+        )
+        .expect("Could not decode encoded point as affine point");
+
+        let ee = Scalar::from_bytes_reduced(FieldBytes::from_slice(&ee));
+
+        let ff = Scalar::from_bytes_reduced(FieldBytes::from_slice(&ff));
+
+        Self { index, uu, ee, ff }
+    }
 }
 
 pub struct Plaintext {

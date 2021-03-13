@@ -1,7 +1,10 @@
 use async_trait::async_trait;
 
 use bincode::serialize;
-use consensus_core::crypto::commoncoin::EncodedCoinShare;
+use consensus_core::crypto::{
+    commoncoin::EncodedCoinShare,
+    encrypt::{DecryptionShare, EncodedDecryptionShare},
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -103,6 +106,7 @@ impl ProtocolMessageHeader {
 pub enum ProtocolMessageType {
     MVBA(MVBAMessageType),
     PRBC(PRBCMessageType),
+    ABFTDecryptionShare,
     Default,
 }
 
@@ -132,4 +136,22 @@ where
             message_data,
         )
     }
+}
+
+// Concrete Messages
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ABFTDecryptionShareMessage {
+    pub index: usize,
+    pub key: EncodedDecryptionShare,
+    pub nonce: EncodedDecryptionShare,
+}
+
+impl ABFTDecryptionShareMessage {
+    pub fn new(index: usize, key: EncodedDecryptionShare, nonce: EncodedDecryptionShare) -> Self {
+        Self { index, key, nonce }
+    }
+}
+
+impl ToProtocolMessage for ABFTDecryptionShareMessage {
+    const MESSAGE_TYPE: ProtocolMessageType = ProtocolMessageType::ABFTDecryptionShare;
 }

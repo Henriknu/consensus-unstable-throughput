@@ -214,7 +214,7 @@ impl<V: ABFTValue> ACS<V> {
                     return Err(ACSError::NotReadyForMVBAMessage(message));
                 }
             }
-            ProtocolMessageType::Default => {
+            ProtocolMessageType::ABFTDecryptionShare | ProtocolMessageType::Default => {
 
                 // ignore
             }
@@ -322,5 +322,5 @@ pub struct SignatureVector {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ValueVector<V: ABFTValue> {
-    inner: BTreeMap<usize, V>,
+    pub(crate) inner: BTreeMap<usize, V>,
 }

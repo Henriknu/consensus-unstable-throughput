@@ -1,3 +1,4 @@
+pub mod aes;
 pub mod commoncoin;
 pub mod encrypt;
 pub mod hash;
