@@ -5,8 +5,8 @@ use rand::{rngs::StdRng, FromEntropy, Rng, SeedableRng};
 use thiserror::Error;
 
 pub struct SymmetricEncrypter {
-    key: [u8; 32],
-    nonce: [u8; 32],
+    pub key: [u8; 32],
+    pub nonce: [u8; 32],
 }
 
 impl SymmetricEncrypter {
@@ -24,7 +24,7 @@ impl SymmetricEncrypter {
 
         let ciphertext = cipher
             .encrypt(GenericArray::from_slice(&nonce[0..12]), data)
-            .map_err(|_| SymmetricEncrypterError::FailedEncrypt)?;
+            .map_err(|e| SymmetricEncrypterError::FailedEncrypt(format!("{}", e)))?;
 
         let encrypter = SymmetricEncrypter { key, nonce };
 
@@ -36,7 +36,7 @@ impl SymmetricEncrypter {
 
         let plaintext = cipher
             .decrypt(GenericArray::from_slice(&self.nonce[0..12]), ciphertext)
-            .map_err(|_| SymmetricEncrypterError::FailedDecrypt)?;
+            .map_err(|e| SymmetricEncrypterError::FailedDecrypt(format!("{}", e)))?;
 
         Ok(plaintext)
     }
@@ -52,10 +52,10 @@ impl SymmetricEncrypter {
 
 #[derive(Error, Debug)]
 pub enum SymmetricEncrypterError {
-    #[error("Failed to Encrypt data")]
-    FailedEncrypt,
-    #[error("Failed to Decrypt data")]
-    FailedDecrypt,
+    #[error("Failed to Encrypt data: {0}")]
+    FailedEncrypt(String),
+    #[error("Failed to Decrypt data: {0}")]
+    FailedDecrypt(String),
 }
 
 #[cfg(test)]

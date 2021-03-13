@@ -390,7 +390,7 @@ impl From<EncodedDecryptionShare> for DecryptionShare {
 }
 
 pub struct Plaintext {
-    data: [u8; 32],
+    pub data: [u8; 32],
 }
 
 #[cfg(test)]

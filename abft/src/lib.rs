@@ -1,16 +1,14 @@
-pub mod messaging;
-pub mod protocols;
-
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, mem::take, sync::Arc};
 
 use bincode::{deserialize, serialize, Error as BincodeError};
+use buffer::{ABFTBufferCommand, ABFTReceiver};
 use consensus_core::crypto::{
     aes::{SymmetricEncrypter, SymmetricEncrypterError},
     commoncoin::Coin,
-    encrypt::{Ciphertext, DecryptionShare, EncodedCiphertext, Encrypter},
+    encrypt::{EncodedCiphertext, Encrypter},
     sign::Signer,
 };
-use log::info;
+use log::{debug, info, warn};
 use messaging::{
     ABFTDecryptionShareMessage, ProtocolMessage, ProtocolMessageSender, ProtocolMessageType,
 };
@@ -21,13 +19,18 @@ use protocols::{
 };
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use thiserror::Error;
-use tokio::sync::{Notify, RwLock};
+use tokio::sync::{mpsc::error::SendError, Notify, RwLock};
+
+pub mod buffer;
+pub mod messaging;
+pub mod protocols;
 
 pub type ABFTResult<T> = Result<T, ABFTError>;
 
 pub struct ABFT<
     F: ProtocolMessageSender + Sync + Send + 'static,
     R: PRBCReceiver + MVBAReceiver + Send + Sync + 'static,
+    V: ABFTValue,
 > {
     id: usize,
     index: usize,
@@ -36,7 +39,7 @@ pub struct ABFT<
     encrypted_values: RwLock<Option<ValueVector<EncryptedTransactionSet>>>,
     notify_decrypt: Arc<Notify>,
     decryption_shares: RwLock<HashMap<usize, HashMap<usize, ABFTDecryptionShareMessage>>>,
-    decrypted: RwLock<HashMap<usize, EncryptedTransactionSet>>,
+    decrypted: RwLock<HashMap<usize, V>>,
 
     // sub-protocol
     acs: RwLock<Option<ACS<EncryptedTransactionSet>>>,
@@ -52,8 +55,9 @@ pub struct ABFT<
 
 impl<
         F: ProtocolMessageSender + Sync + Send + 'static,
-        R: PRBCReceiver + MVBAReceiver + Send + Sync + 'static,
-    > ABFT<F, R>
+        R: PRBCReceiver + MVBAReceiver + ABFTReceiver + Send + Sync + 'static,
+        V: ABFTValue,
+    > ABFT<F, R, V>
 {
     pub fn init(
         id: usize,
@@ -87,7 +91,7 @@ impl<
         }
     }
 
-    pub async fn invoke<V: ABFTValue>(&self, value: V) -> ABFTResult<()> {
+    pub async fn invoke(&self, value: V) -> ABFTResult<HashMap<usize, V>> {
         // choose value and encrypt it
         // TODO: Figure out label
 
@@ -152,6 +156,8 @@ impl<
             vector.replace(value_vector);
         }
 
+        self.recv_handle.drain_decryption_shares().await?;
+
         // wait for f + 1 decryption shares for each transaction set, decrypt and return
 
         let notify_decrypt = self.notify_decrypt.clone();
@@ -160,7 +166,11 @@ impl<
 
         // Get transaction sets
 
-        Ok(())
+        let mut lock = self.decrypted.write().await;
+
+        let decrypted = std::mem::take(&mut *lock);
+
+        Ok(decrypted)
     }
 
     pub async fn handle_protocol_message(&self, message: ProtocolMessage) -> ABFTResult<()> {
@@ -226,10 +236,16 @@ impl<
             }
 
             ProtocolMessageType::ABFTDecryptionShare => {
-                let inner: ABFTDecryptionShareMessage = deserialize(&message.message_data)?;
+                let vector_lock = self.encrypted_values.read().await;
 
-                self.on_decryption_share(inner, message.header.send_id)
-                    .await;
+                if vector_lock.is_some() {
+                    let inner: ABFTDecryptionShareMessage = deserialize(&message.message_data)?;
+
+                    self.on_decryption_share(inner, message.header.send_id)
+                        .await?;
+                } else {
+                    return Err(ABFTError::NotReadyForABFTDecryptionShareMessage(message));
+                }
             }
             ProtocolMessageType::Default => {
 
@@ -240,13 +256,25 @@ impl<
         Ok(())
     }
 
-    async fn on_decryption_share(&self, message: ABFTDecryptionShareMessage, send_id: usize) {
+    async fn on_decryption_share(
+        &self,
+        message: ABFTDecryptionShareMessage,
+        send_id: usize,
+    ) -> ABFTResult<()> {
+        debug!(
+            "Party {} handling decryption share for value {}, from {}",
+            self.index, message.index, send_id
+        );
         // if we have already decrypted the transaction set, diregard the message
         {
             let decrypted = self.decrypted.read().await;
 
-            if decrypted.contains_key(&send_id) {
-                return;
+            if decrypted.contains_key(&message.index) {
+                info!(
+                    "Party {} already decrypted value {}, discarding message from {}",
+                    self.index, message.index, send_id
+                );
+                return Ok(());
             }
         }
 
@@ -259,7 +287,11 @@ impl<
             .or_default()
             .contains_key(&send_id)
         {
-            return;
+            warn!(
+                "Party {} already received decrypt share for value {}, from {}",
+                self.index, message.index, send_id
+            );
+            return Ok(());
         }
 
         // verify the share is valid
@@ -278,14 +310,22 @@ impl<
                 .encrypter
                 .verify_share(&encrypted.key.clone().into(), &message.key.clone().into())
             {
-                return;
+                warn!(
+                    "Party {} received a faulty decryption share for value {}'s key, from {}",
+                    self.index, message.index, send_id
+                );
+                return Ok(());
             }
 
             if !self.encrypter.verify_share(
                 &encrypted.nonce.clone().into(),
                 &message.nonce.clone().into(),
             ) {
-                return;
+                warn!(
+                    "Party {} received a faulty decryption share for value {}'s nonce, from {}",
+                    self.index, message.index, send_id
+                );
+                return Ok(());
             }
         }
 
@@ -299,8 +339,17 @@ impl<
 
         // if we have enough shares, decrypt
 
+        debug!(
+            "Party {} has received {} decryption share for value {}, need {}",
+            self.index,
+            shares.entry(index).or_default().len(),
+            index,
+            (self.n_parties / 3 + 1)
+        );
+
         if shares.entry(index).or_default().len() >= (self.n_parties / 3 + 1) {
-            self.decrypt_value(index);
+            drop(shares);
+            self.decrypt_value(index).await?;
 
             // if we have decrypted everything, notify
 
@@ -310,9 +359,11 @@ impl<
                 self.notify_decrypt.notify_one();
             }
         }
+
+        Ok(())
     }
 
-    async fn decrypt_value(&self, index: usize) {
+    async fn decrypt_value(&self, index: usize) -> ABFTResult<()> {
         //assume that we do actually have enough shares for this.
 
         let (key_shares, nonce_shares) = {
@@ -322,33 +373,48 @@ impl<
 
             let key_shares = shares
                 .iter()
-                .map(|(index, message)| message.key.clone().into())
+                .map(|(_, message)| message.key.clone().into())
                 .collect();
 
             let nonce_shares = shares
                 .iter()
-                .map(|(index, message)| message.nonce.clone().into())
+                .map(|(_, message)| message.nonce.clone().into())
                 .collect();
 
             (key_shares, nonce_shares)
         };
 
+        let vector_lock = self.encrypted_values.read().await;
+
+        let vector = vector_lock.as_ref().unwrap();
+
+        let encrypted = vector.inner.get(&index).unwrap();
+
         let key = self
             .encrypter
-            .combine_shares(ciphertext, key_shares)
+            .combine_shares(&encrypted.key.clone().into(), key_shares)
             .unwrap();
 
         let nonce = self
             .encrypter
-            .combine_shares(ciphertext, nonce_shares)
+            .combine_shares(&encrypted.nonce.clone().into(), nonce_shares)
             .unwrap();
 
         let symmetric = SymmetricEncrypter {
-            key: key.inner,
-            nonce: nonce.inner,
+            key: key.data,
+            nonce: nonce.data,
         };
 
-        let decrypted = symmetric.decrypt(payload)?;
+        let decrypted = symmetric.decrypt(&encrypted.payload)?;
+
+        let value: V = deserialize(&decrypted)?;
+
+        {
+            let mut decryptions = self.decrypted.write().await;
+            decryptions.insert(index, value);
+        }
+
+        Ok(())
     }
 
     async fn init_acs(&self, encrypted: EncryptedTransactionSet) {
@@ -397,8 +463,12 @@ pub enum ABFTError {
     FailedSymmetricEncryption(#[from] SymmetricEncrypterError),
     #[error("Not ready to handle PRBC message")]
     NotReadyForPRBCMessage(ProtocolMessage),
-    #[error("Not ready to handle PRBC message")]
+    #[error("Not ready to handle MVBA message")]
     NotReadyForMVBAMessage(ProtocolMessage),
+    #[error("Not ready to handle ABFT Decryption share message")]
+    NotReadyForABFTDecryptionShareMessage(ProtocolMessage),
+    #[error("Failed to send PRBCBufferCommand from MVBA instance")]
+    BufferSender(#[from] SendError<ABFTBufferCommand>),
     // Errors propogated from sub-protocol instances
     #[error(transparent)]
     ACSError(#[from] ACSError),
