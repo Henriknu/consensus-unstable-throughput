@@ -74,7 +74,7 @@ impl<V: ABFTValue> ACS<V> {
 
         self.init_prbc().await;
 
-        let (sig_send, mut sig_recv) = tokio::sync::mpsc::channel(self.n_parties);
+        let (sig_send, mut sig_recv) = tokio::sync::mpsc::channel(50 * self.n_parties);
         {
             let prbc_lock = self.prbcs.read().await;
 
@@ -102,7 +102,12 @@ impl<V: ABFTValue> ACS<V> {
                         .await
                     {
                         Ok(signature) => {
-                            let _ = sig_send_clone.send((prbc_clone.send_id, signature)).await;
+                            info!("Sending signature for PRBC {}.", index_copy);
+                            sig_send_clone
+                                .send((prbc_clone.send_id, signature))
+                                .await
+                                .unwrap();
+                            info!("Sending signature for PRBC {} went through.", index_copy);
                         }
                         Err(e) => {
                             error!(

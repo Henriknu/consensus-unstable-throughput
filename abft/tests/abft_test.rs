@@ -30,8 +30,8 @@ use tokio::sync::mpsc::{self, Sender};
 use log::{debug, error, info};
 
 const N_PARTIES: usize = THRESHOLD * 3 + 1;
-const THRESHOLD: usize = 1;
-const BUFFER_CAPACITY: usize = N_PARTIES * N_PARTIES * 50 + 100;
+const THRESHOLD: usize = 5;
+const BUFFER_CAPACITY: usize = N_PARTIES * N_PARTIES * 100 + 300;
 
 struct ChannelSender {
     senders: HashMap<usize, Sender<ProtocolMessage>>,
@@ -191,7 +191,7 @@ impl ABFTReceiver for ABFTBufferManager {
     }
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn acs_correctness() {
     env_logger::init();
 
@@ -205,7 +205,7 @@ async fn acs_correctness() {
 
     assert_eq!(prbc_signers.len(), N_PARTIES);
 
-    let mut encrypters = Encrypter::generate_keys(N_PARTIES, THRESHOLD + 1);
+    let mut encrypters = Encrypter::generate_keys(N_PARTIES, THRESHOLD);
 
     assert_eq!(encrypters.len(), N_PARTIES);
 

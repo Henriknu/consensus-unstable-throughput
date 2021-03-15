@@ -139,7 +139,7 @@ where
 }
 
 // Concrete Messages
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ABFTDecryptionShareMessage {
     pub index: usize,
     pub key: EncodedDecryptionShare,

@@ -255,7 +255,7 @@ impl Encrypter {
     }
 }
 
-#[derive(Default, Debug, Clone)]
+#[derive(Default, Debug, Clone, PartialEq)]
 pub struct Ciphertext {
     c: Vec<u8>,
     label: Vec<u8>,
@@ -342,6 +342,7 @@ impl From<EncodedCiphertext> for Ciphertext {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
 pub struct DecryptionShare {
     index: usize,
     uu: AffinePoint,
@@ -495,6 +496,108 @@ mod tests {
         }
 
         let plaintext = actors[0]
+            .combine_shares(&encrypted, decrypt_shares)
+            .expect("Plaintext could not be retrieved from shares");
+
+        println!("Plaintext bytes: {:?}", &plaintext.data);
+        println!(
+            "Plaintext message: {:?}",
+            str::from_utf8(&plaintext.data).expect("Plaintext data should be valid utf-8")
+        );
+    }
+
+    #[test]
+    fn cipher_to_encoded() {
+        let actors = Encrypter::generate_keys(2, 1);
+
+        let message = "Hello world! Hello world! Hello!";
+
+        let mut data = [0u8; 32];
+
+        data.copy_from_slice(message.as_bytes());
+
+        let encrypted = actors[0].encrypt(&data, &data);
+
+        let encoded: EncodedCiphertext = encrypted.clone().into();
+
+        let decoded = encoded.into();
+
+        assert_eq!(encrypted, decoded);
+    }
+    #[test]
+    fn decrypt_to_encoded() {
+        let actors = Encrypter::generate_keys(2, 1);
+
+        let message = "Hello world! Hello world! Hello!";
+
+        let mut data = [0u8; 32];
+
+        data.copy_from_slice(message.as_bytes());
+
+        let encrypted = actors[0].encrypt(&data, &data);
+
+        let decrypt_share = actors[1].decrypt_share(&encrypted).unwrap();
+
+        let encoded: EncodedDecryptionShare = decrypt_share.clone().into();
+
+        let decoded = encoded.into();
+
+        assert_eq!(decrypt_share, decoded);
+    }
+
+    #[test]
+    #[should_panic]
+    fn fails_to_decrypt_if_not_enough_shares() {
+        let mut actors = Encrypter::generate_keys(4, 2);
+
+        let message = "Hello world! Hello world! Hello!";
+
+        let mut data = [0u8; 32];
+
+        data.copy_from_slice(message.as_bytes());
+
+        assert!(message.as_bytes().len() == 32);
+
+        println!("Message bytes: {:?}", &message.as_bytes());
+        println!("Message bytes len: {:?}", &message.as_bytes().len());
+        println!(
+            "Message str: {:?}",
+            str::from_utf8(&message.as_bytes()).expect("Message data should be valid utf-8")
+        );
+
+        let encrypted = actors[0].encrypt(&data, &data);
+
+        println!("Ciphertext bytes: {:?}", &encrypted.c);
+        println!(
+            "Ciphertext label: {:?}",
+            str::from_utf8(&encrypted.label).expect("Label should be valid utf-8")
+        );
+
+        actors.remove(1);
+
+        let actor = actors.remove(0);
+
+        let decrypt_shares: Vec<_> = actors
+            .iter()
+            .map(|actor| actor.decrypt_share(&encrypted).unwrap())
+            .collect();
+
+        println!("Decrypt share len: {}", decrypt_shares.len());
+
+        for share in &decrypt_shares {
+            for actor in &actors {
+                if actor.index != share.index {
+                    assert!(
+                        actor.verify_share(&encrypted, share),
+                        "Actor {} could not verify share: {}",
+                        actor.index,
+                        share.index
+                    );
+                }
+            }
+        }
+
+        let plaintext = actor
             .combine_shares(&encrypted, decrypt_shares)
             .expect("Plaintext could not be retrieved from shares");
 

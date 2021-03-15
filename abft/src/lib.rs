@@ -1,4 +1,8 @@
-use std::{collections::HashMap, mem::take, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashMap},
+    mem::take,
+    sync::Arc,
+};
 
 use bincode::{deserialize, serialize, Error as BincodeError};
 use buffer::{ABFTBufferCommand, ABFTReceiver};
@@ -39,7 +43,7 @@ pub struct ABFT<
     encrypted_values: RwLock<Option<ValueVector<EncryptedTransactionSet>>>,
     notify_decrypt: Arc<Notify>,
     decryption_shares: RwLock<HashMap<usize, HashMap<usize, ABFTDecryptionShareMessage>>>,
-    decrypted: RwLock<HashMap<usize, V>>,
+    decrypted: RwLock<BTreeMap<usize, V>>,
 
     // sub-protocol
     acs: RwLock<Option<ACS<EncryptedTransactionSet>>>,
@@ -91,7 +95,7 @@ impl<
         }
     }
 
-    pub async fn invoke(&self, value: V) -> ABFTResult<HashMap<usize, V>> {
+    pub async fn invoke(&self, value: V) -> ABFTResult<BTreeMap<usize, V>> {
         // choose value and encrypt it
         // TODO: Figure out label
 
@@ -130,30 +134,40 @@ impl<
             .await?
         };
 
-        // decrypt and broadcast shares
-
-        for (index, transaction_set) in &value_vector.inner {
-            let dec_key = self
-                .encrypter
-                .decrypt_share(&transaction_set.key.clone().into())
-                .expect("Ciphertext should be valid. If not, question party #index");
-            let dec_nonce = self
-                .encrypter
-                .decrypt_share(&transaction_set.nonce.clone().into())
-                .expect("Ciphertext should be valid. If not, question party #index");
-
-            let message = ABFTDecryptionShareMessage::new(*index, dec_key.into(), dec_nonce.into());
-
-            self.send_handle
-                .broadcast(self.id, self.index, self.n_parties, 0, 0, message)
-                .await;
-        }
-
         // save value vector
 
         {
             let mut vector = self.encrypted_values.write().await;
             vector.replace(value_vector);
+        }
+
+        {
+            // decrypt and broadcast shares
+
+            let vector_lock = self.encrypted_values.read().await;
+
+            let vector = vector_lock.as_ref().unwrap();
+
+            for (index, transaction_set) in &vector.inner {
+                let dec_key = self
+                    .encrypter
+                    .decrypt_share(&transaction_set.key.clone().into())
+                    .expect("Ciphertext should be valid. If not, question party #index");
+                let dec_nonce = self
+                    .encrypter
+                    .decrypt_share(&transaction_set.nonce.clone().into())
+                    .expect("Ciphertext should be valid. If not, question party #index");
+
+                let decrypt_message =
+                    ABFTDecryptionShareMessage::new(*index, dec_key.into(), dec_nonce.into());
+
+                self.on_decryption_share(decrypt_message.clone(), self.index)
+                    .await?;
+
+                self.send_handle
+                    .broadcast(self.id, self.index, self.n_parties, 0, 0, decrypt_message)
+                    .await;
+            }
         }
 
         self.recv_handle.drain_decryption_shares().await?;
@@ -404,6 +418,11 @@ impl<
             key: key.data,
             nonce: nonce.data,
         };
+
+        info!(
+            "Party {} decrypting payload from Party {}, with encrypter: {:?}",
+            self.index, index, symmetric
+        );
 
         let decrypted = symmetric.decrypt(&encrypted.payload)?;
 

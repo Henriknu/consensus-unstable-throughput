@@ -4,6 +4,7 @@ use aes_gcm::Error;
 use rand::{rngs::StdRng, FromEntropy, Rng, SeedableRng};
 use thiserror::Error;
 
+#[derive(Debug)]
 pub struct SymmetricEncrypter {
     pub key: [u8; 32],
     pub nonce: [u8; 32],
@@ -46,7 +47,7 @@ impl SymmetricEncrypter {
     }
 
     pub fn nonce(&self) -> &[u8; 32] {
-        &self.key
+        &self.nonce
     }
 }
 
@@ -61,6 +62,7 @@ pub enum SymmetricEncrypterError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::crypto::encrypt::Encrypter;
 
     #[test]
     fn it_works() {
@@ -68,6 +70,55 @@ mod tests {
             .expect("encryption failure!"); // NOTE: handle this error to avoid panics!
 
         let plaintext = encrypter.decrypt(&ciphertext).expect("decryption failure!"); // NOTE: handle this error to avoid panics!
+
+        assert_eq!(&plaintext, b"plaintext message");
+    }
+
+    #[test]
+    fn threshold_on_symmetric() {
+        let threshold = Encrypter::generate_keys(4, 1);
+
+        let thresh1 = &threshold[0];
+
+        let (ciphertext, encrypter) = SymmetricEncrypter::encrypt(b"plaintext message".as_ref())
+            .expect("encryption failure!"); // NOTE: handle this error to avoid panics!
+
+        // Encrypt the symmetric key info
+
+        let encrypted_key = thresh1.encrypt(&encrypter.key, &[0u8; 32]);
+
+        let encrypted_nonce = thresh1.encrypt(&encrypter.nonce, &[0u8; 32]);
+
+        // Decrypt the key info
+
+        let key_shares = threshold
+            .iter()
+            .map(|encrypter| encrypter.decrypt_share(&encrypted_key).unwrap())
+            .collect();
+
+        let nonce_shares = threshold
+            .iter()
+            .map(|encrypter| encrypter.decrypt_share(&encrypted_nonce).unwrap())
+            .collect();
+
+        let key = thresh1.combine_shares(&encrypted_key, key_shares).unwrap();
+
+        let nonce = thresh1
+            .combine_shares(&encrypted_nonce, nonce_shares)
+            .unwrap();
+
+        assert_eq!(key.data, encrypter.key, "Key not equal");
+
+        assert_eq!(nonce.data, encrypter.nonce, "Nonce not equal");
+
+        let decoded_encrypter = SymmetricEncrypter {
+            key: key.data,
+            nonce: nonce.data,
+        };
+
+        let plaintext = decoded_encrypter
+            .decrypt(&ciphertext)
+            .expect("decryption failure!"); // NOTE: handle this error to avoid panics!
 
         assert_eq!(&plaintext, b"plaintext message");
     }
