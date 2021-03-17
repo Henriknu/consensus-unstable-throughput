@@ -1,5 +1,4 @@
 use async_trait::async_trait;
-use std::collections::HashMap;
 
 use consensus_core::data::message_buffer::MessageBuffer;
 

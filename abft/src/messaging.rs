@@ -1,20 +1,11 @@
 use async_trait::async_trait;
 
 use bincode::serialize;
-use consensus_core::crypto::{
-    commoncoin::EncodedCoinShare,
-    encrypt::{DecryptionShare, EncodedDecryptionShare},
-};
+use consensus_core::crypto::encrypt::EncodedDecryptionShare;
 
 use serde::{Deserialize, Serialize};
 
-use crate::protocols::{
-    mvba::{messages::MVBAMessageType, proposal_promotion::PPProposal},
-    prbc::messages::PRBCMessageType,
-};
-
-use crate::protocols::mvba::provable_broadcast::{PBSigShare, PBID};
-use crate::protocols::mvba::{SkipShare, SkipSig, MVBAID};
+use crate::protocols::{mvba::messages::MVBAMessageType, prbc::messages::PRBCMessageType};
 
 #[async_trait]
 pub trait ProtocolMessageSender {

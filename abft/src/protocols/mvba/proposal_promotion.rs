@@ -1,9 +1,6 @@
 use std::{cmp::Ordering, fmt, sync::Arc};
 
-use tokio::sync::{
-    mpsc::{error::SendError, Sender},
-    RwLock,
-};
+use tokio::sync::{mpsc::error::SendError, RwLock};
 
 use tokio::sync::Notify;
 
@@ -13,11 +10,11 @@ use super::{
     buffer::{MVBABufferCommand, MVBAReceiver},
     messages::{PBSendMessage, PBShareAckMessage},
     provable_broadcast::*,
-    Value, MVBAID,
+    MVBAID,
 };
 use consensus_core::crypto::sign::Signer;
 use num_derive::FromPrimitive;
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 #[derive(Error, Debug)]

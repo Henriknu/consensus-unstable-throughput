@@ -16,7 +16,7 @@ use log::{info, warn};
 use thiserror::Error;
 use tokio::sync::{Notify, RwLock};
 
-use crate::{messaging::ProtocolMessageSender, ABFTValue, Value};
+use crate::{messaging::ProtocolMessageSender, ABFTValue};
 
 use super::messages::{RBCEchoMessage, RBCReadyMessage, RBCValueMessage};
 

@@ -7,21 +7,18 @@ use consensus_core::crypto::commoncoin::*;
 use consensus_core::crypto::sign::*;
 use proposal_promotion::{PPProposal, PPReceiver, PPSender, PPStatus};
 use provable_broadcast::{PBKey, PBProof};
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use log::{error, info, warn};
 use tokio::sync::RwLock;
 
-use std::sync::Arc;
-use tokio::sync::{mpsc::Sender, Notify};
-
-use crate::Value;
-
 use crate::messaging::ProtocolMessageType;
+use std::sync::Arc;
+use tokio::sync::Notify;
 
 use self::{
-    buffer::{MVBABufferCommand, MVBAReceiver},
+    buffer::MVBAReceiver,
     elect::Elect,
     error::{MVBAError, MVBAResult},
     messages::{

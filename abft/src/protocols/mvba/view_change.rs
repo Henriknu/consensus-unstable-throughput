@@ -4,12 +4,12 @@ use super::{
     messages::ViewChangeMessage,
     proposal_promotion::{PPProposal, PPStatus, PPID},
     provable_broadcast::{PBResponse, PBSig, PBID},
-    Key, Value, MVBAID,
+    Key, MVBAID,
 };
 use bincode::serialize;
 use consensus_core::crypto::sign::Signer;
 use log::warn;
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+
 use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
     Arc, Mutex,

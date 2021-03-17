@@ -1,6 +1,6 @@
 use consensus_core::crypto::commoncoin::EncodedCoinShare;
 
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 
 use crate::{
     messaging::{ProtocolMessageType, ToProtocolMessage},

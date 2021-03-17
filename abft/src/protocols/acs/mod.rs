@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashMap},
-    sync::{mpsc::channel, Arc},
+    sync::Arc,
 };
 use thiserror::Error;
 
@@ -10,16 +10,11 @@ use consensus_core::crypto::{
     sign::{Signature, Signer},
 };
 use log::{error, info};
-use tokio::sync::{
-    mpsc::{Receiver, Sender},
-    Notify, RwLock,
-};
+use tokio::sync::{mpsc::Receiver, RwLock};
 
 use crate::{
-    messaging::{
-        ProtocolMessage, ProtocolMessageHeader, ProtocolMessageSender, ProtocolMessageType,
-    },
-    ABFTValue, Value,
+    messaging::{ProtocolMessage, ProtocolMessageSender, ProtocolMessageType},
+    ABFTValue,
 };
 
 use super::{

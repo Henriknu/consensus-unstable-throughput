@@ -6,7 +6,7 @@ use tokio::sync::{Mutex, Notify};
 
 use bincode::serialize;
 use num_traits::FromPrimitive;
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{messaging::ProtocolMessageSender, ABFTValue};
@@ -14,7 +14,7 @@ use crate::{messaging::ProtocolMessageSender, ABFTValue};
 use super::{
     messages::{PBSendMessage, PBShareAckMessage},
     proposal_promotion::{PPProposal, PPStatus, PPID},
-    Value, MVBAID,
+    MVBAID,
 };
 
 type PBResult<T> = Result<T, PBError>;

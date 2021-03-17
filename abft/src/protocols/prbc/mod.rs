@@ -20,7 +20,7 @@ use crate::{
     messaging::{
         ProtocolMessage, ProtocolMessageHeader, ProtocolMessageSender, ProtocolMessageType,
     },
-    ABFTValue, Value,
+    ABFTValue,
 };
 use bincode::{deserialize, serialize, Error as BincodeError};
 use consensus_core::crypto::sign::{Signature, SignatureShare, Signer};
