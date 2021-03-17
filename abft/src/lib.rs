@@ -218,7 +218,7 @@ impl<
                         Err(e) => return Err(ABFTError::ACSError(e)),
                     }
                 } else {
-                    return Err(ABFTError::NotReadyForMVBAMessage(message));
+                    return Err(ABFTError::NotReadyForPRBCMessage(message));
                 }
             }
 
@@ -455,7 +455,7 @@ impl<V> ABFTValue for V where
 {
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
 pub struct EncryptedTransactionSet {
     key: EncodedCiphertext,
     nonce: EncodedCiphertext,

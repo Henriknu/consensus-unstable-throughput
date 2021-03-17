@@ -30,8 +30,8 @@ use tokio::sync::mpsc::{self, Sender};
 use log::{debug, error, info};
 
 const N_PARTIES: usize = THRESHOLD * 3 + 1;
-const THRESHOLD: usize = 5;
-const BUFFER_CAPACITY: usize = N_PARTIES * N_PARTIES * 100 + 300;
+const THRESHOLD: usize = 10;
+const BUFFER_CAPACITY: usize = N_PARTIES * N_PARTIES * 50 + 10000;
 
 struct ChannelSender {
     senders: HashMap<usize, Sender<ProtocolMessage>>,
@@ -191,9 +191,14 @@ impl ABFTReceiver for ABFTBufferManager {
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread")]
 async fn acs_correctness() {
-    env_logger::init();
+    use env_logger::{Builder, Target};
+
+    let mut builder = Builder::from_default_env();
+    builder.target(Target::Stdout);
+
+    builder.init();
 
     let mut mvba_signers = Signer::generate_signers(N_PARTIES, N_PARTIES - THRESHOLD - 1);
     let mut coins = Coin::generate_coins(N_PARTIES, THRESHOLD + 1);
@@ -312,12 +317,12 @@ async fn acs_correctness() {
 
         let msg_buff_send = buff_cmd_send.clone();
 
-        let msg_acs = abft.clone();
+        let msg_abft = abft.clone();
 
         let _ = tokio::spawn(async move {
             while let Some(message) = recv.recv().await {
                 debug!("Received message at {}", i);
-                match msg_acs.handle_protocol_message(message).await {
+                match msg_abft.handle_protocol_message(message).await {
                     Ok(_) => {}
                     Err(ABFTError::NotReadyForPRBCMessage(early_message)) => {
                         let index = early_message.header.prbc_index;
@@ -369,7 +374,7 @@ async fn acs_correctness() {
             match abft.invoke(Value::new(i * 1000)).await {
                 Ok(value) => return Ok(value),
                 Err(e) => {
-                    error!("Party {} got error when invoking prbc: {}", i, e);
+                    error!("Party {} got error when invoking abft: {}", i, e);
                     return Err(e);
                 }
             }

@@ -74,7 +74,7 @@ impl<V: ABFTValue> ACS<V> {
 
         self.init_prbc().await;
 
-        let (sig_send, mut sig_recv) = tokio::sync::mpsc::channel(50 * self.n_parties);
+        let (sig_send, mut sig_recv) = tokio::sync::mpsc::channel(self.n_parties);
         {
             let prbc_lock = self.prbcs.read().await;
 
@@ -125,11 +125,31 @@ impl<V: ABFTValue> ACS<V> {
         let mut signatures = BTreeMap::new();
 
         while let Some((index, signature)) = sig_recv.recv().await {
+            info!(
+                "Party {} received PRBC signatures for PRBC {}",
+                self.index, index
+            );
+
             if !signatures.contains_key(&index) {
+                info!(
+                    "Party {} had not received PRBC signatures for PRBC {} before",
+                    self.index, index
+                );
                 signatures.insert(index, signature);
             }
 
+            info!(
+                "Party {} has received {} PRBC signatures, need: {}",
+                self.index,
+                signatures.len(),
+                (self.n_parties * 2 / 3 + 1)
+            );
+
             if signatures.len() >= (self.n_parties * 2 / 3 + 1) {
+                info!(
+                    "Party {} has received enough PRBC signatures to continue on to MVBA",
+                    self.index
+                );
                 break;
             }
         }

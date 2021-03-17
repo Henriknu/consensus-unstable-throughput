@@ -265,7 +265,7 @@ pub struct Ciphertext {
     f: Scalar,
 }
 
-#[derive(Default, Debug, Clone, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct EncodedCiphertext {
     c: Vec<u8>,
     label: Vec<u8>,

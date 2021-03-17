@@ -1,6 +1,12 @@
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+};
 
-use log::{info, warn};
+use log::{debug, info, warn};
 use tokio::sync::{mpsc::error::SendError, Notify, RwLock};
 
 use self::{
@@ -34,6 +40,7 @@ pub struct PRBC<V: ABFTValue> {
     value: RwLock<Option<V>>,
     shares: RwLock<BTreeMap<usize, SignatureShare>>,
     notify_shares: Arc<Notify>,
+    has_signature: AtomicBool,
 
     // Sub-protocol instances
     rbc: RwLock<Option<RBC>>,
@@ -49,6 +56,7 @@ impl<V: ABFTValue> PRBC<V> {
             value: RwLock::new(None),
             shares: Default::default(),
             notify_shares: Default::default(),
+            has_signature: AtomicBool::new(false),
             rbc: RwLock::new(None),
         }
     }
@@ -79,6 +87,11 @@ impl<V: ABFTValue> PRBC<V> {
             lock.replace(value.clone());
         }
 
+        info!(
+            "Party {} draining prbc messages from buffer, for PRBC {}",
+            self.index, self.send_id
+        );
+
         recv_handle.drain_prbc_done(self.send_id).await?;
 
         let share = signer.sign(&serialize(&value)?);
@@ -98,6 +111,11 @@ impl<V: ABFTValue> PRBC<V> {
 
         let notify_shares = self.notify_shares.clone();
 
+        info!(
+            "Party {} waiting on shares for PRBC {}",
+            self.index, self.send_id
+        );
+
         notify_shares.notified().await;
 
         let lock = self.shares.write().await;
@@ -110,6 +128,8 @@ impl<V: ABFTValue> PRBC<V> {
             "Party {} succesfully completed PRBC with signature: {:?}",
             self.index, signature
         );
+
+        self.has_signature.store(true, Ordering::SeqCst);
 
         Ok(PRBCSignature {
             value,
@@ -143,6 +163,11 @@ impl<V: ABFTValue> PRBC<V> {
         if let ProtocolMessageType::PRBC(prbc_message_type) = &message_type {
             match prbc_message_type {
                 PRBCMessageType::PRBCDone => {
+                    // If we have already returned a signature, we can safely ignore any new protocol messages sent.
+                    if self.has_signature.load(Ordering::SeqCst) {
+                        return Ok(());
+                    }
+
                     let inner: PRBCDoneMessage = deserialize(&message_data)?;
 
                     match self.on_done_message(send_id, inner, signer).await {
@@ -226,6 +251,8 @@ impl<V: ABFTValue> PRBC<V> {
     ) -> PRBCResult<()> {
         // Need to ensure we have received value
 
+        debug!("Party {} went into on done prbc message. ", self.index);
+
         let lock = self.value.read().await;
 
         let value = lock
@@ -250,6 +277,8 @@ impl<V: ABFTValue> PRBC<V> {
                 }
             }
         }
+
+        debug!("Party {} went out of on done prbc message. ", self.index);
 
         Ok(())
     }
