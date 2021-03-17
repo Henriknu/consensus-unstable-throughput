@@ -102,7 +102,12 @@ impl<V: ABFTValue> ACS<V> {
                         .await
                     {
                         Ok(signature) => {
-                            let _ = sig_send_clone.send((prbc_clone.send_id, signature)).await;
+                            info!("Sending signature for PRBC {}.", index_copy);
+                            sig_send_clone
+                                .send((prbc_clone.send_id, signature))
+                                .await
+                                .unwrap();
+                            info!("Sending signature for PRBC {} went through.", index_copy);
                         }
                         Err(e) => {
                             error!(
@@ -120,11 +125,31 @@ impl<V: ABFTValue> ACS<V> {
         let mut signatures = BTreeMap::new();
 
         while let Some((index, signature)) = sig_recv.recv().await {
+            info!(
+                "Party {} received PRBC signatures for PRBC {}",
+                self.index, index
+            );
+
             if !signatures.contains_key(&index) {
+                info!(
+                    "Party {} had not received PRBC signatures for PRBC {} before",
+                    self.index, index
+                );
                 signatures.insert(index, signature);
             }
 
+            info!(
+                "Party {} has received {} PRBC signatures, need: {}",
+                self.index,
+                signatures.len(),
+                (self.n_parties * 2 / 3 + 1)
+            );
+
             if signatures.len() >= (self.n_parties * 2 / 3 + 1) {
+                info!(
+                    "Party {} has received enough PRBC signatures to continue on to MVBA",
+                    self.index
+                );
                 break;
             }
         }
@@ -214,7 +239,7 @@ impl<V: ABFTValue> ACS<V> {
                     return Err(ACSError::NotReadyForMVBAMessage(message));
                 }
             }
-            ProtocolMessageType::Default => {
+            ProtocolMessageType::ABFTDecryptionShare | ProtocolMessageType::Default => {
 
                 // ignore
             }
@@ -322,5 +347,5 @@ pub struct SignatureVector {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ValueVector<V: ABFTValue> {
-    inner: BTreeMap<usize, V>,
+    pub(crate) inner: BTreeMap<usize, V>,
 }

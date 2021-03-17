@@ -1,0 +1,25 @@
+[package]
+name = "benches"
+version = "0.0.0"
+publish = false
+edition = "2018"
+
+[dependencies]
+criterion = "0.3"
+consensus-core = {path = "../consensus-core"}
+
+
+[[bench]]
+name = "sign"
+path = "sign.rs"
+harness = false
+
+[[bench]]
+name = "encrypt"
+path = "encrypt.rs"
+harness = false
+
+[[bench]]
+name = "aes"
+path = "aes.rs"
+harness = false

@@ -61,6 +61,11 @@ impl RBC {
     ) -> RBCResult<V> {
         if let Some(value) = value {
             self.broadcast_value(value, send_handle).await?;
+        } else {
+            info!(
+                "Party {} started receiving on RBC instance {}. ",
+                self.index, self.send_id
+            );
         }
 
         let notify_ready = self.notify_ready.clone();
@@ -68,8 +73,8 @@ impl RBC {
         notify_ready.notified().await;
 
         info!(
-            "Party {} done waiting on receiving ready messages. ",
-            self.index
+            "Party {} done waiting on receiving ready messages in RBC instance {}. ",
+            self.index, self.send_id
         );
 
         let notify_echo = self.notify_echo.clone();
@@ -77,13 +82,11 @@ impl RBC {
         notify_echo.notified().await;
 
         info!(
-            "Party {} done waiting on receiving echo messages. ",
-            self.index
+            "Party {} done waiting on receiving echo messages in RBC instance {}. ",
+            self.index, self.send_id
         );
 
         let value = self.decode_value().await?;
-
-        info!("Party {} decoded the value to be: {:?} ", self.index, value,);
 
         Ok(value)
     }
@@ -115,11 +118,6 @@ impl RBC {
         message: RBCEchoMessage,
         send_handle: &F,
     ) -> RBCResult<()> {
-        warn!(
-            "Party {} treating echo message from: {}",
-            self.index, message.index
-        );
-
         if !verify_branch(
             &message.root,
             &message.fragment.hash(),
@@ -152,21 +150,21 @@ impl RBC {
             n_echo_messages = lock.entry(root).or_default().len();
         }
 
-        warn!(
-            "Party {} has received {} echo message in instance {}. Need {} to send ready.",
-            self.index,
-            self.send_id,
-            n_echo_messages,
-            (self.n_parties * 2 / 3 + 1)
-        );
-
         if n_echo_messages >= (self.n_parties / 3 + 1) {
+            info!(
+                "Party {} notifying echo on RBC instance {}",
+                self.index, self.send_id
+            );
             self.notify_echo.notify_one();
         }
 
         if n_echo_messages >= (self.n_parties * 2 / 3 + 1)
             && !self.has_sent_ready.load(Ordering::SeqCst)
         {
+            info!(
+                "Party {} reconstructing echo on RBC instance {}",
+                self.index, self.send_id
+            );
             let blocks = self.reconstruct_blocks_with_root(root).await?;
 
             let merkle2 = MerkleTree::new(&blocks);
@@ -177,10 +175,6 @@ impl RBC {
                 }
             }
 
-            warn!(
-                "Party {} broadcasting ready in instance {}",
-                self.index, self.send_id,
-            );
             let ready_message = RBCReadyMessage::new(*merkle2.root());
 
             send_handle
@@ -195,11 +189,6 @@ impl RBC {
                 .await;
 
             self.has_sent_ready.store(true, Ordering::SeqCst);
-
-            warn!(
-                "Party {} done broadcasting ready in instance {}",
-                self.index, self.send_id,
-            );
         }
 
         Ok(())

@@ -11,6 +11,7 @@ use abft::{
             PRBCError, PRBCResult, PRBC,
         },
     },
+    EncryptedTransactionSet,
 };
 
 use abft::Value;
@@ -28,7 +29,7 @@ use tokio::sync::mpsc::{self, Sender};
 use log::{debug, error, info};
 
 const N_PARTIES: usize = THRESHOLD * 3 + 1;
-const THRESHOLD: usize = 10;
+const THRESHOLD: usize = 3;
 const BUFFER_CAPACITY: usize = N_PARTIES * N_PARTIES * 50 + 100;
 
 struct ChannelSender {
@@ -170,7 +171,12 @@ impl MVBAReceiver for ACSBufferManager {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn acs_correctness() {
-    env_logger::init();
+    use env_logger::{Builder, Target};
+
+    let mut builder = Builder::from_default_env();
+    builder.target(Target::Stdout);
+
+    builder.init();
 
     let mut mvba_signers = Signer::generate_signers(N_PARTIES, N_PARTIES - THRESHOLD - 1);
     let mut coins = Coin::generate_coins(N_PARTIES, THRESHOLD + 1);
@@ -211,7 +217,10 @@ async fn acs_correctness() {
 
         let f = Arc::new(ChannelSender { senders });
 
-        let acs = Arc::new(ACS::init(0, i, N_PARTIES, Value::new(i * 1000)));
+        //let value = Value::new(i * 1000);
+        let value = EncryptedTransactionSet::default();
+
+        let acs = Arc::new(ACS::init(0, i, N_PARTIES, value));
 
         // Setup buffer manager
 
@@ -338,7 +347,7 @@ async fn acs_correctness() {
             {
                 Ok(value) => return Ok(value),
                 Err(e) => {
-                    error!("Party {} got error when invoking prbc: {}", i, e);
+                    error!("Party {} got error when invoking acs: {}", i, e);
                     return Err(e);
                 }
             }

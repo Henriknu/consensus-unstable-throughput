@@ -1,6 +1,11 @@
-use p256::{AffinePoint, NonZeroScalar, ProjectivePoint, Scalar};
+use p256::{
+    elliptic_curve::sec1::FromEncodedPoint, AffinePoint, EncodedPoint, FieldBytes, NonZeroScalar,
+    ProjectivePoint, Scalar,
+};
 use rand_core::OsRng;
 use std::{collections::HashSet, ops::Deref, str};
+
+use serde::{Deserialize, Serialize};
 
 use super::hash::threshold::{hash1, hash2, hash4};
 
@@ -250,6 +255,7 @@ impl Encrypter {
     }
 }
 
+#[derive(Default, Debug, Clone, PartialEq)]
 pub struct Ciphertext {
     c: Vec<u8>,
     label: Vec<u8>,
@@ -259,6 +265,84 @@ pub struct Ciphertext {
     f: Scalar,
 }
 
+#[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EncodedCiphertext {
+    c: Vec<u8>,
+    label: Vec<u8>,
+    u: Vec<u8>,
+    u1: Vec<u8>,
+    e: Vec<u8>,
+    f: Vec<u8>,
+}
+
+impl From<Ciphertext> for EncodedCiphertext {
+    fn from(ciphetext: Ciphertext) -> Self {
+        let Ciphertext {
+            c,
+            label,
+            u,
+            u1,
+            e,
+            f,
+        } = ciphetext;
+
+        let u = EncodedPoint::from(u).as_bytes().to_vec();
+        let u1 = EncodedPoint::from(u1).as_bytes().to_vec();
+
+        let e = e.to_bytes().as_slice().to_vec();
+
+        let f = f.to_bytes().as_slice().to_vec();
+
+        Self {
+            c,
+            label,
+            u,
+            u1,
+            e,
+            f,
+        }
+    }
+}
+
+impl From<EncodedCiphertext> for Ciphertext {
+    fn from(encoded: EncodedCiphertext) -> Self {
+        let EncodedCiphertext {
+            c,
+            label,
+            u,
+            u1,
+            e,
+            f,
+        } = encoded;
+
+        let u = AffinePoint::from_encoded_point(
+            &EncodedPoint::from_bytes(u)
+                .expect("Could not deserialize Sec1 encoded string to encoded point"),
+        )
+        .expect("Could not decode encoded point as affine point");
+
+        let u1 = AffinePoint::from_encoded_point(
+            &EncodedPoint::from_bytes(u1)
+                .expect("Could not deserialize Sec1 encoded string to encoded point"),
+        )
+        .expect("Could not decode encoded point as affine point");
+
+        let e = Scalar::from_bytes_reduced(FieldBytes::from_slice(&e));
+
+        let f = Scalar::from_bytes_reduced(FieldBytes::from_slice(&f));
+
+        Self {
+            c,
+            label,
+            u,
+            u1,
+            e,
+            f,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct DecryptionShare {
     index: usize,
     uu: AffinePoint,
@@ -266,8 +350,48 @@ pub struct DecryptionShare {
     ff: Scalar,
 }
 
+#[derive(Default, Debug, Clone, Serialize, Deserialize)]
+pub struct EncodedDecryptionShare {
+    index: usize,
+    uu: Vec<u8>,
+    ee: Vec<u8>,
+    ff: Vec<u8>,
+}
+
+impl From<DecryptionShare> for EncodedDecryptionShare {
+    fn from(share: DecryptionShare) -> Self {
+        let DecryptionShare { index, uu, ee, ff } = share;
+
+        let uu = EncodedPoint::from(uu).as_bytes().to_vec();
+
+        let ee = ee.to_bytes().as_slice().to_vec();
+
+        let ff = ff.to_bytes().as_slice().to_vec();
+
+        Self { index, uu, ee, ff }
+    }
+}
+
+impl From<EncodedDecryptionShare> for DecryptionShare {
+    fn from(encoded: EncodedDecryptionShare) -> Self {
+        let EncodedDecryptionShare { index, uu, ee, ff } = encoded;
+
+        let uu = AffinePoint::from_encoded_point(
+            &EncodedPoint::from_bytes(uu)
+                .expect("Could not deserialize Sec1 encoded string to encoded point"),
+        )
+        .expect("Could not decode encoded point as affine point");
+
+        let ee = Scalar::from_bytes_reduced(FieldBytes::from_slice(&ee));
+
+        let ff = Scalar::from_bytes_reduced(FieldBytes::from_slice(&ff));
+
+        Self { index, uu, ee, ff }
+    }
+}
+
 pub struct Plaintext {
-    data: [u8; 32],
+    pub data: [u8; 32],
 }
 
 #[cfg(test)]
@@ -372,6 +496,108 @@ mod tests {
         }
 
         let plaintext = actors[0]
+            .combine_shares(&encrypted, decrypt_shares)
+            .expect("Plaintext could not be retrieved from shares");
+
+        println!("Plaintext bytes: {:?}", &plaintext.data);
+        println!(
+            "Plaintext message: {:?}",
+            str::from_utf8(&plaintext.data).expect("Plaintext data should be valid utf-8")
+        );
+    }
+
+    #[test]
+    fn cipher_to_encoded() {
+        let actors = Encrypter::generate_keys(2, 1);
+
+        let message = "Hello world! Hello world! Hello!";
+
+        let mut data = [0u8; 32];
+
+        data.copy_from_slice(message.as_bytes());
+
+        let encrypted = actors[0].encrypt(&data, &data);
+
+        let encoded: EncodedCiphertext = encrypted.clone().into();
+
+        let decoded = encoded.into();
+
+        assert_eq!(encrypted, decoded);
+    }
+    #[test]
+    fn decrypt_to_encoded() {
+        let actors = Encrypter::generate_keys(2, 1);
+
+        let message = "Hello world! Hello world! Hello!";
+
+        let mut data = [0u8; 32];
+
+        data.copy_from_slice(message.as_bytes());
+
+        let encrypted = actors[0].encrypt(&data, &data);
+
+        let decrypt_share = actors[1].decrypt_share(&encrypted).unwrap();
+
+        let encoded: EncodedDecryptionShare = decrypt_share.clone().into();
+
+        let decoded = encoded.into();
+
+        assert_eq!(decrypt_share, decoded);
+    }
+
+    #[test]
+    #[should_panic]
+    fn fails_to_decrypt_if_not_enough_shares() {
+        let mut actors = Encrypter::generate_keys(4, 2);
+
+        let message = "Hello world! Hello world! Hello!";
+
+        let mut data = [0u8; 32];
+
+        data.copy_from_slice(message.as_bytes());
+
+        assert!(message.as_bytes().len() == 32);
+
+        println!("Message bytes: {:?}", &message.as_bytes());
+        println!("Message bytes len: {:?}", &message.as_bytes().len());
+        println!(
+            "Message str: {:?}",
+            str::from_utf8(&message.as_bytes()).expect("Message data should be valid utf-8")
+        );
+
+        let encrypted = actors[0].encrypt(&data, &data);
+
+        println!("Ciphertext bytes: {:?}", &encrypted.c);
+        println!(
+            "Ciphertext label: {:?}",
+            str::from_utf8(&encrypted.label).expect("Label should be valid utf-8")
+        );
+
+        actors.remove(1);
+
+        let actor = actors.remove(0);
+
+        let decrypt_shares: Vec<_> = actors
+            .iter()
+            .map(|actor| actor.decrypt_share(&encrypted).unwrap())
+            .collect();
+
+        println!("Decrypt share len: {}", decrypt_shares.len());
+
+        for share in &decrypt_shares {
+            for actor in &actors {
+                if actor.index != share.index {
+                    assert!(
+                        actor.verify_share(&encrypted, share),
+                        "Actor {} could not verify share: {}",
+                        actor.index,
+                        share.index
+                    );
+                }
+            }
+        }
+
+        let plaintext = actor
             .combine_shares(&encrypted, decrypt_shares)
             .expect("Plaintext could not be retrieved from shares");
 
