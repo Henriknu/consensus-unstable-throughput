@@ -7,6 +7,20 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+
+
+# Bin
+clap = "2.33"
+tonic = "0.4"
+prost = "0.7"
+futures-core = "0.3"
+futures-util = "0.3"
+tokio-stream = "0.1"
+async-stream = "0.3"
+
+
+
+# Lib
 async-trait = "0.1.42"
 bincode = "1.3"
 consensus-core = {path = "../consensus-core"}
@@ -18,3 +32,7 @@ num-derive = "0.3"
 serde = { version = "1.0", features = ["derive"] }
 tokio = {version = "1.2", features = ["full"]}
 thiserror = "1.0"
+
+
+[build-dependencies]
+tonic-build = "0.4"

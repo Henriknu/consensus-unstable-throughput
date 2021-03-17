@@ -26,6 +26,7 @@ use tokio::sync::{mpsc::error::SendError, Notify, RwLock};
 
 pub mod buffer;
 pub mod messaging;
+pub mod proto;
 pub mod protocols;
 
 pub type ABFTResult<T> = Result<T, ABFTError>;
@@ -441,6 +442,10 @@ impl<
         let mut lock = self.acs.write().await;
 
         lock.replace(acs);
+    }
+
+    pub fn index(&self) -> usize {
+        self.index
     }
 }
 
