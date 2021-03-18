@@ -21,7 +21,7 @@ use tokio::sync::mpsc::{self, Sender};
 use log::{debug, error, info};
 
 const N_PARTIES: usize = THRESHOLD * 3 + 1;
-const THRESHOLD: usize = 3;
+const THRESHOLD: usize = 1;
 const BUFFER_CAPACITY: usize = N_PARTIES * N_PARTIES * 50 + 100;
 
 use abft::test_helpers::{ACSBufferManager, ChannelSender};

@@ -17,7 +17,7 @@ use tokio::sync::mpsc::{self, Sender};
 use log::error;
 
 const N_PARTIES: usize = THRESHOLD * 3 + 1;
-const THRESHOLD: usize = 10;
+const THRESHOLD: usize = 1;
 const BUFFER_CAPACITY: usize = THRESHOLD * 30;
 
 use abft::test_helpers::{ChannelSender, MVBABufferManager};
@@ -58,7 +58,7 @@ async fn mvba_correctness() {
         let signer = Arc::new(signers.remove(0));
         let coin = Arc::new(coins.remove(0));
 
-        let f = Arc::new(ChannelSender { senders });
+        let f: Arc<ChannelSender> = Arc::new(ChannelSender { senders });
 
         let signature_vector = SignatureVector {
             inner: Default::default(),

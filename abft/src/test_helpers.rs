@@ -17,6 +17,7 @@ use crate::{
     },
 };
 
+#[derive(Clone)]
 pub struct ChannelSender {
     pub senders: HashMap<u32, Sender<ProtocolMessage>>,
 }

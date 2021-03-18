@@ -22,7 +22,7 @@ use log::{debug, error, info};
 use abft::test_helpers::{ABFTBufferManager, ChannelSender};
 
 const N_PARTIES: usize = THRESHOLD * 3 + 1;
-const THRESHOLD: usize = 10;
+const THRESHOLD: usize = 1;
 const BUFFER_CAPACITY: usize = N_PARTIES * N_PARTIES * 50 + 1000;
 
 #[tokio::test(flavor = "multi_thread")]
