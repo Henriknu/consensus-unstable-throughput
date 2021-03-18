@@ -4,12 +4,12 @@ use async_trait::async_trait;
 
 use consensus_core::data::message_buffer::MessageBuffer;
 
-use crate::messaging::{ProtocolMessage, ProtocolMessageType};
+use crate::proto::{ProtocolMessage, ProtocolMessageType};
 
-use super::{error::MVBAResult, messages::MVBAMessageType, proposal_promotion::PPResult};
+use super::{error::MVBAResult, proposal_promotion::PPResult};
 
 pub struct MVBABuffer {
-    pp_recv: HashMap<usize, MessageBuffer<ProtocolMessage>>,
+    pp_recv: HashMap<u32, MessageBuffer<ProtocolMessage>>,
     elect: MessageBuffer<ProtocolMessage>,
     view_change: MessageBuffer<ProtocolMessage>,
 }
@@ -30,14 +30,14 @@ impl MVBABuffer {
                 .entry(send_id)
                 .or_default()
                 .epochs
-                .entry(view)
+                .entry(view as usize)
                 .or_default()
                 .drain(..)
                 .collect(),
             MVBABufferCommand::ElectCoinShare { view } => self
                 .elect
                 .epochs
-                .entry(view)
+                .entry(view as usize)
                 .or_default()
                 .drain(..)
                 .collect(),
@@ -45,7 +45,7 @@ impl MVBABuffer {
             MVBABufferCommand::ViewChange { view } => self
                 .view_change
                 .epochs
-                .entry(view)
+                .entry(view as usize)
                 .or_default()
                 .drain(..)
                 .collect(),
@@ -57,36 +57,33 @@ impl MVBABuffer {
     }
 
     pub fn store(&mut self, message: ProtocolMessage) {
-        if let ProtocolMessageType::MVBA(mvba_message_type) = &message.message_type {
-            match mvba_message_type {
-                MVBAMessageType::PBSend => {
-                    self.pp_recv
-                        .entry(message.header.send_id)
-                        .or_default()
-                        .epochs
-                        .entry(message.header.view)
-                        .or_default()
-                        .push(message);
-                }
-                MVBAMessageType::ElectCoinShare => {
-                    self.elect
-                        .epochs
-                        .entry(message.header.view)
-                        .or_default()
-                        .push(message);
-                }
-                MVBAMessageType::ViewChange => {
-                    self.view_change
-                        .epochs
-                        .entry(message.header.view)
-                        .or_default()
-                        .push(message);
-                }
+        match message.message_type() {
+            ProtocolMessageType::PbSend => {
+                self.pp_recv
+                    .entry(message.send_id)
+                    .or_default()
+                    .epochs
+                    .entry(message.view as usize)
+                    .or_default()
+                    .push(message);
+            }
+            ProtocolMessageType::ElectCoinShare => {
+                self.elect
+                    .epochs
+                    .entry(message.view as usize)
+                    .or_default()
+                    .push(message);
+            }
+            ProtocolMessageType::ViewChange => {
+                self.view_change
+                    .epochs
+                    .entry(message.view as usize)
+                    .or_default()
+                    .push(message);
+            }
 
-                MVBAMessageType::MVBADone
-                | MVBAMessageType::MVBASkipShare
-                | MVBAMessageType::MVBASkip
-                | MVBAMessageType::PBShareAck => {}
+            _ => {
+                // ignore
             }
         }
     }
@@ -94,19 +91,19 @@ impl MVBABuffer {
 
 #[derive(Debug)]
 pub enum MVBABufferCommand {
-    PPReceive { view: usize, send_id: usize },
-    ElectCoinShare { view: usize },
+    PPReceive { view: u32, send_id: u32 },
+    ElectCoinShare { view: u32 },
 
-    ViewChange { view: usize },
+    ViewChange { view: u32 },
 
     Store { message: ProtocolMessage },
 }
 
 #[async_trait]
 pub trait MVBAReceiver {
-    async fn drain_pp_receive(&self, view: usize, send_id: usize) -> PPResult<()>;
+    async fn drain_pp_receive(&self, view: u32, send_id: u32) -> PPResult<()>;
 
-    async fn drain_elect(&self, view: usize) -> MVBAResult<()>;
+    async fn drain_elect(&self, view: u32) -> MVBAResult<()>;
 
-    async fn drain_view_change(&self, view: usize) -> MVBAResult<()>;
+    async fn drain_view_change(&self, view: u32) -> MVBAResult<()>;
 }

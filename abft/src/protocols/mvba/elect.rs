@@ -11,17 +11,17 @@ use thiserror::Error;
 pub type ElectResult<T> = Result<T, ElectError>;
 
 pub struct Elect {
-    id: usize,
-    index: usize,
-    view: usize,
-    n_parties: usize,
+    id: u32,
+    index: u32,
+    view: u32,
+    n_parties: u32,
     tag: String,
     shares: Mutex<Vec<CoinShare>>,
     notify_shares: Arc<Notify>,
 }
 
 impl Elect {
-    pub fn init(id: usize, index: usize, view: usize, n_parties: usize) -> Elect {
+    pub fn init(id: u32, index: u32, view: u32, n_parties: u32) -> Elect {
         let tag = format!("{}", id);
         Elect {
             id,
@@ -38,7 +38,7 @@ impl Elect {
         &self,
         coin: &Coin,
         send_handle: &F,
-    ) -> ElectResult<usize> {
+    ) -> ElectResult<u32> {
         let share = coin.generate_share(self.tag.as_bytes());
         let elect_message = ElectCoinShareMessage::new(share.into());
 
@@ -75,7 +75,7 @@ impl Elect {
             shares.push(share);
         }
 
-        if shares.len() >= (self.n_parties / 3) + 1 {
+        if shares.len() >= (self.n_parties / 3 + 1) as usize {
             self.notify_shares.notify_one();
         }
 

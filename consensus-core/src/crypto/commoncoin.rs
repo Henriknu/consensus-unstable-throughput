@@ -122,7 +122,7 @@ impl Coin {
         )
     }
 
-    pub fn combine_shares(&self, shares: &Vec<CoinShare>, range: usize) -> usize {
+    pub fn combine_shares(&self, shares: &Vec<CoinShare>, range: u32) -> u32 {
         let coefficients = self.calculate_lagrange_coefficients(&shares);
 
         let result = shares
@@ -306,7 +306,7 @@ mod test_commoncoin {
             }
         }
 
-        let results: Vec<usize> = actors
+        let results: Vec<u32> = actors
             .iter()
             .map(|actor| actor.combine_shares(&shares, 11))
             .collect();

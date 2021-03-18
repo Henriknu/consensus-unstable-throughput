@@ -1,18 +1,9 @@
 use consensus_core::crypto::{hash::H256, merkle::MerkleBranch, sign::SignatureShare};
 use serde::{Deserialize, Serialize};
 
-use crate::messaging::{ProtocolMessageType, ToProtocolMessage};
+use crate::messaging::ToProtocolMessage;
 
-#[derive(Debug, Clone)]
-pub enum PRBCMessageType {
-    //PRBC
-    PRBCDone,
-
-    //RBC
-    RBCEcho,
-    RBCValue,
-    RBCReady,
-}
+use crate::proto::ProtocolMessageType;
 
 // Concrete Messages
 
@@ -28,7 +19,7 @@ impl PRBCDoneMessage {
 }
 
 impl ToProtocolMessage for PRBCDoneMessage {
-    const MESSAGE_TYPE: ProtocolMessageType = ProtocolMessageType::PRBC(PRBCMessageType::PRBCDone);
+    const MESSAGE_TYPE: ProtocolMessageType = ProtocolMessageType::PrbcDone;
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -49,7 +40,7 @@ impl RBCValueMessage {
 }
 
 impl ToProtocolMessage for RBCValueMessage {
-    const MESSAGE_TYPE: ProtocolMessageType = ProtocolMessageType::PRBC(PRBCMessageType::RBCValue);
+    const MESSAGE_TYPE: ProtocolMessageType = ProtocolMessageType::RbcValue;
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -64,19 +55,19 @@ impl RBCReadyMessage {
 }
 
 impl ToProtocolMessage for RBCReadyMessage {
-    const MESSAGE_TYPE: ProtocolMessageType = ProtocolMessageType::PRBC(PRBCMessageType::RBCReady);
+    const MESSAGE_TYPE: ProtocolMessageType = ProtocolMessageType::RbcReady;
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RBCEchoMessage {
-    pub(crate) index: usize,
+    pub(crate) index: u32,
     pub(crate) root: H256,
     pub(crate) fragment: Vec<u8>,
     pub(crate) branch: MerkleBranch,
 }
 
 impl RBCEchoMessage {
-    pub fn new(index: usize, root: H256, fragment: Vec<u8>, branch: MerkleBranch) -> Self {
+    pub fn new(index: u32, root: H256, fragment: Vec<u8>, branch: MerkleBranch) -> Self {
         Self {
             index,
             root,
@@ -87,5 +78,5 @@ impl RBCEchoMessage {
 }
 
 impl ToProtocolMessage for RBCEchoMessage {
-    const MESSAGE_TYPE: ProtocolMessageType = ProtocolMessageType::PRBC(PRBCMessageType::RBCEcho);
+    const MESSAGE_TYPE: ProtocolMessageType = ProtocolMessageType::RbcEcho;
 }

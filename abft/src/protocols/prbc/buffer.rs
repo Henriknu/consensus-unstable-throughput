@@ -2,9 +2,9 @@ use consensus_core::data::message_buffer::MessageBuffer;
 
 use async_trait::async_trait;
 
-use crate::messaging::{ProtocolMessage, ProtocolMessageType};
+use crate::proto::{ProtocolMessage, ProtocolMessageType};
 
-use super::{messages::PRBCMessageType, PRBCResult};
+use super::PRBCResult;
 
 #[derive(Debug, Default)]
 pub struct PRBCBuffer {
@@ -31,16 +31,17 @@ impl PRBCBuffer {
     }
 
     pub fn store(&mut self, message: ProtocolMessage) {
-        if let ProtocolMessageType::PRBC(prbc_message_type) = &message.message_type {
-            match prbc_message_type {
-                PRBCMessageType::RBCEcho
-                | PRBCMessageType::RBCValue
-                | PRBCMessageType::RBCReady => {
-                    self.inner.epochs.entry(0).or_default().push(message);
-                }
-                PRBCMessageType::PRBCDone => {
-                    self.inner.epochs.entry(1).or_default().push(message);
-                }
+        match message.message_type() {
+            ProtocolMessageType::RbcEcho
+            | ProtocolMessageType::RbcValue
+            | ProtocolMessageType::RbcReady => {
+                self.inner.epochs.entry(0).or_default().push(message);
+            }
+            ProtocolMessageType::PrbcDone => {
+                self.inner.epochs.entry(1).or_default().push(message);
+            }
+            _ => {
+                //ignore
             }
         }
     }
@@ -57,7 +58,7 @@ pub enum PRBCBufferCommand {
 
 #[async_trait]
 pub trait PRBCReceiver {
-    async fn drain_rbc(&self, send_id: usize) -> PRBCResult<()>;
+    async fn drain_rbc(&self, send_id: u32) -> PRBCResult<()>;
 
-    async fn drain_prbc_done(&self, send_id: usize) -> PRBCResult<()>;
+    async fn drain_prbc_done(&self, send_id: u32) -> PRBCResult<()>;
 }

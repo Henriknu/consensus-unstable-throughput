@@ -39,8 +39,8 @@ pub type PPResult<T> = Result<T, PPError>;
 
 pub struct PPSender<V: ABFTValue> {
     id: PPID,
-    index: usize,
-    n_parties: usize,
+    index: u32,
+    n_parties: u32,
     key: RwLock<Option<PPProposal<V>>>,
     lock: RwLock<Option<PPProposal<V>>>,
     commit: RwLock<Option<PPProposal<V>>>,
@@ -48,7 +48,7 @@ pub struct PPSender<V: ABFTValue> {
 }
 
 impl<V: ABFTValue> PPSender<V> {
-    pub fn init(id: PPID, index: usize, n_parties: usize) -> Self {
+    pub fn init(id: PPID, index: u32, n_parties: u32) -> Self {
         Self {
             id,
             index,
@@ -123,7 +123,7 @@ impl<V: ABFTValue> PPSender<V> {
 
     pub async fn on_share_ack(
         &self,
-        index: usize,
+        index: u32,
         message: PBShareAckMessage,
         signer: &Signer,
     ) -> PPResult<()> {
@@ -174,8 +174,8 @@ impl<V: ABFTValue> PPSender<V> {
 #[derive(Default)]
 pub struct PPReceiver<V: ABFTValue> {
     id: PPID,
-    index: usize,
-    send_id: usize,
+    index: u32,
+    send_id: u32,
     key: RwLock<Option<PPProposal<V>>>,
     lock: RwLock<Option<PPProposal<V>>>,
     commit: RwLock<Option<PPProposal<V>>>,
@@ -184,7 +184,7 @@ pub struct PPReceiver<V: ABFTValue> {
 }
 
 impl<V: ABFTValue> PPReceiver<V> {
-    pub fn init(id: PPID, index: usize, send_id: usize) -> Self {
+    pub fn init(id: PPID, index: u32, send_id: u32) -> Self {
         Self {
             id,
             index,
@@ -256,11 +256,11 @@ impl<V: ABFTValue> PPReceiver<V> {
 
     pub async fn on_value_send_message<F: ProtocolMessageSender>(
         &self,
-        index: usize,
+        index: u32,
         message: PBSendMessage<V>,
         id: &MVBAID,
-        leader_index: usize,
-        lock: usize,
+        leader_index: u32,
+        lock: u32,
         signer: &Signer,
         send_handle: &F,
     ) -> PPResult<()> {

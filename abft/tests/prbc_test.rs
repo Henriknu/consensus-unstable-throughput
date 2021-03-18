@@ -1,16 +1,11 @@
-use abft::{
-    messaging::{ProtocolMessage, ProtocolMessageSender, ToProtocolMessage},
-    protocols::prbc::{
-        buffer::{PRBCBuffer, PRBCBufferCommand, PRBCReceiver},
-        PRBCError, PRBCResult, PRBC,
-    },
+use abft::protocols::prbc::{
+    buffer::{PRBCBuffer, PRBCBufferCommand},
+    PRBCError, PRBC,
 };
 
 use abft::Value;
 
 use std::{collections::HashMap, sync::Arc};
-
-use async_trait::async_trait;
 
 use futures::future::join_all;
 
@@ -21,78 +16,10 @@ use tokio::sync::mpsc::{self, Sender};
 use log::{debug, error, info};
 
 const N_PARTIES: usize = THRESHOLD * 3 + 1;
-const THRESHOLD: usize = 10;
+const THRESHOLD: usize = 1;
 const BUFFER_CAPACITY: usize = THRESHOLD * 30;
 
-struct ChannelSender {
-    senders: HashMap<usize, Sender<ProtocolMessage>>,
-}
-
-#[async_trait]
-impl ProtocolMessageSender for ChannelSender {
-    async fn send<M: ToProtocolMessage + Send + Sync>(
-        &self,
-        id: usize,
-        send_id: usize,
-        recv_id: usize,
-        view: usize,
-        prbc_index: usize,
-        message: M,
-    ) {
-        if !self.senders.contains_key(&recv_id) {
-            return;
-        }
-
-        let sender = &self.senders[&recv_id];
-        if let Err(e) = sender
-            .send(message.to_protocol_message(id, send_id, recv_id, view, prbc_index))
-            .await
-        {
-            error!("Got error when sending message: {}", e);
-        }
-    }
-
-    async fn broadcast<M: ToProtocolMessage + Send + Sync>(
-        &self,
-        id: usize,
-        send_id: usize,
-        n_parties: usize,
-        view: usize,
-        prbc_index: usize,
-        message: M,
-    ) {
-        let message = message.to_protocol_message(id, send_id, 0, view, prbc_index);
-
-        for i in (0..n_parties) {
-            if !self.senders.contains_key(&i) {
-                continue;
-            }
-            let mut inner = message.clone();
-            inner.header.recv_id = i;
-            let sender = &self.senders[&i];
-            if let Err(e) = sender.send(inner).await {
-                error!("Got error when sending message: {}", e);
-            }
-        }
-    }
-}
-
-struct PRBCBufferManager {
-    sender: Sender<PRBCBufferCommand>,
-}
-
-#[async_trait]
-impl PRBCReceiver for PRBCBufferManager {
-    async fn drain_rbc(&self, _send_id: usize) -> PRBCResult<()> {
-        self.sender.send(PRBCBufferCommand::RBC).await?;
-        Ok(())
-    }
-
-    async fn drain_prbc_done(&self, _send_id: usize) -> PRBCResult<()> {
-        self.sender.send(PRBCBufferCommand::PRBC).await?;
-        Ok(())
-    }
-}
+use abft::test_helpers::{ChannelSender, PRBCBufferManager};
 
 #[tokio::test]
 async fn prbc_correctness() {
@@ -113,12 +40,12 @@ async fn prbc_correctness() {
 
     for i in 0..N_PARTIES {
         let mut recv = channels[i].1.take().unwrap();
-        let senders: HashMap<usize, Sender<_>> = channels
+        let senders: HashMap<u32, Sender<_>> = channels
             .iter()
             .enumerate()
             .filter_map(|(j, channel)| {
                 if i != j {
-                    Some((j, channel.0.clone()))
+                    Some((j as u32, channel.0.clone()))
                 } else {
                     None
                 }
@@ -137,7 +64,7 @@ async fn prbc_correctness() {
             value = None;
         }
 
-        let prbc = Arc::new(PRBC::init(0, i, N_PARTIES, 0));
+        let prbc = Arc::new(PRBC::init(0, i as u32, N_PARTIES as u32, 0));
 
         // Setup buffer manager
 

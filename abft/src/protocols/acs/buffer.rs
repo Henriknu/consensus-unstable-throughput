@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::{
-    messaging::ProtocolMessage,
+    proto::ProtocolMessage,
     protocols::{
         mvba::buffer::{MVBABuffer, MVBABufferCommand},
         prbc::buffer::{PRBCBuffer, PRBCBufferCommand},
@@ -9,7 +9,7 @@ use crate::{
 };
 
 pub struct ACSBuffer {
-    prbcs: HashMap<usize, PRBCBuffer>,
+    prbcs: HashMap<u32, PRBCBuffer>,
     mvba: MVBABuffer,
 }
 
@@ -34,7 +34,7 @@ impl ACSBuffer {
 #[derive(Debug)]
 pub enum ACSBufferCommand {
     PRBC {
-        send_id: usize,
+        send_id: u32,
         inner: PRBCBufferCommand,
     },
     MVBA {

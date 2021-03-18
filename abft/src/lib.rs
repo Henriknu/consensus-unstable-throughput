@@ -12,9 +12,8 @@ use consensus_core::crypto::{
     sign::Signer,
 };
 use log::{debug, info, warn};
-use messaging::{
-    ABFTDecryptionShareMessage, ProtocolMessage, ProtocolMessageSender, ProtocolMessageType,
-};
+use messaging::{ABFTDecryptionShareMessage, ProtocolMessageSender};
+use proto::{ProtocolMessage, ProtocolMessageType};
 use protocols::{
     acs::{ACSError, ValueVector, ACS},
     mvba::buffer::MVBAReceiver,
@@ -26,7 +25,9 @@ use tokio::sync::{mpsc::error::SendError, Notify, RwLock};
 
 pub mod buffer;
 pub mod messaging;
+pub mod proto;
 pub mod protocols;
+pub mod test_helpers;
 
 pub type ABFTResult<T> = Result<T, ABFTError>;
 
@@ -35,17 +36,17 @@ pub struct ABFT<
     R: PRBCReceiver + MVBAReceiver + Send + Sync + 'static,
     V: ABFTValue,
 > {
-    id: usize,
-    index: usize,
-    n_parties: usize,
+    id: u32,
+    index: u32,
+    n_parties: u32,
 
-    encrypted_values: RwLock<Option<ValueVector<EncryptedTransactionSet>>>,
+    encrypted_values: RwLock<Option<ValueVector<EncryptedValue>>>,
     notify_decrypt: Arc<Notify>,
-    decryption_shares: RwLock<HashMap<usize, HashMap<usize, ABFTDecryptionShareMessage>>>,
-    decrypted: RwLock<BTreeMap<usize, V>>,
+    decryption_shares: RwLock<HashMap<u32, HashMap<u32, ABFTDecryptionShareMessage>>>,
+    decrypted: RwLock<BTreeMap<u32, V>>,
 
     // sub-protocol
-    acs: RwLock<Option<ACS<EncryptedTransactionSet>>>,
+    acs: RwLock<Option<ACS<EncryptedValue>>>,
 
     // infrastructure
     send_handle: Arc<F>,
@@ -63,9 +64,9 @@ impl<
     > ABFT<F, R, V>
 {
     pub fn init(
-        id: usize,
-        index: usize,
-        n_parties: usize,
+        id: u32,
+        index: u32,
+        n_parties: u32,
         send_handle: Arc<F>,
         recv_handle: Arc<R>,
         signer_prbc: Arc<Signer>,
@@ -94,7 +95,7 @@ impl<
         }
     }
 
-    pub async fn invoke(&self, value: V) -> ABFTResult<BTreeMap<usize, V>> {
+    pub async fn invoke(&self, value: V) -> ABFTResult<BTreeMap<u32, V>> {
         // choose value and encrypt it
         // TODO: Figure out label
 
@@ -102,7 +103,7 @@ impl<
         let (payload, sym_encrypter) = SymmetricEncrypter::encrypt(&serialize(&value)?)?;
 
         // Encrypt the symmetric encryption key with threshold encrypter.
-        let encrypted = EncryptedTransactionSet {
+        let encrypted = EncryptedValue {
             key: self
                 .encrypter
                 .encrypt(&sym_encrypter.key(), &[0u8; 32])
@@ -187,13 +188,13 @@ impl<
     }
 
     pub async fn handle_protocol_message(&self, message: ProtocolMessage) -> ABFTResult<()> {
-        info!(
-            "Handling message from {} to {} with message_type {:?}",
-            message.header.send_id, message.header.recv_id, message.message_type
-        );
+        // assume valid existing header and valid message_type
 
-        match message.message_type {
-            ProtocolMessageType::PRBC(_) => {
+        match message.message_type() {
+            ProtocolMessageType::PrbcDone
+            | ProtocolMessageType::RbcEcho
+            | ProtocolMessageType::RbcValue
+            | ProtocolMessageType::RbcReady => {
                 // pass to ACS instance
                 let acs = self.acs.read().await;
 
@@ -221,7 +222,13 @@ impl<
                 }
             }
 
-            ProtocolMessageType::MVBA(_) => {
+            ProtocolMessageType::MvbaDone
+            | ProtocolMessageType::MvbaSkipShare
+            | ProtocolMessageType::MvbaSkip
+            | ProtocolMessageType::PbSend
+            | ProtocolMessageType::PbShareAck
+            | ProtocolMessageType::ElectCoinShare
+            | ProtocolMessageType::ViewChange => {
                 // pass to ACS instance
                 let acs = self.acs.read().await;
 
@@ -248,14 +255,13 @@ impl<
                 }
             }
 
-            ProtocolMessageType::ABFTDecryptionShare => {
+            ProtocolMessageType::AbftDecryptionShare => {
                 let vector_lock = self.encrypted_values.read().await;
 
                 if vector_lock.is_some() {
                     let inner: ABFTDecryptionShareMessage = deserialize(&message.message_data)?;
 
-                    self.on_decryption_share(inner, message.header.send_id)
-                        .await?;
+                    self.on_decryption_share(inner, message.send_id).await?;
                 } else {
                     return Err(ABFTError::NotReadyForABFTDecryptionShareMessage(message));
                 }
@@ -272,7 +278,7 @@ impl<
     async fn on_decryption_share(
         &self,
         message: ABFTDecryptionShareMessage,
-        send_id: usize,
+        send_id: u32,
     ) -> ABFTResult<()> {
         debug!(
             "Party {} handling decryption share for value {}, from {}",
@@ -360,7 +366,7 @@ impl<
             (self.n_parties / 3 + 1)
         );
 
-        if shares.entry(index).or_default().len() >= (self.n_parties / 3 + 1) {
+        if shares.entry(index).or_default().len() as u32 >= (self.n_parties / 3 + 1) {
             drop(shares);
             self.decrypt_value(index).await?;
 
@@ -376,7 +382,7 @@ impl<
         Ok(())
     }
 
-    async fn decrypt_value(&self, index: usize) -> ABFTResult<()> {
+    async fn decrypt_value(&self, index: u32) -> ABFTResult<()> {
         //assume that we do actually have enough shares for this.
 
         let (key_shares, nonce_shares) = {
@@ -435,12 +441,16 @@ impl<
         Ok(())
     }
 
-    async fn init_acs(&self, encrypted: EncryptedTransactionSet) {
+    async fn init_acs(&self, encrypted: EncryptedValue) {
         let acs = ACS::init(self.id, self.index, self.n_parties, encrypted);
 
         let mut lock = self.acs.write().await;
 
         lock.replace(acs);
+    }
+
+    pub fn index(&self) -> u32 {
+        self.index
     }
 }
 
@@ -455,7 +465,7 @@ impl<V> ABFTValue for V where
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
-pub struct EncryptedTransactionSet {
+pub struct EncryptedValue {
     key: EncodedCiphertext,
     nonce: EncodedCiphertext,
     payload: Vec<u8>,
@@ -464,11 +474,11 @@ pub struct EncryptedTransactionSet {
 /// Dummy value, useful for testing
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq, PartialOrd)]
 pub struct Value {
-    pub(crate) inner: usize,
+    pub(crate) inner: u32,
 }
 
 impl Value {
-    pub fn new(inner: usize) -> Self {
+    pub fn new(inner: u32) -> Self {
         Self { inner }
     }
 }

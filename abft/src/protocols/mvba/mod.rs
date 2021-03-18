@@ -1,5 +1,6 @@
 use crate::{
-    messaging::{ProtocolMessage, ProtocolMessageHeader, ProtocolMessageSender},
+    messaging::ProtocolMessageSender,
+    proto::{ProtocolMessage, ProtocolMessageType},
     ABFTValue,
 };
 use bincode::{deserialize, serialize};
@@ -13,7 +14,6 @@ use std::collections::HashMap;
 use log::{error, info, warn};
 use tokio::sync::RwLock;
 
-use crate::messaging::ProtocolMessageType;
 use std::sync::Arc;
 use tokio::sync::Notify;
 
@@ -22,7 +22,7 @@ use self::{
     elect::Elect,
     error::{MVBAError, MVBAResult},
     messages::{
-        ElectCoinShareMessage, MVBADoneMessage, MVBAMessageType, MVBASkipMessage,
+        ElectCoinShareMessage, MVBADoneMessage, MVBASkipMessage,
         MVBASkipShareMessage, PBSendMessage, PBShareAckMessage, ViewChangeMessage,
     },
     proposal_promotion::{PPError, PPLeader, PPResult, PPID},
@@ -41,22 +41,22 @@ pub mod view_change;
 /// Instance of Multi-valued Validated Byzantine Agreement
 pub struct MVBA<V: ABFTValue> {
     /// Identifier for protocol
-    id: usize,
-    index: usize,
-    n_parties: usize,
+    id: u32,
+    index: u32,
+    n_parties: u32,
     /// Internal state
     state: RwLock<MVBAState<V>>,
     notify_skip: Arc<Notify>,
 
     // Sub-protocol instances
     pp_send: RwLock<Option<PPSender<V>>>,
-    pp_recvs: RwLock<Option<HashMap<usize, Arc<PPReceiver<V>>>>>,
+    pp_recvs: RwLock<Option<HashMap<u32, Arc<PPReceiver<V>>>>>,
     elect: RwLock<Option<Elect>>,
     view_change: RwLock<Option<ViewChange<V>>>,
 }
 
 impl<V: ABFTValue> MVBA<V> {
-    pub fn init(id: usize, index: usize, n_parties: usize, value: V) -> Self {
+    pub fn init(id: u32, index: u32, n_parties: u32, value: V) -> Self {
         Self {
             id,
             index,
@@ -232,144 +232,172 @@ impl<V: ABFTValue> MVBA<V> {
         coin: &Coin,
     ) -> MVBAResult<()> {
         let ProtocolMessage {
-            header,
+            send_id,
+            recv_id,
+            prbc_index,
+            protocol_id,
+            view,
             message_data,
             message_type,
         } = message;
-        let ProtocolMessageHeader {
-            send_id, recv_id, ..
-        } = header;
+       
 
         info!(
             "Handling message from {} to {} with message_type {:?}",
-            send_id, recv_id, message_type
+            send_id,
+            recv_id,
+            ProtocolMessageType::from_i32(message_type).unwrap()
         );
 
-        if let ProtocolMessageType::MVBA(mvba_message_type) = &message_type {
-            match mvba_message_type {
-                MVBAMessageType::MVBADone => {
-                    let inner: MVBADoneMessage<V> = deserialize(&message_data)?;
+        match ProtocolMessageType::from_i32(message_type).unwrap() {
+            ProtocolMessageType::MvbaDone => {
+                let inner: MVBADoneMessage<V> = deserialize(&message_data)?;
 
-                    self.on_done_message(send_id, inner, send_handle, signer)
-                        .await?;
-                }
-                MVBAMessageType::MVBASkipShare => {
-                    let inner: MVBASkipShareMessage = deserialize(&message_data)?;
+                self.on_done_message(send_id, inner, send_handle, signer)
+                    .await?;
+            }
+            ProtocolMessageType::MvbaSkipShare => {
+                let inner: MVBASkipShareMessage = deserialize(&message_data)?;
 
-                    self.on_skip_share_message(send_id, inner, send_handle, signer)
-                        .await?;
-                }
-                MVBAMessageType::MVBASkip => {
-                    let inner: MVBASkipMessage = deserialize(&message_data)?;
+                self.on_skip_share_message(send_id, inner, send_handle, signer)
+                    .await?;
+            }
+            ProtocolMessageType::MvbaSkip => {
+                let inner: MVBASkipMessage = deserialize(&message_data)?;
 
-                    self.on_skip_message(inner, send_handle, signer).await?;
-                }
-                MVBAMessageType::PBSend => {
-                    let pp_recvs = self.pp_recvs.read().await;
-                    if let Some(pp_recvs) = &*pp_recvs {
-                        if let Some(pp) = pp_recvs.get(&send_id) {
-                            let inner: PBSendMessage<V> = deserialize(&message_data)?;
+                self.on_skip_message(inner, send_handle, signer).await?;
+            }
+            ProtocolMessageType::PbSend => {
+                let pp_recvs = self.pp_recvs.read().await;
+                if let Some(pp_recvs) = &*pp_recvs {
+                    if let Some(pp) = pp_recvs.get(&send_id) {
+                        let inner: PBSendMessage<V> = deserialize(&message_data)?;
 
-                            match self
-                                .on_pb_send_message(pp, inner, send_id, send_handle, signer)
-                                .await
-                            {
-                                Ok(_) => return Ok(()),
-                                Err(PPError::NotReadyForSend) => {
-                                    return Err(MVBAError::NotReadyForMessage(ProtocolMessage {
-                                        header,
-                                        message_data,
-                                        message_type,
-                                    }));
-                                }
-                                Err(e) => return Err(MVBAError::PPError(e)),
-                            }
-                        } else {
-                            warn!("Did not find PPReceiver {} for Party {}!", send_id, recv_id);
-                            return Err(MVBAError::NotReadyForMessage(ProtocolMessage {
-                                header,
-                                message_data,
-                                message_type,
-                            }));
-                        }
-                    } else {
-                        warn!("pprecvs was not initialized for Party {}!", recv_id);
-                        return Err(MVBAError::NotReadyForMessage(ProtocolMessage {
-                            header,
-                            message_data,
-                            message_type,
-                        }));
-                    }
-                }
-                MVBAMessageType::PBShareAck => {
-                    let pp_send = self.pp_send.read().await;
-
-                    if let Some(pp_send) = &*pp_send {
-                        let inner: PBShareAckMessage = deserialize(&message_data)?;
-
-                        if let Err(PPError::NotReadyForShareAck) =
-                            pp_send.on_share_ack(send_id, inner, signer).await
+                        match self
+                            .on_pb_send_message(pp, inner, send_id, send_handle, signer)
+                            .await
                         {
-                            warn!("pp_send not ready for message at Party {}!", recv_id);
-                            return Err(MVBAError::NotReadyForMessage(ProtocolMessage {
-                                header,
-                                message_data,
-                                message_type,
-                            }));
+                            Ok(_) => return Ok(()),
+                            Err(PPError::NotReadyForSend) => {
+                                return Err(MVBAError::NotReadyForMessage(ProtocolMessage {
+                                    send_id,
+                                    recv_id,
+                                    prbc_index,
+                                    protocol_id,
+                                    view,
+                                    message_data,
+                                    message_type,
+                                }));
+                            }
+                            Err(e) => return Err(MVBAError::PPError(e)),
                         }
-                    }
-                }
-                MVBAMessageType::ElectCoinShare => {
-                    let elect = self.elect.read().await;
-
-                    if let Some(elect) = &*elect {
-                        let inner: ElectCoinShareMessage = deserialize(&message_data)?;
-
-                        elect.on_coin_share_message(inner, coin)?;
                     } else {
+                        warn!("Did not find PPReceiver {} for Party {}!", send_id, recv_id);
                         return Err(MVBAError::NotReadyForMessage(ProtocolMessage {
-                            header,
+                            send_id,
+                            recv_id,
+                            prbc_index,
+                            protocol_id,
+                            view,
                             message_data,
                             message_type,
                         }));
                     }
+                } else {
+                    warn!("pprecvs was not initialized for Party {}!", recv_id);
+                    return Err(MVBAError::NotReadyForMessage(ProtocolMessage {
+                        send_id,
+                        recv_id,
+                        prbc_index,
+                        protocol_id,
+                        view,
+                        message_data,
+                        message_type,
+                    }));
                 }
-                MVBAMessageType::ViewChange => {
-                    let view_change = self.view_change.read().await;
+            }
+            ProtocolMessageType::PbShareAck => {
+                let pp_send = self.pp_send.read().await;
 
-                    if let Some(view_change) = &*view_change {
-                        let inner: ViewChangeMessage<V> = deserialize(&message_data)?;
+                if let Some(pp_send) = &*pp_send {
+                    let inner: PBShareAckMessage = deserialize(&message_data)?;
 
-                        match view_change.on_view_change_message(&inner, signer) {
-                            Ok(_) => return Ok(()),
-                            Err(ViewChangeError::ResultAlreadyTaken) => {
-                                // If ViewChangeResult was taken, this should only happen if the result was returned
-                                // to the invoke task. It is therefore fine to ignore.
-                                return Ok(());
-                            }
-                            Err(e) => return Err(MVBAError::ViewChangeError(e)),
-                        };
-                    } else {
+                    if let Err(PPError::NotReadyForShareAck) =
+                        pp_send.on_share_ack(send_id, inner, signer).await
+                    {
+                        warn!("pp_send not ready for message at Party {}!", recv_id);
                         return Err(MVBAError::NotReadyForMessage(ProtocolMessage {
-                            header,
+                            send_id,
+                            recv_id,
+                            prbc_index,
+                            protocol_id,
+                            view,
                             message_data,
                             message_type,
                         }));
                     }
                 }
             }
-        } else {
-            warn!(
-                "Message with other ProtocolMessageType: {:?} than MVBA was passed to MVBA.",
-                message_type
-            )
+            ProtocolMessageType::ElectCoinShare => {
+                let elect = self.elect.read().await;
+
+                if let Some(elect) = &*elect {
+                    let inner: ElectCoinShareMessage = deserialize(&message_data)?;
+
+                    elect.on_coin_share_message(inner, coin)?;
+                } else {
+                    return Err(MVBAError::NotReadyForMessage(ProtocolMessage {
+                        send_id,
+                        recv_id,
+                        prbc_index,
+                        protocol_id,
+                        view,
+                        message_data,
+                        message_type,
+                    }));
+                }
+            }
+            ProtocolMessageType::ViewChange => {
+                let view_change = self.view_change.read().await;
+
+                if let Some(view_change) = &*view_change {
+                    let inner: ViewChangeMessage<V> = deserialize(&message_data)?;
+
+                    match view_change.on_view_change_message(&inner, signer) {
+                        Ok(_) => return Ok(()),
+                        Err(ViewChangeError::ResultAlreadyTaken) => {
+                            // If ViewChangeResult was taken, this should only happen if the result was returned
+                            // to the invoke task. It is therefore fine to ignore.
+                            return Ok(());
+                        }
+                        Err(e) => return Err(MVBAError::ViewChangeError(e)),
+                    };
+                } else {
+                    return Err(MVBAError::NotReadyForMessage(ProtocolMessage {
+                        send_id,
+                        recv_id,
+                        prbc_index,
+                        protocol_id,
+                        view,
+                        message_data,
+                        message_type,
+                    }));
+                }
+            }
+            _ => {
+                warn!(
+                    "Message with other ProtocolMessageType: {:?} than MVBA was passed to MVBA.",
+                    message_type
+                )
+            }
         }
+
         Ok(())
     }
 
     pub async fn on_done_message<F: ProtocolMessageSender + Sync + Send>(
         &self,
-        index: usize,
+        index: u32,
         message: MVBADoneMessage<V>,
         send_handle: &F,
         signer: &Signer,
@@ -475,7 +503,7 @@ impl<V: ABFTValue> MVBA<V> {
 
     pub async fn on_skip_share_message<F: ProtocolMessageSender + Sync + Send>(
         &self,
-        index: usize,
+        index: u32,
         message: MVBASkipShareMessage,
         send_handle: &F,
         signer: &Signer,
@@ -494,6 +522,10 @@ impl<V: ABFTValue> MVBA<V> {
                 .get(&index)
                 .ok_or_else(|| MVBAError::UninitState("has_received_skip_share member".to_string()))
             {
+                warn!(
+                    "Party {} already received skip share message from Party {} at view {}",
+                    self.index, index, state.view
+                );
                 return Ok(());
             }
         }
@@ -502,7 +534,11 @@ impl<V: ABFTValue> MVBA<V> {
 
         let tag = self.tag_skip_share(id.id, id.view);
 
-        if !signer.verify_share(index, &share.inner, &tag.as_bytes()) {
+        if !signer.verify_share(index as usize, &share.inner, &tag.as_bytes()) {
+            warn!(
+                "Party {} received received skip share message from Party {} with invalid signature share",
+                self.index, index, 
+            );
             return Ok(());
         }
 
@@ -518,13 +554,17 @@ impl<V: ABFTValue> MVBA<V> {
 
         // If we have received enough skip_shares to construct a skip signature, construct and broadcast it.
 
+
         if !*state.has_sent_skip.entry(id.view).or_default()
-            && state.pp_skip.entry(id.view).or_default().len() >= (state.n_parties * 2 / 3) + 1
+            && state.pp_skip.entry(id.view).or_default().len()
+                >= (state.n_parties * 2 / 3 + 1) as usize
         {
+      
+
             let shares = state.pp_skip[&id.view]
                 .clone()
                 .into_iter()
-                .map(|(i, skip_share)| (i, skip_share.inner))
+                .map(|(i, skip_share)| (i as usize, skip_share.inner))
                 .collect();
 
             // All signatures should have been individually verified. Expect that the signature is valid.
@@ -603,7 +643,7 @@ impl<V: ABFTValue> MVBA<V> {
         &self,
         pp: &Arc<PPReceiver<V>>,
         message: PBSendMessage<V>,
-        send_id: usize,
+        send_id: u32,
         send_handle: &F,
         signer: &Signer,
     ) -> PPResult<()> {
@@ -639,7 +679,7 @@ impl<V: ABFTValue> MVBA<V> {
         Ok(())
     }
 
-    async fn get_key_value_view(&self) -> (PBKey, V, usize) {
+    async fn get_key_value_view(&self) -> (PBKey, V, u32) {
         let state = self.state.read().await;
 
         let key = PBKey {
@@ -654,7 +694,7 @@ impl<V: ABFTValue> MVBA<V> {
         (key, value, view)
     }
 
-    async fn get_leader_result(&self, leader: usize) -> MVBAResult<PPLeader<V>> {
+    async fn get_leader_result(&self, leader: u32) -> MVBAResult<PPLeader<V>> {
         if leader == self.index {
             let lock = self.pp_send.read().await;
             let pp_send = lock
@@ -768,7 +808,7 @@ impl<V: ABFTValue> MVBA<V> {
         }
     }
 
-    async fn init_elect(&self, view: usize) {
+    async fn init_elect(&self, view: u32) {
         let elect = Elect::init(self.id, self.index, view, self.n_parties);
 
         let mut lock = self.elect.write().await;
@@ -776,7 +816,7 @@ impl<V: ABFTValue> MVBA<V> {
         lock.replace(elect);
     }
 
-    async fn init_view_change(&self, index: usize, id_leader: MVBAID, view: usize) {
+    async fn init_view_change(&self, index: u32, id_leader: MVBAID, view: u32) {
         let state = self.state.read().await;
         let view_change = ViewChange::init(
             id_leader,
@@ -800,46 +840,46 @@ impl<V: ABFTValue> MVBA<V> {
         }
     }
 
-    fn tag_skip_share(&self, id: usize, view: usize) -> String {
+    fn tag_skip_share(&self, id: u32, view: u32) -> String {
         format!("{}-SKIP-{}", id, view)
     }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, Default)]
 pub struct MVBAID {
-    id: usize,
-    index: usize,
-    view: usize,
+    id: u32,
+    index: u32,
+    view: u32,
 }
 
 // Keep LOCK and KEY variable consistent with paper
 #[allow(non_snake_case)]
 struct MVBAState<V: ABFTValue> {
     /// Number of parties taking part in protocol
-    view: usize,
-    n_parties: usize,
-    LOCK: usize,
+    view: u32,
+    n_parties: u32,
+    LOCK: u32,
     KEY: Key<V>,
     /// Index of elected leader per view, if existing.
-    leaders: HashMap<usize, Option<usize>>,
+    leaders: HashMap<u32, Option<u32>>,
     /// Whether a MVBADoneMessage has been received from a certain party, for a particular view.
-    has_received_done: HashMap<usize, HashMap<usize, bool>>,
+    has_received_done: HashMap<u32, HashMap<u32, bool>>,
     /// Number of unique MVBADoneMessages received for a particular view.
-    pp_done: HashMap<usize, usize>,
+    pp_done: HashMap<u32, u32>,
     /// Whether a MVBASkipShareMessage has been received from a certain party, for a particular view.
-    has_received_skip_share: HashMap<usize, HashMap<usize, bool>>,
+    has_received_skip_share: HashMap<u32, HashMap<u32, bool>>,
     /// Whether the current party has sent out a MVBASkipShareMessage for a particular view.
-    has_sent_skip_share: HashMap<usize, bool>,
+    has_sent_skip_share: HashMap<u32, bool>,
     /// Collection of unique MVBASkipShareMessage received for a particular view.
-    pp_skip: HashMap<usize, HashMap<usize, SkipShare>>,
+    pp_skip: HashMap<u32, HashMap<u32, SkipShare>>,
     /// Whether the current party has sent out a MVBASkipMessage for a particular view.
-    has_sent_skip: HashMap<usize, bool>,
+    has_sent_skip: HashMap<u32, bool>,
     /// Whether the current party can proceed to the election phase for a particular view.
-    skip: HashMap<usize, bool>,
+    skip: HashMap<u32, bool>,
 }
 
 impl<V: ABFTValue> MVBAState<V> {
-    fn new(n_parties: usize, value: V) -> Self {
+    fn new(n_parties: u32, value: V) -> Self {
         Self {
             view: 0,
             n_parties,
@@ -880,7 +920,7 @@ impl<V: ABFTValue> MVBAState<V> {
 
 #[derive(Debug, Clone)]
 pub struct Key<V: ABFTValue> {
-    view: usize,
+    view: u32,
     value: V,
     proof: Option<PBSig>,
 }

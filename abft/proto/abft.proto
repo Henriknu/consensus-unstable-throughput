@@ -1,0 +1,55 @@
+syntax = "proto3";
+
+package abft;
+
+// Interface exported by the server.
+service ABFT {
+    rpc protocol_exchange(ProtocolMessage) returns (ProtocolResponse){}
+}
+
+message ProtocolMessage {
+    uint32 protocol_id = 1;
+    uint32 send_id = 2;
+    uint32 recv_id = 3;
+    uint32 view = 4;
+    uint32 prbc_index = 5;
+
+    ProtocolMessageType message_type = 6;
+
+    bytes message_data = 7;
+}
+
+message ProtocolResponse{}
+
+
+enum ProtocolMessageType{
+
+    DEFAULT = 0;
+
+    //PRBC
+    PRBCDone = 1;
+
+    //RBC
+    RBCEcho = 2;
+    RBCValue = 3;
+    RBCReady = 4;
+
+    //MVBA
+    MVBADone = 5;
+    MVBASkipShare = 6;
+    MVBASkip = 7;
+
+    // Provable Broadcast
+    PBSend = 8;
+    PBShareAck = 9;
+
+    // Elect
+    ElectCoinShare = 10;
+
+    // ViewChange
+    ViewChange = 11;
+
+    //ABFT 
+    ABFTDecryptionShare = 12;
+
+}
