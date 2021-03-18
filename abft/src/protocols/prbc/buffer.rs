@@ -4,7 +4,7 @@ use async_trait::async_trait;
 
 use crate::proto::{ProtocolMessage, ProtocolMessageType};
 
-use super::{messages::PRBCMessageType, PRBCResult};
+use super::PRBCResult;
 
 #[derive(Debug, Default)]
 pub struct PRBCBuffer {

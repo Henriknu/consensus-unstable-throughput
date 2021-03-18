@@ -10,24 +10,6 @@ use crate::{
 use crate::protocols::mvba::provable_broadcast::{PBSigShare, PBID};
 use crate::protocols::mvba::{SkipShare, SkipSig, MVBAID};
 
-#[derive(Debug, Clone)]
-pub enum MVBAMessageType {
-    //MVBA
-    MVBADone,
-    MVBASkipShare,
-    MVBASkip,
-
-    // Provable Broadcast
-    PBSend,
-    PBShareAck,
-
-    // Elect
-    ElectCoinShare,
-
-    // ViewChange
-    ViewChange,
-}
-
 // Concrete Messages
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PBSendMessage<V: ABFTValue> {

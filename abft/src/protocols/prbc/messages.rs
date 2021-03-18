@@ -3,18 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::messaging::ToProtocolMessage;
 
-use crate::proto::{ProtocolMessage, ProtocolMessageType};
-
-#[derive(Debug, Clone)]
-pub enum PRBCMessageType {
-    //PRBC
-    PRBCDone,
-
-    //RBC
-    RBCEcho,
-    RBCValue,
-    RBCReady,
-}
+use crate::proto::ProtocolMessageType;
 
 // Concrete Messages
 

@@ -6,7 +6,7 @@ use consensus_core::data::message_buffer::MessageBuffer;
 
 use crate::proto::{ProtocolMessage, ProtocolMessageType};
 
-use super::{error::MVBAResult, messages::MVBAMessageType, proposal_promotion::PPResult};
+use super::{error::MVBAResult, proposal_promotion::PPResult};
 
 pub struct MVBABuffer {
     pp_recv: HashMap<u32, MessageBuffer<ProtocolMessage>>,

@@ -11,7 +11,7 @@ use provable_broadcast::{PBKey, PBProof};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use log::{debug, error, info, warn};
+use log::{error, info, warn};
 use tokio::sync::RwLock;
 
 use std::sync::Arc;
@@ -22,7 +22,7 @@ use self::{
     elect::Elect,
     error::{MVBAError, MVBAResult},
     messages::{
-        ElectCoinShareMessage, MVBADoneMessage, MVBAMessageType, MVBASkipMessage,
+        ElectCoinShareMessage, MVBADoneMessage, MVBASkipMessage,
         MVBASkipShareMessage, PBSendMessage, PBShareAckMessage, ViewChangeMessage,
     },
     proposal_promotion::{PPError, PPLeader, PPResult, PPID},

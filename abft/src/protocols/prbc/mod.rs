@@ -11,9 +11,7 @@ use tokio::sync::{mpsc::error::SendError, Notify, RwLock};
 
 use self::{
     buffer::{PRBCBufferCommand, PRBCReceiver},
-    messages::{
-        PRBCDoneMessage, PRBCMessageType, RBCEchoMessage, RBCReadyMessage, RBCValueMessage,
-    },
+    messages::{PRBCDoneMessage, RBCEchoMessage, RBCReadyMessage, RBCValueMessage},
     rbc::{RBCError, RBC},
 };
 use crate::{
@@ -157,7 +155,10 @@ impl<V: ABFTValue> PRBC<V> {
 
         info!(
             "Handling PRBC message from {} to {}, in PRBC instance {}, with message_type {:?}",
-            send_id, recv_id, prbc_index, ProtocolMessageType::from_i32(message_type).unwrap()
+            send_id,
+            recv_id,
+            prbc_index,
+            ProtocolMessageType::from_i32(message_type).unwrap()
         );
 
         match ProtocolMessageType::from_i32(message_type).unwrap() {

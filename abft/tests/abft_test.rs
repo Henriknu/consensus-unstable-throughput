@@ -1,26 +1,15 @@
 use abft::{
-    buffer::{ABFTBuffer, ABFTBufferCommand, ABFTReceiver},
-    messaging::{ProtocolMessageSender, ToProtocolMessage},
-    proto::ProtocolMessage,
+    buffer::{ABFTBuffer, ABFTBufferCommand},
     protocols::{
-        acs::{
-            buffer::{ACSBuffer, ACSBufferCommand},
-            ACSError, ACS,
-        },
-        mvba::buffer::{MVBABufferCommand, MVBAReceiver},
-        prbc::{
-            buffer::{PRBCBuffer, PRBCBufferCommand, PRBCReceiver},
-            PRBCError, PRBCResult, PRBC,
-        },
+        acs::buffer::ACSBufferCommand, mvba::buffer::MVBABufferCommand,
+        prbc::buffer::PRBCBufferCommand,
     },
     ABFTError, ABFT,
 };
 
 use abft::Value;
 
-use std::{borrow::Borrow, collections::HashMap, sync::Arc};
-
-use async_trait::async_trait;
+use std::{collections::HashMap, sync::Arc};
 
 use futures::future::join_all;
 
@@ -30,169 +19,11 @@ use tokio::sync::mpsc::{self, Sender};
 
 use log::{debug, error, info};
 
+use abft::test_helpers::{ABFTBufferManager, ChannelSender};
+
 const N_PARTIES: usize = THRESHOLD * 3 + 1;
 const THRESHOLD: usize = 10;
 const BUFFER_CAPACITY: usize = N_PARTIES * N_PARTIES * 50 + 1000;
-
-struct ChannelSender {
-    senders: HashMap<u32, Sender<ProtocolMessage>>,
-}
-
-#[async_trait]
-impl ProtocolMessageSender for ChannelSender {
-    async fn send<M: ToProtocolMessage + Send + Sync>(
-        &self,
-        id: u32,
-        send_id: u32,
-        recv_id: u32,
-        view: u32,
-        prbc_index: u32,
-        message: M,
-    ) {
-        if !self.senders.contains_key(&recv_id) {
-            return;
-        }
-
-        let sender = &self.senders[&recv_id];
-        if let Err(e) = sender
-            .send(message.to_protocol_message(id, send_id, recv_id, view, prbc_index))
-            .await
-        {
-            error!("Got error when sending message: {}", e);
-        }
-    }
-
-    async fn broadcast<M: ToProtocolMessage + Send + Sync>(
-        &self,
-        id: u32,
-        send_id: u32,
-        n_parties: u32,
-        view: u32,
-        prbc_index: u32,
-        message: M,
-    ) {
-        let message = message.to_protocol_message(id, send_id, 0, view, prbc_index);
-
-        for i in (0..n_parties) {
-            if !self.senders.contains_key(&i) {
-                continue;
-            }
-            let mut inner = message.clone();
-            let mut header = inner.header.take().unwrap();
-            header.recv_id = i;
-            inner.header.replace(header);
-            let sender = &self.senders[&i];
-            if let Err(e) = sender.send(inner).await {
-                error!("Got error when sending message: {}", e);
-            }
-        }
-    }
-}
-
-struct ABFTBufferManager {
-    sender: Sender<ABFTBufferCommand>,
-}
-
-#[async_trait]
-impl PRBCReceiver for ABFTBufferManager {
-    async fn drain_rbc(&self, send_id: u32) -> PRBCResult<()> {
-        if let Err(e) = self
-            .sender
-            .send(ABFTBufferCommand::ACS {
-                inner: ACSBufferCommand::PRBC {
-                    send_id,
-                    inner: PRBCBufferCommand::RBC,
-                },
-            })
-            .await
-        {
-            error!("Got error when draining buffer: {}", e);
-        }
-        Ok(())
-    }
-
-    async fn drain_prbc_done(&self, send_id: u32) -> PRBCResult<()> {
-        if let Err(e) = self
-            .sender
-            .send(ABFTBufferCommand::ACS {
-                inner: ACSBufferCommand::PRBC {
-                    send_id,
-                    inner: PRBCBufferCommand::PRBC,
-                },
-            })
-            .await
-        {
-            error!("Got error when draining buffer: {}", e);
-        }
-        Ok(())
-    }
-}
-
-#[async_trait]
-impl MVBAReceiver for ABFTBufferManager {
-    async fn drain_pp_receive(
-        &self,
-        view: u32,
-        send_id: u32,
-    ) -> abft::protocols::mvba::proposal_promotion::PPResult<()> {
-        if let Err(e) = self
-            .sender
-            .send(ABFTBufferCommand::ACS {
-                inner: ACSBufferCommand::MVBA {
-                    inner: MVBABufferCommand::PPReceive { view, send_id },
-                },
-            })
-            .await
-        {
-            error!("Got error when draining buffer: {}", e);
-        }
-
-        Ok(())
-    }
-
-    async fn drain_elect(&self, view: u32) -> abft::protocols::mvba::error::MVBAResult<()> {
-        if let Err(e) = self
-            .sender
-            .send(ABFTBufferCommand::ACS {
-                inner: ACSBufferCommand::MVBA {
-                    inner: MVBABufferCommand::ElectCoinShare { view },
-                },
-            })
-            .await
-        {
-            error!("Got error when draining buffer: {}", e);
-        }
-
-        Ok(())
-    }
-
-    async fn drain_view_change(&self, view: u32) -> abft::protocols::mvba::error::MVBAResult<()> {
-        if let Err(e) = self
-            .sender
-            .send(ABFTBufferCommand::ACS {
-                inner: ACSBufferCommand::MVBA {
-                    inner: MVBABufferCommand::ViewChange { view },
-                },
-            })
-            .await
-        {
-            error!("Got error when draining buffer: {}", e);
-        }
-
-        Ok(())
-    }
-}
-
-#[async_trait]
-impl ABFTReceiver for ABFTBufferManager {
-    async fn drain_decryption_shares(&self) -> abft::ABFTResult<()> {
-        self.sender
-            .send(ABFTBufferCommand::ABFTDecryptionShare)
-            .await?;
-
-        Ok(())
-    }
-}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn acs_correctness() {

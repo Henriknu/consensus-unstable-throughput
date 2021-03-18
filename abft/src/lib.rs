@@ -28,6 +28,9 @@ pub mod messaging;
 pub mod proto;
 pub mod protocols;
 
+#[cfg(feature = "test_helpers")]
+pub mod test_helpers;
+
 pub type ABFTResult<T> = Result<T, ABFTError>;
 
 pub struct ABFT<
