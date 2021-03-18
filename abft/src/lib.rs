@@ -40,13 +40,13 @@ pub struct ABFT<
     index: u32,
     n_parties: u32,
 
-    encrypted_values: RwLock<Option<ValueVector<EncryptedTransactionSet>>>,
+    encrypted_values: RwLock<Option<ValueVector<EncryptedValue>>>,
     notify_decrypt: Arc<Notify>,
     decryption_shares: RwLock<HashMap<u32, HashMap<u32, ABFTDecryptionShareMessage>>>,
     decrypted: RwLock<BTreeMap<u32, V>>,
 
     // sub-protocol
-    acs: RwLock<Option<ACS<EncryptedTransactionSet>>>,
+    acs: RwLock<Option<ACS<EncryptedValue>>>,
 
     // infrastructure
     send_handle: Arc<F>,
@@ -103,7 +103,7 @@ impl<
         let (payload, sym_encrypter) = SymmetricEncrypter::encrypt(&serialize(&value)?)?;
 
         // Encrypt the symmetric encryption key with threshold encrypter.
-        let encrypted = EncryptedTransactionSet {
+        let encrypted = EncryptedValue {
             key: self
                 .encrypter
                 .encrypt(&sym_encrypter.key(), &[0u8; 32])
@@ -441,7 +441,7 @@ impl<
         Ok(())
     }
 
-    async fn init_acs(&self, encrypted: EncryptedTransactionSet) {
+    async fn init_acs(&self, encrypted: EncryptedValue) {
         let acs = ACS::init(self.id, self.index, self.n_parties, encrypted);
 
         let mut lock = self.acs.write().await;
@@ -465,7 +465,7 @@ impl<V> ABFTValue for V where
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
-pub struct EncryptedTransactionSet {
+pub struct EncryptedValue {
     key: EncodedCiphertext,
     nonce: EncodedCiphertext,
     payload: Vec<u8>,

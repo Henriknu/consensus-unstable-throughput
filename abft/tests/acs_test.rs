@@ -7,7 +7,7 @@ use abft::{
         mvba::buffer::MVBABufferCommand,
         prbc::buffer::PRBCBufferCommand,
     },
-    EncryptedTransactionSet,
+    EncryptedValue,
 };
 
 use std::{collections::HashMap, sync::Arc};
@@ -75,7 +75,7 @@ async fn acs_correctness() {
         let f = Arc::new(ChannelSender { senders });
 
         //let value = Value::new(i * 1000);
-        let value = EncryptedTransactionSet::default();
+        let value = EncryptedValue::default();
 
         let acs = Arc::new(ACS::init(0, i as u32, N_PARTIES as u32, value));
 
