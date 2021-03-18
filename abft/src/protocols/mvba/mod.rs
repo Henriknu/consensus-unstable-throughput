@@ -1,6 +1,6 @@
 use crate::{
     messaging::ProtocolMessageSender,
-    proto::{ProtocolMessage, ProtocolMessageHeader, ProtocolMessageType},
+    proto::{ProtocolMessage, ProtocolMessageType},
     ABFTValue,
 };
 use bincode::{deserialize, serialize};
@@ -232,17 +232,15 @@ impl<V: ABFTValue> MVBA<V> {
         coin: &Coin,
     ) -> MVBAResult<()> {
         let ProtocolMessage {
-            header,
-            message_data,
-            message_type,
-        } = message;
-        let ProtocolMessageHeader {
             send_id,
             recv_id,
             prbc_index,
             protocol_id,
             view,
-        } = header.unwrap();
+            message_data,
+            message_type,
+        } = message;
+       
 
         info!(
             "Handling message from {} to {} with message_type {:?}",
@@ -282,13 +280,11 @@ impl<V: ABFTValue> MVBA<V> {
                             Ok(_) => return Ok(()),
                             Err(PPError::NotReadyForSend) => {
                                 return Err(MVBAError::NotReadyForMessage(ProtocolMessage {
-                                    header: Some(ProtocolMessageHeader {
-                                        send_id,
-                                        recv_id,
-                                        prbc_index,
-                                        protocol_id,
-                                        view,
-                                    }),
+                                    send_id,
+                                    recv_id,
+                                    prbc_index,
+                                    protocol_id,
+                                    view,
                                     message_data,
                                     message_type,
                                 }));
@@ -298,13 +294,11 @@ impl<V: ABFTValue> MVBA<V> {
                     } else {
                         warn!("Did not find PPReceiver {} for Party {}!", send_id, recv_id);
                         return Err(MVBAError::NotReadyForMessage(ProtocolMessage {
-                            header: Some(ProtocolMessageHeader {
-                                send_id,
-                                recv_id,
-                                prbc_index,
-                                protocol_id,
-                                view,
-                            }),
+                            send_id,
+                            recv_id,
+                            prbc_index,
+                            protocol_id,
+                            view,
                             message_data,
                             message_type,
                         }));
@@ -312,13 +306,11 @@ impl<V: ABFTValue> MVBA<V> {
                 } else {
                     warn!("pprecvs was not initialized for Party {}!", recv_id);
                     return Err(MVBAError::NotReadyForMessage(ProtocolMessage {
-                        header: Some(ProtocolMessageHeader {
-                            send_id,
-                            recv_id,
-                            prbc_index,
-                            protocol_id,
-                            view,
-                        }),
+                        send_id,
+                        recv_id,
+                        prbc_index,
+                        protocol_id,
+                        view,
                         message_data,
                         message_type,
                     }));
@@ -335,13 +327,11 @@ impl<V: ABFTValue> MVBA<V> {
                     {
                         warn!("pp_send not ready for message at Party {}!", recv_id);
                         return Err(MVBAError::NotReadyForMessage(ProtocolMessage {
-                            header: Some(ProtocolMessageHeader {
-                                send_id,
-                                recv_id,
-                                prbc_index,
-                                protocol_id,
-                                view,
-                            }),
+                            send_id,
+                            recv_id,
+                            prbc_index,
+                            protocol_id,
+                            view,
                             message_data,
                             message_type,
                         }));
@@ -357,13 +347,11 @@ impl<V: ABFTValue> MVBA<V> {
                     elect.on_coin_share_message(inner, coin)?;
                 } else {
                     return Err(MVBAError::NotReadyForMessage(ProtocolMessage {
-                        header: Some(ProtocolMessageHeader {
-                            send_id,
-                            recv_id,
-                            prbc_index,
-                            protocol_id,
-                            view,
-                        }),
+                        send_id,
+                        recv_id,
+                        prbc_index,
+                        protocol_id,
+                        view,
                         message_data,
                         message_type,
                     }));
@@ -386,13 +374,11 @@ impl<V: ABFTValue> MVBA<V> {
                     };
                 } else {
                     return Err(MVBAError::NotReadyForMessage(ProtocolMessage {
-                        header: Some(ProtocolMessageHeader {
-                            send_id,
-                            recv_id,
-                            prbc_index,
-                            protocol_id,
-                            view,
-                        }),
+                        send_id,
+                        recv_id,
+                        prbc_index,
+                        protocol_id,
+                        view,
                         message_data,
                         message_type,
                     }));

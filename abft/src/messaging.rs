@@ -5,7 +5,7 @@ use consensus_core::crypto::encrypt::EncodedDecryptionShare;
 
 use serde::{Deserialize, Serialize};
 
-use crate::proto::{ProtocolMessage, ProtocolMessageHeader, ProtocolMessageType};
+use crate::proto::{ProtocolMessage, ProtocolMessageType};
 
 #[async_trait]
 pub trait ProtocolMessageSender {
@@ -46,13 +46,11 @@ where
         let message_data = serialize(self).expect("Could not serialize inner of Protocol message");
 
         ProtocolMessage {
-            header: Some(ProtocolMessageHeader {
-                protocol_id,
-                send_id,
-                recv_id,
-                view,
-                prbc_index,
-            }),
+            protocol_id,
+            send_id,
+            recv_id,
+            view,
+            prbc_index,
             message_type: Self::MESSAGE_TYPE.into(),
             message_data,
         }

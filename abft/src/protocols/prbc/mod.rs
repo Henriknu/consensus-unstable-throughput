@@ -16,7 +16,7 @@ use self::{
 };
 use crate::{
     messaging::ProtocolMessageSender,
-    proto::{ProtocolMessage, ProtocolMessageHeader, ProtocolMessageType},
+    proto::{ProtocolMessage, ProtocolMessageType},
     ABFTValue,
 };
 use bincode::{deserialize, serialize, Error as BincodeError};
@@ -141,17 +141,14 @@ impl<V: ABFTValue> PRBC<V> {
         signer: &Signer,
     ) -> PRBCResult<()> {
         let ProtocolMessage {
-            header,
-            message_data,
-            message_type,
-        } = message;
-        let ProtocolMessageHeader {
             send_id,
             recv_id,
             prbc_index,
             protocol_id,
             view,
-        } = header.unwrap();
+            message_data,
+            message_type,
+        } = message;
 
         info!(
             "Handling PRBC message from {} to {}, in PRBC instance {}, with message_type {:?}",
@@ -174,13 +171,11 @@ impl<V: ABFTValue> PRBC<V> {
                     Ok(_) => {}
                     Err(PRBCError::NotReadyForDoneMessage) => {
                         return Err(PRBCError::NotReadyForMessage(ProtocolMessage {
-                            header: Some(ProtocolMessageHeader {
-                                send_id,
-                                recv_id,
-                                prbc_index,
-                                protocol_id,
-                                view,
-                            }),
+                            send_id,
+                            recv_id,
+                            prbc_index,
+                            protocol_id,
+                            view,
                             message_data,
                             message_type,
                         }));
@@ -200,13 +195,11 @@ impl<V: ABFTValue> PRBC<V> {
                 } else {
                     warn!("Did not find RBC for Party {}!", recv_id);
                     return Err(PRBCError::NotReadyForMessage(ProtocolMessage {
-                        header: Some(ProtocolMessageHeader {
-                            send_id,
-                            recv_id,
-                            prbc_index,
-                            protocol_id,
-                            view,
-                        }),
+                        send_id,
+                        recv_id,
+                        prbc_index,
+                        protocol_id,
+                        view,
                         message_data,
                         message_type,
                     }));
@@ -222,13 +215,11 @@ impl<V: ABFTValue> PRBC<V> {
                 } else {
                     warn!("Did not find RBC for Party {}!", recv_id);
                     return Err(PRBCError::NotReadyForMessage(ProtocolMessage {
-                        header: Some(ProtocolMessageHeader {
-                            send_id,
-                            recv_id,
-                            prbc_index,
-                            protocol_id,
-                            view,
-                        }),
+                        send_id,
+                        recv_id,
+                        prbc_index,
+                        protocol_id,
+                        view,
                         message_data,
                         message_type,
                     }));
@@ -244,13 +235,11 @@ impl<V: ABFTValue> PRBC<V> {
                 } else {
                     warn!("Did not find RBC for Party {}!", recv_id);
                     return Err(PRBCError::NotReadyForMessage(ProtocolMessage {
-                        header: Some(ProtocolMessageHeader {
-                            send_id,
-                            recv_id,
-                            prbc_index,
-                            protocol_id,
-                            view,
-                        }),
+                        send_id,
+                        recv_id,
+                        prbc_index,
+                        protocol_id,
+                        view,
                         message_data,
                         message_type,
                     }));

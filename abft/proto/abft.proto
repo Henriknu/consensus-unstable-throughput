@@ -8,24 +8,18 @@ service ABFT {
 }
 
 message ProtocolMessage {
-    ProtocolMessageHeader header = 1;
-
-    ProtocolMessageType message_type = 2;
-
-    bytes message_data = 3;
-}
-
-message ProtocolResponse{}
-
-message ProtocolMessageHeader{
-
     uint32 protocol_id = 1;
     uint32 send_id = 2;
     uint32 recv_id = 3;
     uint32 view = 4;
     uint32 prbc_index = 5;
 
+    ProtocolMessageType message_type = 6;
+
+    bytes message_data = 7;
 }
+
+message ProtocolResponse{}
 
 
 enum ProtocolMessageType{

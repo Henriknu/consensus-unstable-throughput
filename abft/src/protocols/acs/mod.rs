@@ -196,7 +196,7 @@ impl<V: ABFTValue> ACS<V> {
                 let prbcs = self.prbcs.read().await;
 
                 if let Some(prbcs) = &*prbcs {
-                    if let Some(prbc) = prbcs.get(&message.header.as_ref().unwrap().prbc_index) {
+                    if let Some(prbc) = prbcs.get(&message.prbc_index) {
                         match prbc
                             .handle_protocol_message(message, send_handle, signer_prbc)
                             .await

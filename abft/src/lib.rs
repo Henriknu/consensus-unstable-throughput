@@ -263,8 +263,7 @@ impl<
                 if vector_lock.is_some() {
                     let inner: ABFTDecryptionShareMessage = deserialize(&message.message_data)?;
 
-                    self.on_decryption_share(inner, message.header.unwrap().send_id)
-                        .await?;
+                    self.on_decryption_share(inner, message.send_id).await?;
                 } else {
                     return Err(ABFTError::NotReadyForABFTDecryptionShareMessage(message));
                 }

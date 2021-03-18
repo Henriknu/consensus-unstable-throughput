@@ -61,9 +61,7 @@ impl ProtocolMessageSender for ChannelSender {
                 continue;
             }
             let mut inner = message.clone();
-            let mut header = inner.header.take().unwrap();
-            header.recv_id = i;
-            inner.header.replace(header);
+            inner.recv_id = i;
             let sender = &self.senders[&i];
             if let Err(e) = sender.send(inner).await {
                 error!("Got error when sending message: {}", e);

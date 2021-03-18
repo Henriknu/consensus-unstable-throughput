@@ -60,24 +60,24 @@ impl MVBABuffer {
         match message.message_type() {
             ProtocolMessageType::PbSend => {
                 self.pp_recv
-                    .entry(message.header.as_ref().unwrap().send_id)
+                    .entry(message.send_id)
                     .or_default()
                     .epochs
-                    .entry(message.header.as_ref().unwrap().view as usize)
+                    .entry(message.view as usize)
                     .or_default()
                     .push(message);
             }
             ProtocolMessageType::ElectCoinShare => {
                 self.elect
                     .epochs
-                    .entry(message.header.as_ref().unwrap().view as usize)
+                    .entry(message.view as usize)
                     .or_default()
                     .push(message);
             }
             ProtocolMessageType::ViewChange => {
                 self.view_change
                     .epochs
-                    .entry(message.header.as_ref().unwrap().view as usize)
+                    .entry(message.view as usize)
                     .or_default()
                     .push(message);
             }

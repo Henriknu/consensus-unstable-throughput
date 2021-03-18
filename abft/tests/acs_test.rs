@@ -113,7 +113,7 @@ async fn acs_correctness() {
                     {
                         Ok(_) => {}
                         Err(ACSError::NotReadyForPRBCMessage(early_message)) => {
-                            let index = early_message.header.as_ref().unwrap().prbc_index;
+                            let index = early_message.prbc_index;
                             buffer.execute(ACSBufferCommand::PRBC {
                                 inner: PRBCBufferCommand::Store {
                                     message: early_message,
@@ -163,7 +163,7 @@ async fn acs_correctness() {
                 {
                     Ok(_) => {}
                     Err(ACSError::NotReadyForPRBCMessage(early_message)) => {
-                        let index = early_message.header.as_ref().unwrap().prbc_index;
+                        let index = early_message.prbc_index;
                         msg_buff_send
                             .send(ACSBufferCommand::PRBC {
                                 inner: PRBCBufferCommand::Store {
