@@ -5,100 +5,28 @@ use consensus_core::crypto::encrypt::EncodedDecryptionShare;
 
 use serde::{Deserialize, Serialize};
 
-use crate::protocols::{mvba::messages::MVBAMessageType, prbc::messages::PRBCMessageType};
+use crate::proto::{ProtocolMessage, ProtocolMessageHeader, ProtocolMessageType};
 
 #[async_trait]
 pub trait ProtocolMessageSender {
     async fn send<M: ToProtocolMessage + Send + Sync>(
         &self,
-        id: usize,
-        send_id: usize,
-        recv_id: usize,
-        view: usize,
-        prbc_index: usize,
+        id: u32,
+        send_id: u32,
+        recv_id: u32,
+        view: u32,
+        prbc_index: u32,
         message: M,
     );
     async fn broadcast<M: ToProtocolMessage + Send + Sync>(
         &self,
-        id: usize,
-        send_id: usize,
-        n_parties: usize,
-        view: usize,
-        prbc_index: usize,
+        id: u32,
+        send_id: u32,
+        n_parties: u32,
+        view: u32,
+        prbc_index: u32,
         message: M,
     );
-}
-
-// Wrappers
-
-#[derive(Debug, Clone)]
-pub struct ProtocolMessage {
-    pub header: ProtocolMessageHeader,
-    pub message_type: ProtocolMessageType,
-    pub message_data: Vec<u8>,
-}
-
-impl Default for ProtocolMessage {
-    fn default() -> Self {
-        Self {
-            header: Default::default(),
-            message_data: Default::default(),
-            message_type: ProtocolMessageType::Default,
-        }
-    }
-}
-
-impl ProtocolMessage {
-    pub fn new(
-        protocol_id: usize,
-        send_id: usize,
-        recv_id: usize,
-        view: usize,
-        prbc_index: usize,
-        message_type: ProtocolMessageType,
-        message_data: Vec<u8>,
-    ) -> Self {
-        Self {
-            header: ProtocolMessageHeader::new(protocol_id, send_id, recv_id, view, prbc_index),
-            message_type,
-            message_data,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct ProtocolMessageHeader {
-    pub protocol_id: usize,
-    pub send_id: usize,
-    pub recv_id: usize,
-    pub view: usize,
-    pub prbc_index: usize,
-}
-
-impl ProtocolMessageHeader {
-    pub fn new(
-        protocol_id: usize,
-        send_id: usize,
-        recv_id: usize,
-        view: usize,
-        prbc_index: usize,
-    ) -> Self {
-        Self {
-            protocol_id,
-            recv_id,
-            send_id,
-            view,
-            prbc_index,
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum ProtocolMessageType {
-    MVBA(MVBAMessageType),
-    PRBC(PRBCMessageType),
-    ABFTDecryptionShare,
-    Default,
 }
 
 pub trait ToProtocolMessage
@@ -109,40 +37,42 @@ where
 
     fn to_protocol_message(
         &self,
-        protocol_id: usize,
-        send_id: usize,
-        recv_id: usize,
-        view: usize,
-        prbc_index: usize,
+        protocol_id: u32,
+        send_id: u32,
+        recv_id: u32,
+        view: u32,
+        prbc_index: u32,
     ) -> ProtocolMessage {
         let message_data = serialize(self).expect("Could not serialize inner of Protocol message");
 
-        ProtocolMessage::new(
-            protocol_id,
-            send_id,
-            recv_id,
-            view,
-            prbc_index,
-            Self::MESSAGE_TYPE,
+        ProtocolMessage {
+            header: Some(ProtocolMessageHeader {
+                protocol_id,
+                send_id,
+                recv_id,
+                view,
+                prbc_index,
+            }),
+            message_type: Self::MESSAGE_TYPE.into(),
             message_data,
-        )
+        }
     }
 }
 
 // Concrete Messages
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ABFTDecryptionShareMessage {
-    pub index: usize,
+    pub index: u32,
     pub key: EncodedDecryptionShare,
     pub nonce: EncodedDecryptionShare,
 }
 
 impl ABFTDecryptionShareMessage {
-    pub fn new(index: usize, key: EncodedDecryptionShare, nonce: EncodedDecryptionShare) -> Self {
+    pub fn new(index: u32, key: EncodedDecryptionShare, nonce: EncodedDecryptionShare) -> Self {
         Self { index, key, nonce }
     }
 }
 
 impl ToProtocolMessage for ABFTDecryptionShareMessage {
-    const MESSAGE_TYPE: ProtocolMessageType = ProtocolMessageType::ABFTDecryptionShare;
+    const MESSAGE_TYPE: ProtocolMessageType = ProtocolMessageType::AbftDecryptionShare;
 }

@@ -23,28 +23,30 @@ use super::messages::{RBCEchoMessage, RBCReadyMessage, RBCValueMessage};
 pub type RBCResult<T> = Result<T, RBCError>;
 
 pub struct RBC {
-    id: usize,
-    index: usize,
-    n_parties: usize,
-    send_id: usize,
+    id: u32,
+    index: u32,
+    n_parties: u32,
+    send_id: u32,
     erasure: ErasureCoder,
-    echo_messages: RwLock<BTreeMap<H256, BTreeMap<usize, RBCEchoMessage>>>,
-    ready_messages: RwLock<BTreeMap<H256, BTreeMap<usize, RBCReadyMessage>>>,
+    echo_messages: RwLock<BTreeMap<H256, BTreeMap<u32, RBCEchoMessage>>>,
+    ready_messages: RwLock<BTreeMap<H256, BTreeMap<u32, RBCReadyMessage>>>,
     notify_echo: Arc<Notify>,
     notify_ready: Arc<Notify>,
     has_sent_ready: AtomicBool,
 }
 
 impl RBC {
-    pub fn init(id: usize, index: usize, n_parties: usize, send_id: usize) -> RBCResult<Self> {
+    pub fn init(id: u32, index: u32, n_parties: u32, send_id: u32) -> RBCResult<Self> {
         Ok(Self {
             id,
             index,
             n_parties,
             send_id,
             erasure: ErasureCoder::new(
-                NonZeroUsize::new(n_parties / 3 + 1).ok_or_else(|| RBCError::ZeroUsize)?,
-                NonZeroUsize::new(n_parties * 2 / 3).ok_or_else(|| RBCError::ZeroUsize)?,
+                NonZeroUsize::new((n_parties / 3 + 1) as usize)
+                    .ok_or_else(|| RBCError::ZeroUsize)?,
+                NonZeroUsize::new((n_parties * 2 / 3) as usize)
+                    .ok_or_else(|| RBCError::ZeroUsize)?,
             )?,
             echo_messages: Default::default(),
             ready_messages: Default::default(),
@@ -121,8 +123,8 @@ impl RBC {
         if !verify_branch(
             &message.root,
             &message.fragment.hash(),
-            message.index,
-            self.n_parties,
+            message.index as usize,
+            self.n_parties as usize,
             &message.branch,
         ) {
             warn!(
@@ -150,7 +152,7 @@ impl RBC {
             n_echo_messages = lock.entry(root).or_default().len();
         }
 
-        if n_echo_messages >= (self.n_parties / 3 + 1) {
+        if n_echo_messages >= (self.n_parties / 3 + 1) as usize {
             info!(
                 "Party {} notifying echo on RBC instance {}",
                 self.index, self.send_id
@@ -158,7 +160,7 @@ impl RBC {
             self.notify_echo.notify_one();
         }
 
-        if n_echo_messages >= (self.n_parties * 2 / 3 + 1)
+        if n_echo_messages >= (self.n_parties * 2 / 3 + 1) as usize
             && !self.has_sent_ready.load(Ordering::SeqCst)
         {
             info!(
@@ -196,7 +198,7 @@ impl RBC {
 
     pub async fn on_ready_message<F: ProtocolMessageSender>(
         &self,
-        index: usize,
+        index: u32,
         message: RBCReadyMessage,
         send_handle: &F,
     ) -> RBCResult<()> {
@@ -213,7 +215,7 @@ impl RBC {
             n_ready_messages = lock.entry(root).or_default().len();
         }
 
-        if n_ready_messages >= (self.n_parties / 3 + 1)
+        if n_ready_messages >= (self.n_parties / 3 + 1) as usize
             && !self.has_sent_ready.load(Ordering::SeqCst)
         {
             let ready_message = RBCReadyMessage::new(root);
@@ -232,7 +234,7 @@ impl RBC {
             self.has_sent_ready.store(true, Ordering::SeqCst);
         }
 
-        if n_ready_messages >= (self.n_parties * 2 / 3 + 1) {
+        if n_ready_messages >= (self.n_parties * 2 / 3 + 1) as usize {
             self.notify_ready.notify_one();
         }
 
@@ -246,7 +248,7 @@ impl RBC {
     ) -> RBCResult<()> {
         let fragments = self.erasure.encode(&serialize(&value)?);
 
-        assert_eq!(fragments.len(), self.n_parties);
+        assert_eq!(fragments.len(), self.n_parties as usize);
 
         let merkle = MerkleTree::new(&fragments);
 
@@ -264,7 +266,8 @@ impl RBC {
                 .next()
                 .ok_or_else(|| RBCError::FaultyNumberOfErasureBlocks)?;
 
-            let message = RBCValueMessage::new(*merkle.root(), fragment, get_branch(&merkle, j));
+            let message =
+                RBCValueMessage::new(*merkle.root(), fragment, get_branch(&merkle, j as usize));
             if j != self.index {
                 send_handle
                     .send(self.id, self.index, j, 0, self.send_id, message)
@@ -283,7 +286,7 @@ impl RBC {
 
         let root_map = lock.entry(root).or_default();
 
-        let mut erasures = Vec::<i32>::with_capacity(self.n_parties);
+        let mut erasures = Vec::<i32>::with_capacity(self.n_parties as usize);
 
         for i in 0..self.n_parties {
             if !root_map.contains_key(&i) {
@@ -305,7 +308,7 @@ impl RBC {
         let root = self.get_ready_root().await?;
 
         let fragments: Vec<Vec<u8>>;
-        let mut erasures = Vec::<i32>::with_capacity(self.n_parties);
+        let mut erasures = Vec::<i32>::with_capacity(self.n_parties as usize);
 
         {
             let lock = self.echo_messages.read().await;
@@ -337,7 +340,7 @@ impl RBC {
         let lock = self.ready_messages.read().await;
 
         for (root, map) in lock.iter() {
-            if map.len() >= (self.n_parties * 2 / 3 + 1) {
+            if map.len() >= (self.n_parties * 2 / 3 + 1) as usize {
                 return Ok(*root);
             }
         }

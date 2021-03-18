@@ -1,5 +1,7 @@
 use abft::{
-    messaging::{ProtocolMessage, ProtocolMessageSender, ToProtocolMessage},
+    buffer::{ABFTBuffer, ABFTBufferCommand, ABFTReceiver},
+    messaging::{ProtocolMessageSender, ToProtocolMessage},
+    proto::ProtocolMessage,
     protocols::{
         acs::{
             buffer::{ACSBuffer, ACSBufferCommand},
@@ -11,7 +13,7 @@ use abft::{
             PRBCError, PRBCResult, PRBC,
         },
     },
-    EncryptedTransactionSet,
+    ABFTError, EncryptedTransactionSet, ABFT,
 };
 
 use abft::Value;
@@ -33,18 +35,18 @@ const THRESHOLD: usize = 3;
 const BUFFER_CAPACITY: usize = N_PARTIES * N_PARTIES * 50 + 100;
 
 struct ChannelSender {
-    senders: HashMap<usize, Sender<ProtocolMessage>>,
+    senders: HashMap<u32, Sender<ProtocolMessage>>,
 }
 
 #[async_trait]
 impl ProtocolMessageSender for ChannelSender {
     async fn send<M: ToProtocolMessage + Send + Sync>(
         &self,
-        id: usize,
-        send_id: usize,
-        recv_id: usize,
-        view: usize,
-        prbc_index: usize,
+        id: u32,
+        send_id: u32,
+        recv_id: u32,
+        view: u32,
+        prbc_index: u32,
         message: M,
     ) {
         if !self.senders.contains_key(&recv_id) {
@@ -62,11 +64,11 @@ impl ProtocolMessageSender for ChannelSender {
 
     async fn broadcast<M: ToProtocolMessage + Send + Sync>(
         &self,
-        id: usize,
-        send_id: usize,
-        n_parties: usize,
-        view: usize,
-        prbc_index: usize,
+        id: u32,
+        send_id: u32,
+        n_parties: u32,
+        view: u32,
+        prbc_index: u32,
         message: M,
     ) {
         let message = message.to_protocol_message(id, send_id, 0, view, prbc_index);
@@ -76,7 +78,9 @@ impl ProtocolMessageSender for ChannelSender {
                 continue;
             }
             let mut inner = message.clone();
-            inner.header.recv_id = i;
+            let mut header = inner.header.take().unwrap();
+            header.recv_id = i;
+            inner.header.replace(header);
             let sender = &self.senders[&i];
             if let Err(e) = sender.send(inner).await {
                 error!("Got error when sending message: {}", e);
@@ -91,7 +95,7 @@ struct ACSBufferManager {
 
 #[async_trait]
 impl PRBCReceiver for ACSBufferManager {
-    async fn drain_rbc(&self, send_id: usize) -> PRBCResult<()> {
+    async fn drain_rbc(&self, send_id: u32) -> PRBCResult<()> {
         if let Err(e) = self
             .sender
             .send(ACSBufferCommand::PRBC {
@@ -105,7 +109,7 @@ impl PRBCReceiver for ACSBufferManager {
         Ok(())
     }
 
-    async fn drain_prbc_done(&self, send_id: usize) -> PRBCResult<()> {
+    async fn drain_prbc_done(&self, send_id: u32) -> PRBCResult<()> {
         if let Err(e) = self
             .sender
             .send(ACSBufferCommand::PRBC {
@@ -124,8 +128,8 @@ impl PRBCReceiver for ACSBufferManager {
 impl MVBAReceiver for ACSBufferManager {
     async fn drain_pp_receive(
         &self,
-        view: usize,
-        send_id: usize,
+        view: u32,
+        send_id: u32,
     ) -> abft::protocols::mvba::proposal_promotion::PPResult<()> {
         if let Err(e) = self
             .sender
@@ -140,7 +144,7 @@ impl MVBAReceiver for ACSBufferManager {
         Ok(())
     }
 
-    async fn drain_elect(&self, view: usize) -> abft::protocols::mvba::error::MVBAResult<()> {
+    async fn drain_elect(&self, view: u32) -> abft::protocols::mvba::error::MVBAResult<()> {
         if let Err(e) = self
             .sender
             .send(ACSBufferCommand::MVBA {
@@ -154,7 +158,7 @@ impl MVBAReceiver for ACSBufferManager {
         Ok(())
     }
 
-    async fn drain_view_change(&self, view: usize) -> abft::protocols::mvba::error::MVBAResult<()> {
+    async fn drain_view_change(&self, view: u32) -> abft::protocols::mvba::error::MVBAResult<()> {
         if let Err(e) = self
             .sender
             .send(ACSBufferCommand::MVBA {
@@ -199,12 +203,12 @@ async fn acs_correctness() {
 
     for i in 0..N_PARTIES {
         let mut recv = channels[i].1.take().unwrap();
-        let senders: HashMap<usize, Sender<_>> = channels
+        let senders: HashMap<u32, Sender<_>> = channels
             .iter()
             .enumerate()
             .filter_map(|(j, channel)| {
                 if i != j {
-                    Some((j, channel.0.clone()))
+                    Some((j as u32, channel.0.clone()))
                 } else {
                     None
                 }
@@ -220,7 +224,7 @@ async fn acs_correctness() {
         //let value = Value::new(i * 1000);
         let value = EncryptedTransactionSet::default();
 
-        let acs = Arc::new(ACS::init(0, i, N_PARTIES, value));
+        let acs = Arc::new(ACS::init(0, i as u32, N_PARTIES as u32, value));
 
         // Setup buffer manager
 
@@ -256,7 +260,7 @@ async fn acs_correctness() {
                     {
                         Ok(_) => {}
                         Err(ACSError::NotReadyForPRBCMessage(early_message)) => {
-                            let index = early_message.header.prbc_index;
+                            let index = early_message.header.as_ref().unwrap().prbc_index;
                             buffer.execute(ACSBufferCommand::PRBC {
                                 inner: PRBCBufferCommand::Store {
                                     message: early_message,
@@ -306,7 +310,7 @@ async fn acs_correctness() {
                 {
                     Ok(_) => {}
                     Err(ACSError::NotReadyForPRBCMessage(early_message)) => {
-                        let index = early_message.header.prbc_index;
+                        let index = early_message.header.as_ref().unwrap().prbc_index;
                         msg_buff_send
                             .send(ACSBufferCommand::PRBC {
                                 inner: PRBCBufferCommand::Store {

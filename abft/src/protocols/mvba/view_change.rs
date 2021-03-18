@@ -11,7 +11,7 @@ use consensus_core::crypto::sign::Signer;
 use log::warn;
 
 use std::sync::{
-    atomic::{AtomicBool, AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicU32, Ordering},
     Arc, Mutex,
 };
 use thiserror::Error;
@@ -21,25 +21,25 @@ pub type ViewChangeResult<T> = Result<T, ViewChangeError>;
 
 pub struct ViewChange<V: ABFTValue> {
     id: MVBAID,
-    index: usize,
-    view: usize,
-    n_parties: usize,
-    current_key_view: usize,
-    current_lock: usize,
+    index: u32,
+    view: u32,
+    n_parties: u32,
+    current_key_view: u32,
+    current_lock: u32,
     result: Mutex<Option<Changes<V>>>,
     done: AtomicBool,
-    num_messages: AtomicUsize,
+    num_messages: AtomicU32,
     notify_messages: Arc<Notify>,
 }
 
 impl<V: ABFTValue> ViewChange<V> {
     pub fn init(
         id: MVBAID,
-        index: usize,
-        view: usize,
-        n_parties: usize,
-        current_key_view: usize,
-        current_lock: usize,
+        index: u32,
+        view: u32,
+        n_parties: u32,
+        current_key_view: u32,
+        current_lock: u32,
     ) -> Self {
         Self {
             id,
@@ -49,7 +49,7 @@ impl<V: ABFTValue> ViewChange<V> {
             current_lock,
             result: Mutex::new(Some(Changes::default())),
             done: AtomicBool::new(false),
-            num_messages: AtomicUsize::new(0),
+            num_messages: AtomicU32::new(0),
             notify_messages: Arc::new(Notify::new()),
             n_parties,
         }
@@ -262,7 +262,7 @@ fn try_unpack_value_and_sig<V: ABFTValue>(proposal: &Option<PPProposal<V>>) -> O
 #[derive(Debug, Default)]
 pub struct Changes<V: ABFTValue> {
     pub(crate) value: Option<V>,
-    pub(crate) lock: Option<usize>,
+    pub(crate) lock: Option<u32>,
     pub(crate) key: Option<Key<V>>,
 }
 

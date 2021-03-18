@@ -1,7 +1,7 @@
 use thiserror::Error;
 use tokio::sync::mpsc::error::SendError;
 
-use crate::messaging::ProtocolMessage;
+use crate::proto::ProtocolMessage;
 
 use super::{
     buffer::MVBABufferCommand, elect::ElectError, proposal_promotion::PPError,

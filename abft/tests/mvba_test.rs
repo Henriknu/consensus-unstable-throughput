@@ -5,16 +5,25 @@ use async_trait::async_trait;
 use futures::future::join_all;
 
 use abft::{
-    messaging::{ProtocolMessage, ProtocolMessageSender, ToProtocolMessage},
+    buffer::{ABFTBuffer, ABFTBufferCommand, ABFTReceiver},
+    messaging::{ProtocolMessageSender, ToProtocolMessage},
+    proto::ProtocolMessage,
     protocols::{
-        acs::SignatureVector,
+        acs::{
+            buffer::{ACSBuffer, ACSBufferCommand},
+            ACSError, SignatureVector, ACS,
+        },
         mvba::{
             buffer::{MVBABuffer, MVBABufferCommand, MVBAReceiver},
             error::MVBAError,
             MVBA,
         },
+        prbc::{
+            buffer::{PRBCBuffer, PRBCBufferCommand, PRBCReceiver},
+            PRBCError, PRBCResult, PRBC,
+        },
     },
-    Value,
+    ABFTError, ABFT,
 };
 
 use consensus_core::crypto::{commoncoin::Coin, sign::Signer};
@@ -24,22 +33,22 @@ use tokio::test;
 use log::error;
 
 const N_PARTIES: usize = THRESHOLD * 3 + 1;
-const THRESHOLD: usize = 1;
+const THRESHOLD: usize = 10;
 const BUFFER_CAPACITY: usize = THRESHOLD * 30;
 
 struct ChannelSender {
-    senders: HashMap<usize, Sender<ProtocolMessage>>,
+    senders: HashMap<u32, Sender<ProtocolMessage>>,
 }
 
 #[async_trait]
 impl ProtocolMessageSender for ChannelSender {
     async fn send<M: ToProtocolMessage + Send + Sync>(
         &self,
-        id: usize,
-        send_id: usize,
-        recv_id: usize,
-        view: usize,
-        prbc_index: usize,
+        id: u32,
+        send_id: u32,
+        recv_id: u32,
+        view: u32,
+        prbc_index: u32,
         message: M,
     ) {
         if !self.senders.contains_key(&recv_id) {
@@ -57,11 +66,11 @@ impl ProtocolMessageSender for ChannelSender {
 
     async fn broadcast<M: ToProtocolMessage + Send + Sync>(
         &self,
-        id: usize,
-        send_id: usize,
-        n_parties: usize,
-        view: usize,
-        prbc_index: usize,
+        id: u32,
+        send_id: u32,
+        n_parties: u32,
+        view: u32,
+        prbc_index: u32,
         message: M,
     ) {
         let message = message.to_protocol_message(id, send_id, 0, view, prbc_index);
@@ -71,7 +80,9 @@ impl ProtocolMessageSender for ChannelSender {
                 continue;
             }
             let mut inner = message.clone();
-            inner.header.recv_id = i;
+            let mut header = inner.header.take().unwrap();
+            header.recv_id = i;
+            inner.header.replace(header);
             let sender = &self.senders[&i];
             if let Err(e) = sender.send(inner).await {
                 error!("Got error when sending message: {}", e);
@@ -88,8 +99,8 @@ struct MVBABufferManager {
 impl MVBAReceiver for MVBABufferManager {
     async fn drain_pp_receive(
         &self,
-        view: usize,
-        send_id: usize,
+        view: u32,
+        send_id: u32,
     ) -> abft::protocols::mvba::proposal_promotion::PPResult<()> {
         self.sender
             .send(MVBABufferCommand::PPReceive { view, send_id })
@@ -98,7 +109,7 @@ impl MVBAReceiver for MVBABufferManager {
         Ok(())
     }
 
-    async fn drain_elect(&self, view: usize) -> abft::protocols::mvba::error::MVBAResult<()> {
+    async fn drain_elect(&self, view: u32) -> abft::protocols::mvba::error::MVBAResult<()> {
         self.sender
             .send(MVBABufferCommand::ElectCoinShare { view })
             .await?;
@@ -106,7 +117,7 @@ impl MVBAReceiver for MVBABufferManager {
         Ok(())
     }
 
-    async fn drain_view_change(&self, view: usize) -> abft::protocols::mvba::error::MVBAResult<()> {
+    async fn drain_view_change(&self, view: u32) -> abft::protocols::mvba::error::MVBAResult<()> {
         self.sender
             .send(MVBABufferCommand::ViewChange { view })
             .await?;
@@ -115,7 +126,7 @@ impl MVBAReceiver for MVBABufferManager {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn mvba_correctness() {
     env_logger::init();
 
@@ -136,12 +147,12 @@ async fn mvba_correctness() {
 
     for i in 0..N_PARTIES {
         let mut recv = channels[i].1.take().unwrap();
-        let senders: HashMap<usize, Sender<_>> = channels
+        let senders: HashMap<u32, Sender<_>> = channels
             .iter()
             .enumerate()
             .filter_map(|(j, channel)| {
                 if i != j {
-                    Some((j, channel.0.clone()))
+                    Some((j as u32, channel.0.clone()))
                 } else {
                     None
                 }
@@ -157,7 +168,7 @@ async fn mvba_correctness() {
             inner: Default::default(),
         };
 
-        let mvba = Arc::new(MVBA::init(0, i, N_PARTIES, signature_vector));
+        let mvba = Arc::new(MVBA::init(0, i as u32, N_PARTIES as u32, signature_vector));
 
         // Setup buffer manager
 

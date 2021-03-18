@@ -4,7 +4,7 @@ package abft;
 
 // Interface exported by the server.
 service ABFT {
-    rpc send(ProtocolMessage) returns (ProtocolResponse){}
+    rpc protocol_exchange(ProtocolMessage) returns (ProtocolResponse){}
 }
 
 message ProtocolMessage {

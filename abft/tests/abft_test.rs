@@ -1,6 +1,7 @@
 use abft::{
     buffer::{ABFTBuffer, ABFTBufferCommand, ABFTReceiver},
-    messaging::{ProtocolMessage, ProtocolMessageSender, ToProtocolMessage},
+    messaging::{ProtocolMessageSender, ToProtocolMessage},
+    proto::ProtocolMessage,
     protocols::{
         acs::{
             buffer::{ACSBuffer, ACSBufferCommand},
@@ -17,7 +18,7 @@ use abft::{
 
 use abft::Value;
 
-use std::{collections::HashMap, sync::Arc};
+use std::{borrow::Borrow, collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
 
@@ -31,21 +32,21 @@ use log::{debug, error, info};
 
 const N_PARTIES: usize = THRESHOLD * 3 + 1;
 const THRESHOLD: usize = 10;
-const BUFFER_CAPACITY: usize = N_PARTIES * N_PARTIES * 50 + 10000;
+const BUFFER_CAPACITY: usize = N_PARTIES * N_PARTIES * 50 + 1000;
 
 struct ChannelSender {
-    senders: HashMap<usize, Sender<ProtocolMessage>>,
+    senders: HashMap<u32, Sender<ProtocolMessage>>,
 }
 
 #[async_trait]
 impl ProtocolMessageSender for ChannelSender {
     async fn send<M: ToProtocolMessage + Send + Sync>(
         &self,
-        id: usize,
-        send_id: usize,
-        recv_id: usize,
-        view: usize,
-        prbc_index: usize,
+        id: u32,
+        send_id: u32,
+        recv_id: u32,
+        view: u32,
+        prbc_index: u32,
         message: M,
     ) {
         if !self.senders.contains_key(&recv_id) {
@@ -63,11 +64,11 @@ impl ProtocolMessageSender for ChannelSender {
 
     async fn broadcast<M: ToProtocolMessage + Send + Sync>(
         &self,
-        id: usize,
-        send_id: usize,
-        n_parties: usize,
-        view: usize,
-        prbc_index: usize,
+        id: u32,
+        send_id: u32,
+        n_parties: u32,
+        view: u32,
+        prbc_index: u32,
         message: M,
     ) {
         let message = message.to_protocol_message(id, send_id, 0, view, prbc_index);
@@ -77,7 +78,9 @@ impl ProtocolMessageSender for ChannelSender {
                 continue;
             }
             let mut inner = message.clone();
-            inner.header.recv_id = i;
+            let mut header = inner.header.take().unwrap();
+            header.recv_id = i;
+            inner.header.replace(header);
             let sender = &self.senders[&i];
             if let Err(e) = sender.send(inner).await {
                 error!("Got error when sending message: {}", e);
@@ -92,7 +95,7 @@ struct ABFTBufferManager {
 
 #[async_trait]
 impl PRBCReceiver for ABFTBufferManager {
-    async fn drain_rbc(&self, send_id: usize) -> PRBCResult<()> {
+    async fn drain_rbc(&self, send_id: u32) -> PRBCResult<()> {
         if let Err(e) = self
             .sender
             .send(ABFTBufferCommand::ACS {
@@ -108,7 +111,7 @@ impl PRBCReceiver for ABFTBufferManager {
         Ok(())
     }
 
-    async fn drain_prbc_done(&self, send_id: usize) -> PRBCResult<()> {
+    async fn drain_prbc_done(&self, send_id: u32) -> PRBCResult<()> {
         if let Err(e) = self
             .sender
             .send(ABFTBufferCommand::ACS {
@@ -129,8 +132,8 @@ impl PRBCReceiver for ABFTBufferManager {
 impl MVBAReceiver for ABFTBufferManager {
     async fn drain_pp_receive(
         &self,
-        view: usize,
-        send_id: usize,
+        view: u32,
+        send_id: u32,
     ) -> abft::protocols::mvba::proposal_promotion::PPResult<()> {
         if let Err(e) = self
             .sender
@@ -147,7 +150,7 @@ impl MVBAReceiver for ABFTBufferManager {
         Ok(())
     }
 
-    async fn drain_elect(&self, view: usize) -> abft::protocols::mvba::error::MVBAResult<()> {
+    async fn drain_elect(&self, view: u32) -> abft::protocols::mvba::error::MVBAResult<()> {
         if let Err(e) = self
             .sender
             .send(ABFTBufferCommand::ACS {
@@ -163,7 +166,7 @@ impl MVBAReceiver for ABFTBufferManager {
         Ok(())
     }
 
-    async fn drain_view_change(&self, view: usize) -> abft::protocols::mvba::error::MVBAResult<()> {
+    async fn drain_view_change(&self, view: u32) -> abft::protocols::mvba::error::MVBAResult<()> {
         if let Err(e) = self
             .sender
             .send(ABFTBufferCommand::ACS {
@@ -225,12 +228,12 @@ async fn acs_correctness() {
 
     for i in 0..N_PARTIES {
         let mut recv = channels[i].1.take().unwrap();
-        let senders: HashMap<usize, Sender<_>> = channels
+        let senders: HashMap<u32, Sender<_>> = channels
             .iter()
             .enumerate()
             .filter_map(|(j, channel)| {
                 if i != j {
-                    Some((j, channel.0.clone()))
+                    Some((j as u32, channel.0.clone()))
                 } else {
                     None
                 }
@@ -253,8 +256,8 @@ async fn acs_correctness() {
 
         let abft = Arc::new(ABFT::init(
             0,
-            i,
-            N_PARTIES,
+            i as u32,
+            N_PARTIES as u32,
             f,
             r,
             signer_prbc,
@@ -278,7 +281,7 @@ async fn acs_correctness() {
                     match buffer_acs.handle_protocol_message(message).await {
                         Ok(_) => {}
                         Err(ABFTError::NotReadyForPRBCMessage(early_message)) => {
-                            let index = early_message.header.prbc_index;
+                            let index = early_message.header.as_ref().unwrap().prbc_index;
                             buffer.execute(ABFTBufferCommand::ACS {
                                 inner: ACSBufferCommand::PRBC {
                                     inner: PRBCBufferCommand::Store {
@@ -325,7 +328,7 @@ async fn acs_correctness() {
                 match msg_abft.handle_protocol_message(message).await {
                     Ok(_) => {}
                     Err(ABFTError::NotReadyForPRBCMessage(early_message)) => {
-                        let index = early_message.header.prbc_index;
+                        let index = early_message.header.as_ref().unwrap().prbc_index;
                         msg_buff_send
                             .send(ABFTBufferCommand::ACS {
                                 inner: ACSBufferCommand::PRBC {
@@ -371,7 +374,7 @@ async fn acs_correctness() {
         // setup main thread
 
         let main_handle = tokio::spawn(async move {
-            match abft.invoke(Value::new(i * 1000)).await {
+            match abft.invoke(Value::new(i as u32 * 1000)).await {
                 Ok(value) => return Ok(value),
                 Err(e) => {
                     error!("Party {} got error when invoking abft: {}", i, e);

@@ -3,9 +3,8 @@ use consensus_core::crypto::commoncoin::EncodedCoinShare;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    messaging::{ProtocolMessageType, ToProtocolMessage},
-    protocols::mvba::proposal_promotion::PPProposal,
-    ABFTValue,
+    messaging::ToProtocolMessage, proto::ProtocolMessageType,
+    protocols::mvba::proposal_promotion::PPProposal, ABFTValue,
 };
 
 use crate::protocols::mvba::provable_broadcast::{PBSigShare, PBID};
@@ -44,7 +43,7 @@ impl<V: ABFTValue> PBSendMessage<V> {
 }
 
 impl<V: ABFTValue> ToProtocolMessage for PBSendMessage<V> {
-    const MESSAGE_TYPE: ProtocolMessageType = ProtocolMessageType::MVBA(MVBAMessageType::PBSend);
+    const MESSAGE_TYPE: ProtocolMessageType = ProtocolMessageType::PbSend;
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -60,8 +59,7 @@ impl PBShareAckMessage {
 }
 
 impl ToProtocolMessage for PBShareAckMessage {
-    const MESSAGE_TYPE: ProtocolMessageType =
-        ProtocolMessageType::MVBA(MVBAMessageType::PBShareAck);
+    const MESSAGE_TYPE: ProtocolMessageType = ProtocolMessageType::PbShareAck;
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -76,15 +74,14 @@ impl ElectCoinShareMessage {
 }
 
 impl ToProtocolMessage for ElectCoinShareMessage {
-    const MESSAGE_TYPE: ProtocolMessageType =
-        ProtocolMessageType::MVBA(MVBAMessageType::ElectCoinShare);
+    const MESSAGE_TYPE: ProtocolMessageType = ProtocolMessageType::ElectCoinShare;
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ViewChangeMessage<V: ABFTValue> {
-    pub id: usize,
-    pub index: usize,
-    pub view: usize,
+    pub id: u32,
+    pub index: u32,
+    pub view: u32,
     #[serde(bound = "")]
     pub leader_key: Option<PPProposal<V>>,
     #[serde(bound = "")]
@@ -95,9 +92,9 @@ pub struct ViewChangeMessage<V: ABFTValue> {
 
 impl<V: ABFTValue> ViewChangeMessage<V> {
     pub fn new(
-        id: usize,
-        index: usize,
-        view: usize,
+        id: u32,
+        index: u32,
+        view: u32,
         leader_key: Option<PPProposal<V>>,
         leader_lock: Option<PPProposal<V>>,
         leader_commit: Option<PPProposal<V>>,
@@ -114,8 +111,7 @@ impl<V: ABFTValue> ViewChangeMessage<V> {
 }
 
 impl<V: ABFTValue> ToProtocolMessage for ViewChangeMessage<V> {
-    const MESSAGE_TYPE: ProtocolMessageType =
-        ProtocolMessageType::MVBA(MVBAMessageType::ViewChange);
+    const MESSAGE_TYPE: ProtocolMessageType = ProtocolMessageType::ViewChange;
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -132,7 +128,7 @@ impl<V: ABFTValue> MVBADoneMessage<V> {
 }
 
 impl<V: ABFTValue> ToProtocolMessage for MVBADoneMessage<V> {
-    const MESSAGE_TYPE: ProtocolMessageType = ProtocolMessageType::MVBA(MVBAMessageType::MVBADone);
+    const MESSAGE_TYPE: ProtocolMessageType = ProtocolMessageType::MvbaDone;
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -148,8 +144,7 @@ impl MVBASkipShareMessage {
 }
 
 impl ToProtocolMessage for MVBASkipShareMessage {
-    const MESSAGE_TYPE: ProtocolMessageType =
-        ProtocolMessageType::MVBA(MVBAMessageType::MVBASkipShare);
+    const MESSAGE_TYPE: ProtocolMessageType = ProtocolMessageType::MvbaSkipShare;
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -165,5 +160,5 @@ impl MVBASkipMessage {
 }
 
 impl ToProtocolMessage for MVBASkipMessage {
-    const MESSAGE_TYPE: ProtocolMessageType = ProtocolMessageType::MVBA(MVBAMessageType::MVBASkip);
+    const MESSAGE_TYPE: ProtocolMessageType = ProtocolMessageType::MvbaSkip;
 }

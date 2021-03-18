@@ -9,7 +9,6 @@ use tonic::{Request, Response};
 
 use abft::{
     buffer::{ABFTBuffer, ABFTBufferCommand, ABFTReceiver},
-    messaging::{ProtocolMessage, ProtocolMessageSender, ToProtocolMessage},
     proto::{
         abft_client::AbftClient,
         abft_server::{Abft, AbftServer},

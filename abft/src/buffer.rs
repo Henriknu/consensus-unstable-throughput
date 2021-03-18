@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use consensus_core::data::message_buffer::MessageBuffer;
 
 use crate::{
-    messaging::ProtocolMessage,
+    proto::ProtocolMessage,
     protocols::acs::buffer::{ACSBuffer, ACSBufferCommand},
     ABFTResult,
 };

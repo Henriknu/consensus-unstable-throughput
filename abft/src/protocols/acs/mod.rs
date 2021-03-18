@@ -13,7 +13,8 @@ use log::{error, info};
 use tokio::sync::{mpsc::Receiver, RwLock};
 
 use crate::{
-    messaging::{ProtocolMessage, ProtocolMessageSender, ProtocolMessageType},
+    messaging::ProtocolMessageSender,
+    proto::{ProtocolMessage, ProtocolMessageType},
     ABFTValue,
 };
 
@@ -27,18 +28,18 @@ pub type ACSResult<T> = Result<T, ACSError>;
 pub mod buffer;
 
 pub struct ACS<V: ABFTValue> {
-    id: usize,
-    index: usize,
-    n_parties: usize,
+    id: u32,
+    index: u32,
+    n_parties: u32,
     value: V,
 
     // sub-protocols
-    prbcs: RwLock<Option<HashMap<usize, Arc<PRBC<V>>>>>,
+    prbcs: RwLock<Option<HashMap<u32, Arc<PRBC<V>>>>>,
     mvba: RwLock<Option<MVBA<SignatureVector>>>,
 }
 
 impl<V: ABFTValue> ACS<V> {
-    pub fn init(id: usize, index: usize, n_parties: usize, value: V) -> Self {
+    pub fn init(id: u32, index: u32, n_parties: u32, value: V) -> Self {
         Self {
             id,
             index,
@@ -69,7 +70,7 @@ impl<V: ABFTValue> ACS<V> {
 
         self.init_prbc().await;
 
-        let (sig_send, mut sig_recv) = tokio::sync::mpsc::channel(self.n_parties);
+        let (sig_send, mut sig_recv) = tokio::sync::mpsc::channel(self.n_parties as usize);
         {
             let prbc_lock = self.prbcs.read().await;
 
@@ -140,7 +141,7 @@ impl<V: ABFTValue> ACS<V> {
                 (self.n_parties * 2 / 3 + 1)
             );
 
-            if signatures.len() >= (self.n_parties * 2 / 3 + 1) {
+            if signatures.len() >= (self.n_parties * 2 / 3 + 1) as usize {
                 info!(
                     "Party {} has received enough PRBC signatures to continue on to MVBA",
                     self.index
@@ -185,19 +186,17 @@ impl<V: ABFTValue> ACS<V> {
         signer_mvba: &Signer,
         coin: &Coin,
     ) -> ACSResult<()> {
-        info!(
-            "Handling message from {} to {} with message_type {:?}",
-            message.header.send_id, message.header.recv_id, message.message_type
-        );
-
-        match message.message_type {
-            ProtocolMessageType::PRBC(_) => {
+        match message.message_type() {
+            ProtocolMessageType::PrbcDone
+            | ProtocolMessageType::RbcEcho
+            | ProtocolMessageType::RbcValue
+            | ProtocolMessageType::RbcReady => {
                 // pass to correct PRBC instance
 
                 let prbcs = self.prbcs.read().await;
 
                 if let Some(prbcs) = &*prbcs {
-                    if let Some(prbc) = prbcs.get(&message.header.prbc_index) {
+                    if let Some(prbc) = prbcs.get(&message.header.as_ref().unwrap().prbc_index) {
                         match prbc
                             .handle_protocol_message(message, send_handle, signer_prbc)
                             .await
@@ -215,7 +214,13 @@ impl<V: ABFTValue> ACS<V> {
                     return Err(ACSError::NotReadyForPRBCMessage(message));
                 }
             }
-            ProtocolMessageType::MVBA(_) => {
+            ProtocolMessageType::MvbaDone
+            | ProtocolMessageType::MvbaSkipShare
+            | ProtocolMessageType::MvbaSkip
+            | ProtocolMessageType::PbSend
+            | ProtocolMessageType::PbShareAck
+            | ProtocolMessageType::ElectCoinShare
+            | ProtocolMessageType::ViewChange => {
                 // pass to MVBA instance
                 let mvba = self.mvba.read().await;
 
@@ -234,7 +239,7 @@ impl<V: ABFTValue> ACS<V> {
                     return Err(ACSError::NotReadyForMVBAMessage(message));
                 }
             }
-            ProtocolMessageType::ABFTDecryptionShare | ProtocolMessageType::Default => {
+            ProtocolMessageType::AbftDecryptionShare | ProtocolMessageType::Default => {
 
                 // ignore
             }
@@ -245,7 +250,7 @@ impl<V: ABFTValue> ACS<V> {
 
     async fn to_signature_vector(
         &self,
-        signatures: &BTreeMap<usize, PRBCSignature<V>>,
+        signatures: &BTreeMap<u32, PRBCSignature<V>>,
     ) -> SignatureVector {
         let inner = signatures
             .iter()
@@ -258,10 +263,10 @@ impl<V: ABFTValue> ACS<V> {
     async fn retrieve_values(
         &self,
         vector: SignatureVector,
-        signatures: BTreeMap<usize, PRBCSignature<V>>,
-        mut sig_recv: Receiver<(usize, PRBCSignature<V>)>,
+        signatures: BTreeMap<u32, PRBCSignature<V>>,
+        mut sig_recv: Receiver<(u32, PRBCSignature<V>)>,
     ) -> ValueVector<V> {
-        let mut result: BTreeMap<usize, V> = BTreeMap::new();
+        let mut result: BTreeMap<u32, V> = BTreeMap::new();
 
         // Add all values we currently have
         {
@@ -337,10 +342,10 @@ pub enum ACSError {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct SignatureVector {
-    pub inner: BTreeMap<usize, Signature>,
+    pub inner: BTreeMap<u32, Signature>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ValueVector<V: ABFTValue> {
-    pub(crate) inner: BTreeMap<usize, V>,
+    pub(crate) inner: BTreeMap<u32, V>,
 }

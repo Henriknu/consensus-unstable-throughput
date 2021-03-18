@@ -39,15 +39,15 @@ pub enum PBError {
 
 pub struct PBSender<V: ABFTValue> {
     id: PBID,
-    index: usize,
-    n_parties: usize,
+    index: u32,
+    n_parties: u32,
     notify_shares: Arc<Notify>,
     proposal: PPProposal<V>,
     shares: Mutex<BTreeMap<usize, PBSigShare>>,
 }
 
 impl<V: ABFTValue> PBSender<V> {
-    pub fn init(id: PBID, index: usize, n_parties: usize, proposal: PPProposal<V>) -> Self {
+    pub fn init(id: PBID, index: u32, n_parties: u32, proposal: PPProposal<V>) -> Self {
         Self {
             id,
             index,
@@ -104,7 +104,7 @@ impl<V: ABFTValue> PBSender<V> {
 
     pub async fn on_share_ack_message(
         &self,
-        index: usize,
+        index: u32,
         message: PBShareAckMessage,
         signer: &Signer,
     ) -> PBResult<()> {
@@ -118,11 +118,11 @@ impl<V: ABFTValue> PBSender<V> {
         let mut shares = self.shares.lock().await;
 
         if signer.verify_share(
-            index,
+            index as usize,
             &share.inner,
             &serialize(&response).expect("Could not serialize PB message for ack"),
         ) {
-            shares.insert(index, share);
+            shares.insert(index as usize, share);
         } else {
             warn!(
                 "Party {} got InvalidShareAckSignature from {}, with signer with threshold: {}",
@@ -133,7 +133,7 @@ impl<V: ABFTValue> PBSender<V> {
             return Err(PBError::InvalidShareAckSignature);
         }
 
-        if shares.len() >= (self.n_parties * 2 / 3) + 1 {
+        if shares.len() >= (self.n_parties * 2 / 3 + 1) as usize {
             self.notify_shares.notify_one();
         }
 
@@ -143,14 +143,14 @@ impl<V: ABFTValue> PBSender<V> {
 
 pub struct PBReceiver<V: ABFTValue> {
     pub id: PBID,
-    index: usize,
+    index: u32,
     should_stop: Mutex<bool>,
     proposal: Mutex<Option<PPProposal<V>>>,
     notify_proposal: Arc<Notify>,
 }
 
 impl<V: ABFTValue> PBReceiver<V> {
-    pub fn init(id: PBID, index: usize) -> Self {
+    pub fn init(id: PBID, index: u32) -> Self {
         Self {
             id,
             index,
@@ -178,11 +178,11 @@ impl<V: ABFTValue> PBReceiver<V> {
 
     pub async fn on_value_send_message<F: ProtocolMessageSender>(
         &self,
-        index: usize,
+        index: u32,
         message: PBSendMessage<V>,
         mvba_id: &MVBAID,
-        leader_index: usize,
-        lock: usize,
+        leader_index: u32,
+        lock: u32,
         signer: &Signer,
         send_handle: &F,
     ) -> PBResult<()> {
@@ -231,8 +231,8 @@ impl<V: ABFTValue> PBReceiver<V> {
         proposal: &PPProposal<V>,
         message_id: PBID,
         mvba_id: &MVBAID,
-        leader_index: usize,
-        lock: usize,
+        leader_index: u32,
+        lock: u32,
         signer: &Signer,
     ) -> PBResult<bool> {
         let step = message_id.step;
@@ -273,8 +273,8 @@ impl<V: ABFTValue> PBReceiver<V> {
         value: &V,
         key: &PBKey,
         id: &MVBAID,
-        leader_index: usize,
-        lock: usize,
+        leader_index: u32,
+        lock: u32,
         signer: &Signer,
     ) -> PBResult<bool> {
         // Check that value is valid high-level application
@@ -359,6 +359,6 @@ pub struct PBProof {
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct PBKey {
-    pub(crate) view: usize,
+    pub(crate) view: u32,
     pub(crate) view_key_proof: Option<PBSig>,
 }

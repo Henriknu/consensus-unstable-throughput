@@ -1,9 +1,19 @@
 use abft::{
-    messaging::{ProtocolMessage, ProtocolMessageSender, ToProtocolMessage},
-    protocols::prbc::{
-        buffer::{PRBCBuffer, PRBCBufferCommand, PRBCReceiver},
-        PRBCError, PRBCResult, PRBC,
+    buffer::{ABFTBuffer, ABFTBufferCommand, ABFTReceiver},
+    messaging::{ProtocolMessageSender, ToProtocolMessage},
+    proto::ProtocolMessage,
+    protocols::{
+        acs::{
+            buffer::{ACSBuffer, ACSBufferCommand},
+            ACSError, ACS,
+        },
+        mvba::buffer::{MVBABufferCommand, MVBAReceiver},
+        prbc::{
+            buffer::{PRBCBuffer, PRBCBufferCommand, PRBCReceiver},
+            PRBCError, PRBCResult, PRBC,
+        },
     },
+    ABFTError, ABFT,
 };
 
 use abft::Value;
@@ -25,18 +35,18 @@ const THRESHOLD: usize = 10;
 const BUFFER_CAPACITY: usize = THRESHOLD * 30;
 
 struct ChannelSender {
-    senders: HashMap<usize, Sender<ProtocolMessage>>,
+    senders: HashMap<u32, Sender<ProtocolMessage>>,
 }
 
 #[async_trait]
 impl ProtocolMessageSender for ChannelSender {
     async fn send<M: ToProtocolMessage + Send + Sync>(
         &self,
-        id: usize,
-        send_id: usize,
-        recv_id: usize,
-        view: usize,
-        prbc_index: usize,
+        id: u32,
+        send_id: u32,
+        recv_id: u32,
+        view: u32,
+        prbc_index: u32,
         message: M,
     ) {
         if !self.senders.contains_key(&recv_id) {
@@ -54,11 +64,11 @@ impl ProtocolMessageSender for ChannelSender {
 
     async fn broadcast<M: ToProtocolMessage + Send + Sync>(
         &self,
-        id: usize,
-        send_id: usize,
-        n_parties: usize,
-        view: usize,
-        prbc_index: usize,
+        id: u32,
+        send_id: u32,
+        n_parties: u32,
+        view: u32,
+        prbc_index: u32,
         message: M,
     ) {
         let message = message.to_protocol_message(id, send_id, 0, view, prbc_index);
@@ -68,7 +78,9 @@ impl ProtocolMessageSender for ChannelSender {
                 continue;
             }
             let mut inner = message.clone();
-            inner.header.recv_id = i;
+            let mut header = inner.header.take().unwrap();
+            header.recv_id = i;
+            inner.header.replace(header);
             let sender = &self.senders[&i];
             if let Err(e) = sender.send(inner).await {
                 error!("Got error when sending message: {}", e);
@@ -83,12 +95,12 @@ struct PRBCBufferManager {
 
 #[async_trait]
 impl PRBCReceiver for PRBCBufferManager {
-    async fn drain_rbc(&self, _send_id: usize) -> PRBCResult<()> {
+    async fn drain_rbc(&self, _send_id: u32) -> PRBCResult<()> {
         self.sender.send(PRBCBufferCommand::RBC).await?;
         Ok(())
     }
 
-    async fn drain_prbc_done(&self, _send_id: usize) -> PRBCResult<()> {
+    async fn drain_prbc_done(&self, _send_id: u32) -> PRBCResult<()> {
         self.sender.send(PRBCBufferCommand::PRBC).await?;
         Ok(())
     }
@@ -113,12 +125,12 @@ async fn prbc_correctness() {
 
     for i in 0..N_PARTIES {
         let mut recv = channels[i].1.take().unwrap();
-        let senders: HashMap<usize, Sender<_>> = channels
+        let senders: HashMap<u32, Sender<_>> = channels
             .iter()
             .enumerate()
             .filter_map(|(j, channel)| {
                 if i != j {
-                    Some((j, channel.0.clone()))
+                    Some((j as u32, channel.0.clone()))
                 } else {
                     None
                 }
@@ -137,7 +149,7 @@ async fn prbc_correctness() {
             value = None;
         }
 
-        let prbc = Arc::new(PRBC::init(0, i, N_PARTIES, 0));
+        let prbc = Arc::new(PRBC::init(0, i as u32, N_PARTIES as u32, 0));
 
         // Setup buffer manager
 
