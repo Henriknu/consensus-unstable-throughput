@@ -1,7 +1,7 @@
 use bincode::deserialize;
 use clap::{App, Arg};
 use consensus_core::crypto::KeySet;
-use log::{error, info};
+use log::{error, info, warn};
 
 use std::{collections::HashMap, time::Duration};
 use tonic::{transport::Channel, Request, Response};
@@ -101,6 +101,8 @@ async fn main() {
             error!("Party {} got error when invoking abft: {}", args.index, e);
         }
     }
+
+    tokio::time::sleep(Duration::from_secs(5)).await;
 }
 
 fn spawn_client_managers(own_index: u32, n_parties: u32) -> ChannelSender {
@@ -146,7 +148,7 @@ fn spawn_client_managers(own_index: u32, n_parties: u32) -> ChannelSender {
                     match client.protocol_exchange(message).await {
                         Ok(_) => {}
                         Err(e) => {
-                            error!("Got error when sending message: {}", e);
+                            warn!("Got non-ok status code when sending message: {}", e);
                         }
                     }
                 }
