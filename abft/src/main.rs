@@ -3,8 +3,8 @@ use clap::{App, Arg};
 use consensus_core::crypto::KeySet;
 use log::{error, info};
 
-use std::collections::HashMap;
-use tonic::{Request, Response};
+use std::{collections::HashMap, time::Duration};
+use tonic::{transport::Channel, Request, Response};
 
 use abft::{
     buffer::{ABFTBuffer, ABFTBufferCommand},
@@ -26,22 +26,18 @@ use tokio::sync::mpsc::{self, Receiver, Sender};
 
 #[tokio::main]
 async fn main() {
-    let id = 0;
-    let own_index = 0;
-    let n_parties = 2;
-
     let args = Arc::new(parse_args());
 
     init_logger();
 
     // client managers
 
-    let client_manager_sender = Arc::new(spawn_client_managers(0, 2));
+    let client_manager_sender = Arc::new(spawn_client_managers(args.index, args.n_parties));
 
     // Buffer manager
 
     let (buff_cmd_send, buff_cmd_recv) =
-        mpsc::channel::<ABFTBufferCommand>(n_parties * n_parties * 50 + 100);
+        mpsc::channel::<ABFTBufferCommand>((args.n_parties * args.n_parties * 50 + 100) as usize);
 
     let buffer_handle = Arc::new(ABFTBufferManager {
         sender: buff_cmd_send.clone(),
@@ -50,9 +46,9 @@ async fn main() {
     // ABFT protocol instance
 
     let protocol = init_protocol(
-        id,
-        own_index,
-        n_parties as u32,
+        args.id,
+        args.index,
+        args.n_parties,
         client_manager_sender,
         buffer_handle,
     );
@@ -61,7 +57,7 @@ async fn main() {
 
     let buffer_protocol = protocol.clone();
 
-    spawn_buffer_manager(buffer_protocol, buff_cmd_recv, own_index);
+    spawn_buffer_manager(buffer_protocol, buff_cmd_recv, args.index);
 
     // server
 
@@ -73,7 +69,7 @@ async fn main() {
 
     tokio::spawn(async move {
         let service = ABFTService {
-            index: own_index,
+            index: server_args.index,
             protocol: server_protocol,
             buff_send: server_buff_send,
         };
@@ -82,7 +78,7 @@ async fn main() {
 
         match tonic::transport::Server::builder()
             .add_service(server)
-            .serve(server_args.server.parse().unwrap())
+            .serve(server_args.server_endpoint.parse().unwrap())
             .await
         {
             Ok(_) => {}
@@ -92,15 +88,17 @@ async fn main() {
         }
     });
 
-    match protocol.invoke(Value::new(own_index * 1000)).await {
+    info!("Invoking ABFT");
+
+    match protocol.invoke(Value::new(args.index * 1000)).await {
         Ok(value) => {
             println!(
                 "Party {} terminated ABFT with value: {:?}",
-                own_index, value
+                args.index, value
             );
         }
         Err(e) => {
-            error!("Party {} got error when invoking abft: {}", own_index, e);
+            error!("Party {} got error when invoking abft: {}", args.index, e);
         }
     }
 }
@@ -119,11 +117,30 @@ fn spawn_client_managers(own_index: u32, n_parties: u32) -> ChannelSender {
             let mut recv = channels[i].1.take().unwrap();
 
             tokio::spawn(async move {
-                // client
+                // Attempt to establish a channel, sleeping a couple of seconds until we succesfully are able to connect.
+                let channel: Channel;
+                loop {
+                    match Channel::builder(format!("http://[::1]:5000{}", &i).parse().unwrap())
+                        .timeout(Duration::from_secs(5))
+                        .connect()
+                        .await
+                    {
+                        Ok(c) => {
+                            info!("Party {} connected with Party {}", own_index, i);
+                            channel = c;
+                            break;
+                        }
+                        Err(e) => {
+                            info!(
+                                "Party {} could not connect with Party {}, with error: {}",
+                                own_index, i, e
+                            );
+                            tokio::time::sleep(Duration::from_secs(5)).await;
+                        }
+                    }
+                }
 
-                let mut client = AbftClient::connect(format!("http://[::1]:1000{}", &i))
-                    .await
-                    .unwrap();
+                let mut client = AbftClient::new(channel);
 
                 while let Some(message) = recv.recv().await {
                     match client.protocol_exchange(message).await {
@@ -210,22 +227,67 @@ fn parse_args() -> ABFTCliArgs {
         .version("1.0")
         .about("Asynchronous BFT consensus")
         .arg(
-            Arg::with_name("server")
-                .short("S")
-                .long("server")
-                .value_name("PORT")
+            Arg::with_name("Protocol ID")
+                .long("id")
+                .value_name("INTEGER")
+                .help("Unique id for protocol instance")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("Party Index")
+                .short("i")
+                .value_name("INTEGER")
+                .help("Integer index of server in party configuration")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("Number of parties")
+                .short("n")
+                .value_name("INTEGER")
+                .help("Number of unique parties in configuration")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("connection")
+                .short("C")
+                .value_name("PATH")
                 .help("Endpoint to listen at for server")
                 .takes_value(true),
         )
         .get_matches();
 
-    // Gets a value for config if supplied by user, or defaults to "default.conf"
-    let server = String::from(matches.value_of("server").unwrap_or("[::1]:10000"));
-    println!("Server endpoint: {}", server);
+    let id = matches
+        .value_of("Protocol ID")
+        .unwrap()
+        .parse::<u32>()
+        .unwrap();
+
+    let index = matches
+        .value_of("Party Index")
+        .unwrap()
+        .parse::<u32>()
+        .unwrap();
+
+    let n_parties = matches
+        .value_of("Number of parties")
+        .unwrap()
+        .parse::<u32>()
+        .unwrap();
+
+    let server_endpoint = String::from(
+        matches
+            .value_of("connection")
+            .unwrap_or(format!("[::1]:5000{}", index).as_str()),
+    );
 
     // more program logic goes here...
 
-    ABFTCliArgs { server }
+    ABFTCliArgs {
+        id,
+        index,
+        n_parties,
+        server_endpoint,
+    }
 }
 
 fn init_protocol(
@@ -265,7 +327,10 @@ fn init_logger() {
 
 #[derive(Debug, Clone, Default)]
 pub struct ABFTCliArgs {
-    server: String,
+    id: u32,
+    index: u32,
+    n_parties: u32,
+    server_endpoint: String,
 }
 
 pub struct ABFTService {

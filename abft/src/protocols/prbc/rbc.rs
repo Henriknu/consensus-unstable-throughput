@@ -255,9 +255,8 @@ impl RBC {
         let mut fragments = fragments.into_iter();
 
         info!(
-            "Party {} broadcasts value: {:?} in PRBC with root: {}",
+            "Party {} broadcasts in PRBC with root: {}",
             self.index,
-            value,
             merkle.root()
         );
 
