@@ -100,7 +100,7 @@ async fn acs_correctness() {
         // Setup buffer manager
 
         let mut buffer = ABFTBuffer::new();
-        let buffer_acs = abft.clone();
+        let buffer_abft = abft.clone();
 
         let _ = tokio::spawn(async move {
             while let Some(command) = buff_cmd_recv.recv().await {
@@ -109,7 +109,7 @@ async fn acs_correctness() {
                 info!("Buffer {} retrieved {} messages", i, messages.len());
 
                 for message in messages {
-                    match buffer_acs.handle_protocol_message(message).await {
+                    match buffer_abft.handle_protocol_message(message).await {
                         Ok(_) => {}
                         Err(ABFTError::NotReadyForPRBCMessage(early_message)) => {
                             let index = early_message.prbc_index;

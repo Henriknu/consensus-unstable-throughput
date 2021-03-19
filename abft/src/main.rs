@@ -1,51 +1,82 @@
-use async_stream::try_stream;
-use clap::{App, Arg, SubCommand};
-use futures_core::Stream;
-use futures_util::{stream, StreamExt};
+use bincode::deserialize;
+use clap::{App, Arg};
+use consensus_core::crypto::KeySet;
 use log::{error, info};
 
-use std::{collections::HashMap, pin::Pin};
+use std::collections::HashMap;
 use tonic::{Request, Response};
 
 use abft::{
-    buffer::{ABFTBuffer, ABFTBufferCommand, ABFTReceiver},
+    buffer::{ABFTBuffer, ABFTBufferCommand},
     proto::{
         abft_client::AbftClient,
         abft_server::{Abft, AbftServer},
+        ProtocolMessage, ProtocolResponse,
     },
     protocols::{
-        acs::{
-            buffer::{ACSBuffer, ACSBufferCommand},
-            ACSError, ACS,
-        },
-        mvba::buffer::{MVBABufferCommand, MVBAReceiver},
-        prbc::{
-            buffer::{PRBCBuffer, PRBCBufferCommand, PRBCReceiver},
-            PRBCError, PRBCResult, PRBC,
-        },
+        acs::buffer::ACSBufferCommand, mvba::buffer::MVBABufferCommand,
+        prbc::buffer::PRBCBufferCommand,
     },
+    test_helpers::{ABFTBufferManager, ChannelSender},
     ABFTError, Value, ABFT,
 };
 
-use async_trait::async_trait;
-use bincode::deserialize;
 use std::sync::Arc;
-use tokio::sync::mpsc::{self, Sender};
+use tokio::sync::mpsc::{self, Receiver, Sender};
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() {
+    let id = 0;
+    let own_index = 0;
+    let n_parties = 2;
+
     let args = Arc::new(parse_args());
 
     init_logger();
+
+    // client managers
+
+    let client_manager_sender = Arc::new(spawn_client_managers(0, 2));
+
+    // Buffer manager
+
+    let (buff_cmd_send, buff_cmd_recv) =
+        mpsc::channel::<ABFTBufferCommand>(n_parties * n_parties * 50 + 100);
+
+    let buffer_handle = Arc::new(ABFTBufferManager {
+        sender: buff_cmd_send.clone(),
+    });
+
+    // ABFT protocol instance
+
+    let protocol = init_protocol(
+        id,
+        own_index,
+        n_parties as u32,
+        client_manager_sender,
+        buffer_handle,
+    );
+
+    // Buffer
+
+    let buffer_protocol = protocol.clone();
+
+    spawn_buffer_manager(buffer_protocol, buff_cmd_recv, own_index);
 
     // server
 
     let server_args = args.clone();
 
-    /*
+    let server_protocol = protocol.clone();
 
-    let server_handle = tokio::spawn(async move {
-        let service = ABFTService {};
+    let server_buff_send = buff_cmd_send.clone();
+
+    tokio::spawn(async move {
+        let service = ABFTService {
+            index: own_index,
+            protocol: server_protocol,
+            buff_send: server_buff_send,
+        };
 
         let server = AbftServer::new(service);
 
@@ -61,26 +92,123 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    server_handle.await?;
+    match protocol.invoke(Value::new(own_index * 1000)).await {
+        Ok(value) => {
+            println!(
+                "Party {} terminated ABFT with value: {:?}",
+                own_index, value
+            );
+        }
+        Err(e) => {
+            error!("Party {} got error when invoking abft: {}", own_index, e);
+        }
+    }
+}
 
+fn spawn_client_managers(own_index: u32, n_parties: u32) -> ChannelSender {
+    let mut channels: Vec<_> = (0..n_parties)
+        .map(|_| {
+            let (tx, rx) =
+                mpsc::channel::<ProtocolMessage>((n_parties * n_parties * 50 + 100) as usize);
+            (tx, Some(rx))
+        })
+        .collect();
 
-    */
+    for i in 0..(n_parties as usize) {
+        if i != own_index as usize {
+            let mut recv = channels[i].1.take().unwrap();
 
-    Ok(())
+            tokio::spawn(async move {
+                // client
+
+                let mut client = AbftClient::connect(format!("http://[::1]:1000{}", &i))
+                    .await
+                    .unwrap();
+
+                while let Some(message) = recv.recv().await {
+                    match client.protocol_exchange(message).await {
+                        Ok(_) => {}
+                        Err(e) => {
+                            error!("Got error when sending message: {}", e);
+                        }
+                    }
+                }
+            });
+        }
+    }
+
+    let senders: HashMap<u32, Sender<_>> = channels
+        .into_iter()
+        .enumerate()
+        .filter_map(|(j, channel)| {
+            if (own_index as usize) != j {
+                Some((j as u32, channel.0))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    ChannelSender { senders }
+}
+
+fn spawn_buffer_manager(
+    protocol: Arc<ABFT<ChannelSender, ABFTBufferManager, Value>>,
+    mut buff_cmd_recv: Receiver<ABFTBufferCommand>,
+    own_index: u32,
+) {
+    let mut buffer = ABFTBuffer::new();
+
+    tokio::spawn(async move {
+        while let Some(command) = buff_cmd_recv.recv().await {
+            let messages = buffer.execute(command);
+
+            info!("Buffer {} retrieved {} messages", own_index, messages.len());
+
+            for message in messages {
+                match protocol.handle_protocol_message(message).await {
+                    Ok(_) => {}
+                    Err(ABFTError::NotReadyForPRBCMessage(early_message)) => {
+                        let index = early_message.prbc_index;
+                        buffer.execute(ABFTBufferCommand::ACS {
+                            inner: ACSBufferCommand::PRBC {
+                                inner: PRBCBufferCommand::Store {
+                                    message: early_message,
+                                },
+                                send_id: index,
+                            },
+                        });
+                    }
+                    Err(ABFTError::NotReadyForMVBAMessage(early_message)) => {
+                        buffer.execute(ABFTBufferCommand::ACS {
+                            inner: ACSBufferCommand::MVBA {
+                                inner: MVBABufferCommand::Store {
+                                    message: early_message,
+                                },
+                            },
+                        });
+                    }
+
+                    Err(ABFTError::NotReadyForABFTDecryptionShareMessage(early_message)) => {
+                        buffer.execute(ABFTBufferCommand::Store {
+                            message: early_message,
+                        });
+                    }
+
+                    Err(e) => error!(
+                        "Party {} got error when handling protocol message: {}",
+                        own_index, e
+                    ),
+                }
+            }
+        }
+    });
 }
 
 fn parse_args() -> ABFTCliArgs {
     let matches = App::new("ABFT")
         .version("1.0")
         .about("Asynchronous BFT consensus")
-        .arg(
-            Arg::with_name("client")
-                .short("C")
-                .long("client")
-                .value_name("PORT")
-                .help("Endpoint to listen at for client")
-                .takes_value(true),
-        )
         .arg(
             Arg::with_name("server")
                 .short("S")
@@ -92,16 +220,38 @@ fn parse_args() -> ABFTCliArgs {
         .get_matches();
 
     // Gets a value for config if supplied by user, or defaults to "default.conf"
-    let client = String::from(matches.value_of("client").unwrap_or("http://[::1]:10000"));
-    println!("Client endpoint: {}", client);
-
-    // Gets a value for config if supplied by user, or defaults to "default.conf"
     let server = String::from(matches.value_of("server").unwrap_or("[::1]:10000"));
     println!("Server endpoint: {}", server);
 
     // more program logic goes here...
 
-    ABFTCliArgs { client, server }
+    ABFTCliArgs { server }
+}
+
+fn init_protocol(
+    id: u32,
+    index: u32,
+    n_parties: u32,
+    send_handle: Arc<ChannelSender>,
+    recv_handle: Arc<ABFTBufferManager>,
+) -> Arc<ABFT<ChannelSender, ABFTBufferManager, Value>> {
+    let bytes = std::fs::read(format!("abft/crypto/key_material{}", index)).unwrap();
+
+    let keyset: KeySet = deserialize(&bytes).unwrap();
+
+    let abft = Arc::new(ABFT::init(
+        id,
+        index,
+        n_parties,
+        send_handle,
+        recv_handle,
+        Arc::new(keyset.signer_prbc),
+        keyset.signer_mvba,
+        keyset.coin.into(),
+        keyset.encrypter.into(),
+    ));
+
+    abft
 }
 
 fn init_logger() {
@@ -115,28 +265,27 @@ fn init_logger() {
 
 #[derive(Debug, Clone, Default)]
 pub struct ABFTCliArgs {
-    client: String,
     server: String,
 }
 
-/*
 pub struct ABFTService {
-    protocol: Arc<ABFT<RPCSender, ABFTBufferManager, Value>>,
+    index: u32,
+    protocol: Arc<ABFT<ChannelSender, ABFTBufferManager, Value>>,
     buff_send: Sender<ABFTBufferCommand>,
 }
 
 #[tonic::async_trait]
 impl Abft for ABFTService {
-    async fn send(
+    async fn protocol_exchange(
         &self,
-        request: tonic::Request<rpc::ProtocolMessage>,
-    ) -> Result<tonic::Response<rpc::ProtocolResponse>, tonic::Status> {
-        let message = request.into_inner().into();
+        request: Request<abft::proto::ProtocolMessage>,
+    ) -> Result<Response<abft::proto::ProtocolResponse>, tonic::Status> {
+        let message = request.into_inner();
 
         match self.protocol.handle_protocol_message(message).await {
             Ok(_) => {}
             Err(ABFTError::NotReadyForPRBCMessage(early_message)) => {
-                let index = early_message.header.prbc_index;
+                let index = early_message.prbc_index;
                 self.buff_send
                     .send(ABFTBufferCommand::ACS {
                         inner: ACSBufferCommand::PRBC {
@@ -173,170 +322,10 @@ impl Abft for ABFTService {
 
             Err(e) => error!(
                 "Party {} got error when handling protocol message: {}",
-                self.protocol.index(),
-                e
+                self.index, e
             ),
         }
 
-        Ok(Response::new(rpc::ProtocolResponse::default()))
+        Ok(Response::new(ProtocolResponse {}))
     }
 }
-
-pub struct RPCSender {
-    clients: HashMap<usize, AbftClient<tonic::transport::Channel>>,
-}
-
-#[async_trait]
-impl ProtocolMessageSender for RPCSender {
-    async fn send<M: ToProtocolMessage + Send + Sync>(
-        &self,
-        id: usize,
-        send_id: usize,
-        recv_id: usize,
-        view: usize,
-        prbc_index: usize,
-        message: M,
-    ) {
-        if !self.clients.contains_key(&recv_id) {
-            return;
-        }
-
-        let client = &self.clients[&recv_id];
-        if let Err(e) = client
-            .send(message.to_protocol_message(id, send_id, recv_id, view, prbc_index))
-            .await
-        {
-            error!("Got error when sending message: {}", e);
-        }
-    }
-
-    async fn broadcast<M: ToProtocolMessage + Send + Sync>(
-        &self,
-        id: usize,
-        send_id: usize,
-        n_parties: usize,
-        view: usize,
-        prbc_index: usize,
-        message: M,
-    ) {
-        let message = message.to_protocol_message(id, send_id, 0, view, prbc_index);
-
-        for i in (0..n_parties) {
-            if !self.clients.contains_key(&i) {
-                continue;
-            }
-            let mut inner = message.clone();
-            inner.header.recv_id = i;
-            let sender = &self.clients[&i];
-            if let Err(e) = sender.send(inner).await {
-                error!("Got error when sending message: {}", e);
-            }
-        }
-    }
-}
-
-struct ABFTBufferManager {
-    sender: Sender<ABFTBufferCommand>,
-}
-
-#[async_trait]
-impl PRBCReceiver for ABFTBufferManager {
-    async fn drain_rbc(&self, send_id: usize) -> PRBCResult<()> {
-        if let Err(e) = self
-            .sender
-            .send(ABFTBufferCommand::ACS {
-                inner: ACSBufferCommand::PRBC {
-                    send_id,
-                    inner: PRBCBufferCommand::RBC,
-                },
-            })
-            .await
-        {
-            error!("Got error when draining buffer: {}", e);
-        }
-        Ok(())
-    }
-
-    async fn drain_prbc_done(&self, send_id: usize) -> PRBCResult<()> {
-        if let Err(e) = self
-            .sender
-            .send(ABFTBufferCommand::ACS {
-                inner: ACSBufferCommand::PRBC {
-                    send_id,
-                    inner: PRBCBufferCommand::PRBC,
-                },
-            })
-            .await
-        {
-            error!("Got error when draining buffer: {}", e);
-        }
-        Ok(())
-    }
-}
-
-#[async_trait]
-impl MVBAReceiver for ABFTBufferManager {
-    async fn drain_pp_receive(
-        &self,
-        view: usize,
-        send_id: usize,
-    ) -> abft::protocols::mvba::proposal_promotion::PPResult<()> {
-        if let Err(e) = self
-            .sender
-            .send(ABFTBufferCommand::ACS {
-                inner: ACSBufferCommand::MVBA {
-                    inner: MVBABufferCommand::PPReceive { view, send_id },
-                },
-            })
-            .await
-        {
-            error!("Got error when draining buffer: {}", e);
-        }
-
-        Ok(())
-    }
-
-    async fn drain_elect(&self, view: usize) -> abft::protocols::mvba::error::MVBAResult<()> {
-        if let Err(e) = self
-            .sender
-            .send(ABFTBufferCommand::ACS {
-                inner: ACSBufferCommand::MVBA {
-                    inner: MVBABufferCommand::ElectCoinShare { view },
-                },
-            })
-            .await
-        {
-            error!("Got error when draining buffer: {}", e);
-        }
-
-        Ok(())
-    }
-
-    async fn drain_view_change(&self, view: usize) -> abft::protocols::mvba::error::MVBAResult<()> {
-        if let Err(e) = self
-            .sender
-            .send(ABFTBufferCommand::ACS {
-                inner: ACSBufferCommand::MVBA {
-                    inner: MVBABufferCommand::ViewChange { view },
-                },
-            })
-            .await
-        {
-            error!("Got error when draining buffer: {}", e);
-        }
-
-        Ok(())
-    }
-}
-
-#[async_trait]
-impl ABFTReceiver for ABFTBufferManager {
-    async fn drain_decryption_shares(&self) -> abft::ABFTResult<()> {
-        self.sender
-            .send(ABFTBufferCommand::ABFTDecryptionShare)
-            .await?;
-
-        Ok(())
-    }
-}
- */

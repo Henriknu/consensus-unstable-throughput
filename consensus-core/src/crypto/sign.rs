@@ -6,14 +6,16 @@ use std::collections::BTreeMap;
 
 use rand_core::OsRng;
 
+use serde::{Deserialize, Serialize};
+
 pub use threshold_crypto::{Signature, SignatureShare};
 
 pub use threshold_crypto::error::Error;
-use threshold_crypto::{PublicKeySet, SecretKeySet, SecretKeyShare};
+use threshold_crypto::{serde_impl::SerdeSecret, PublicKeySet, SecretKeySet, SecretKeyShare};
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Signer {
-    secret: SecretKeyShare,
+    secret: SerdeSecret<SecretKeyShare>,
     publics: PublicKeySet,
     threshold: usize,
 }
@@ -25,7 +27,9 @@ impl Signer {
 
         (0..n_parties)
             .map(|i| Signer {
-                secret: sk_set.secret_key_share(i),
+                secret: SerdeSecret {
+                    0: sk_set.secret_key_share(i),
+                },
                 publics: pk_set.clone(),
                 threshold,
             })

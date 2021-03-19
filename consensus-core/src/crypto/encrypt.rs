@@ -255,6 +255,96 @@ impl Encrypter {
     }
 }
 
+#[derive(Serialize, Deserialize)]
+pub struct EncodedEncrypter {
+    index: usize,
+    g: Vec<u8>,
+    g1: Vec<u8>,
+    h: Vec<u8>,
+    elements: Vec<Vec<u8>>,
+    secret_scalar: Vec<u8>,
+}
+
+impl From<Encrypter> for EncodedEncrypter {
+    fn from(encrypter: Encrypter) -> Self {
+        let Encrypter {
+            index,
+            public: PublicK { g, g1, h },
+            verify: VerifyK { elements },
+            secret: SecretK { secret_scalar },
+        } = encrypter;
+
+        let g = EncodedPoint::from(g).as_bytes().to_vec();
+        let g1 = EncodedPoint::from(g1).as_bytes().to_vec();
+        let h = EncodedPoint::from(h).as_bytes().to_vec();
+        let elements = elements
+            .into_iter()
+            .map(|ele| EncodedPoint::from(ele).as_bytes().to_vec())
+            .collect();
+        let secret_scalar = secret_scalar.to_bytes().as_slice().to_vec();
+
+        Self {
+            index,
+            g,
+            g1,
+            h,
+            elements,
+            secret_scalar,
+        }
+    }
+}
+
+impl From<EncodedEncrypter> for Encrypter {
+    fn from(encoded: EncodedEncrypter) -> Self {
+        let EncodedEncrypter {
+            index,
+            g,
+            g1,
+            h,
+            elements,
+            secret_scalar,
+        } = encoded;
+
+        let g = AffinePoint::from_encoded_point(
+            &EncodedPoint::from_bytes(g)
+                .expect("Could not deserialize Sec1 encoded string to encoded point"),
+        )
+        .expect("Could not decode encoded point as affine point");
+
+        let g1 = AffinePoint::from_encoded_point(
+            &EncodedPoint::from_bytes(g1)
+                .expect("Could not deserialize Sec1 encoded string to encoded point"),
+        )
+        .expect("Could not decode encoded point as affine point");
+
+        let h = AffinePoint::from_encoded_point(
+            &EncodedPoint::from_bytes(h)
+                .expect("Could not deserialize Sec1 encoded string to encoded point"),
+        )
+        .expect("Could not decode encoded point as affine point");
+
+        let elements = elements
+            .into_iter()
+            .map(|ele| {
+                AffinePoint::from_encoded_point(
+                    &EncodedPoint::from_bytes(ele)
+                        .expect("Could not deserialize Sec1 encoded string to encoded point"),
+                )
+                .expect("Could not decode encoded point as affine point")
+            })
+            .collect();
+
+        let secret_scalar = Scalar::from_bytes_reduced(FieldBytes::from_slice(&secret_scalar));
+
+        Self {
+            index,
+            public: PublicK { g, g1, h },
+            verify: VerifyK { elements },
+            secret: SecretK { secret_scalar },
+        }
+    }
+}
+
 #[derive(Default, Debug, Clone, PartialEq)]
 pub struct Ciphertext {
     c: Vec<u8>,
