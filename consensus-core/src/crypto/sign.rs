@@ -1,10 +1,8 @@
 use std::collections::HashMap;
 
-use rand::rngs::ThreadRng;
+use rand::{rngs::StdRng, SeedableRng};
 
 use std::collections::BTreeMap;
-
-use rand_core::OsRng;
 
 use serde::{Deserialize, Serialize};
 
@@ -22,7 +20,8 @@ pub struct Signer {
 
 impl Signer {
     pub fn generate_signers(n_parties: usize, threshold: usize) -> Vec<Signer> {
-        let sk_set = SecretKeySet::random(threshold, &mut OsRng);
+        let mut rng = StdRng::from_entropy();
+        let sk_set = SecretKeySet::random(threshold, &mut rng);
         let pk_set = sk_set.public_keys();
 
         (0..n_parties)
@@ -67,7 +66,7 @@ mod tests {
 
     #[test]
     fn test_threshold_sig() {
-        let mut rng = OsRng;
+        let mut rng = StdRng::from_entropy();
         let sk_set = SecretKeySet::random(3, &mut rng);
         let pk_set = sk_set.public_keys();
         let pk_master = pk_set.public_key();

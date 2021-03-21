@@ -1,7 +1,7 @@
 use aes_gcm::aead::{generic_array::GenericArray, Aead, NewAead};
 use aes_gcm::Aes256Gcm;
 use aes_gcm::Error;
-use rand::{rngs::StdRng, FromEntropy, Rng, SeedableRng};
+use rand::{rngs::StdRng, Rng, SeedableRng};
 use thiserror::Error;
 
 #[derive(Debug)]

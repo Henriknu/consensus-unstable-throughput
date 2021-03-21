@@ -57,7 +57,7 @@ impl ProtocolMessageSender for ChannelSender {
     ) {
         let message = message.to_protocol_message(id, send_id, 0, view, prbc_index);
 
-        for i in (0..n_parties) {
+        for i in 0..n_parties {
             if !self.senders.contains_key(&i) {
                 continue;
             }

@@ -664,6 +664,7 @@ mod tests {
         );
 
         actors.remove(1);
+        actors.remove(1);
 
         let actor = actors.remove(0);
 

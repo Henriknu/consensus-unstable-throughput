@@ -49,6 +49,7 @@ async fn main() {
         args.id,
         args.index,
         args.n_parties,
+        args.crypto.clone(),
         client_manager_sender,
         buffer_handle,
     );
@@ -250,6 +251,13 @@ fn parse_args() -> ABFTCliArgs {
                 .takes_value(true),
         )
         .arg(
+            Arg::with_name("Crypto")
+                .long("crypto")
+                .value_name("PATH")
+                .help("Custom path to crypto material")
+                .takes_value(true),
+        )
+        .arg(
             Arg::with_name("connection")
                 .short("C")
                 .value_name("PATH")
@@ -276,6 +284,8 @@ fn parse_args() -> ABFTCliArgs {
         .parse::<u32>()
         .unwrap();
 
+    let crypto = String::from(matches.value_of("Crypto").unwrap_or("abft/crypto"));
+
     let server_endpoint = String::from(
         matches
             .value_of("connection")
@@ -283,11 +293,13 @@ fn parse_args() -> ABFTCliArgs {
     );
 
     // more program logic goes here...
+    //
 
     ABFTCliArgs {
         id,
         index,
         n_parties,
+        crypto,
         server_endpoint,
     }
 }
@@ -296,10 +308,11 @@ fn init_protocol(
     id: u32,
     index: u32,
     n_parties: u32,
+    crypto: String,
     send_handle: Arc<ChannelSender>,
     recv_handle: Arc<ABFTBufferManager>,
 ) -> Arc<ABFT<ChannelSender, ABFTBufferManager, Value>> {
-    let bytes = std::fs::read(format!("abft/crypto/key_material{}", index)).unwrap();
+    let bytes = std::fs::read(format!("{}/key_material{}", crypto, index)).unwrap();
 
     let keyset: KeySet = deserialize(&bytes).unwrap();
 
@@ -332,6 +345,7 @@ pub struct ABFTCliArgs {
     id: u32,
     index: u32,
     n_parties: u32,
+    crypto: String,
     server_endpoint: String,
 }
 
