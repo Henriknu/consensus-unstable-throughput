@@ -1,0 +1,118 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: abft-0
+spec:
+  selector:
+    matchLabels:
+      app: abft-0
+  template:
+    metadata:
+      labels:
+        app: abft-0
+    spec:
+      containers:
+      - name: abft
+        image: abft
+        imagePullPolicy: Never
+        resources:
+          limits:
+            memory: "128Mi"
+            cpu: "500m"
+        ports:
+        - containerPort: 50000
+        args:
+        - "--id"
+        - "0"
+        - "-i"
+        - "0"
+        - "-n"
+        - "4"
+        - "--crypto"
+        - "crypto"
+        - "-C"
+        - "$(POD_IP):$(ABFT_0_SERVICE_SERVICE_PORT)"
+        env:
+          - name: POD_IP
+            valueFrom:
+              fieldRef:
+                fieldPath: status.podIP
+          - name: RUST_LOG
+            value: "info"
+
+
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: abft-0-service
+spec:
+  selector:
+    app: abft-0
+  type: LoadBalancer
+  ports:
+  - port: 50000
+    targetPort: 50000
+    nodePort: 30000
+
+
+---
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: abft-1
+spec:
+  selector:
+    matchLabels:
+      app: abft-1
+  template:
+    metadata:
+      labels:
+        app: abft-1
+    spec:
+      containers:
+      - name: abft
+        image: abft
+        imagePullPolicy: Never
+        resources:
+          limits:
+            memory: "128Mi"
+            cpu: "500m"
+        ports:
+        - containerPort: 50000
+        args:
+        - "--id"
+        - "0"
+        - "-i"
+        - "1"
+        - "-n"
+        - "4"
+        - "--crypto"
+        - "crypto"
+        - "-C"
+        - "$(POD_IP):$(ABFT_1_SERVICE_SERVICE_PORT)"
+        env:
+          - name: POD_IP
+            valueFrom:
+              fieldRef:
+                fieldPath: status.podIP
+          - name: RUST_LOG
+            value: "info"
+
+
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: abft-1-service
+spec:
+  selector:
+    app: abft-1
+  type: LoadBalancer
+  ports:
+  - port: 50000
+    targetPort: 50000
+    nodePort: 30001

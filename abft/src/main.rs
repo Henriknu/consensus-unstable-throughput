@@ -3,8 +3,11 @@ use clap::{App, Arg};
 use consensus_core::crypto::KeySet;
 use log::{error, info, warn};
 
-use std::{collections::HashMap, time::Duration};
-use tonic::{transport::Channel, Request, Response};
+use std::{collections::HashMap, net::SocketAddr, time::Duration};
+use tonic::{
+    transport::{Channel, Uri},
+    Request, Response,
+};
 
 use abft::{
     buffer::{ABFTBuffer, ABFTBufferCommand},
@@ -77,9 +80,13 @@ async fn main() {
 
         let server = AbftServer::new(service);
 
+        let addr: SocketAddr = server_args.server_endpoint.parse().unwrap();
+
+        println!("Server Addr: {}", addr);
+
         match tonic::transport::Server::builder()
             .add_service(server)
-            .serve(server_args.server_endpoint.parse().unwrap())
+            .serve(addr)
             .await
         {
             Ok(_) => {}
@@ -122,8 +129,11 @@ fn spawn_client_managers(own_index: u32, n_parties: u32) -> ChannelSender {
             tokio::spawn(async move {
                 // Attempt to establish a channel, sleeping a couple of seconds until we succesfully are able to connect.
                 let channel: Channel;
+
                 loop {
-                    match Channel::builder(format!("http://[::1]:5000{}", &i).parse().unwrap())
+                    let addr = get_client_uri(i);
+
+                    match Channel::builder(addr)
                         .timeout(Duration::from_secs(5))
                         .connect()
                         .await
@@ -338,6 +348,17 @@ fn init_logger() {
     builder.target(Target::Stdout);
 
     builder.init();
+}
+
+/// Check if env is set via K8s. If not, return localhost default.
+fn get_client_uri(index: usize) -> Uri {
+    if let Ok(host) = std::env::var(format!("ABFT_{}_SERVICE_SERVICE_HOST", index)) {
+        if let Ok(port) = std::env::var(format!("ABFT_{}_SERVICE_SERVICE_PORT", index)) {
+            return format!("http://{}:{}", host, port).parse().unwrap();
+        }
+    }
+
+    format!("http://[::1]:5000{}", index).parse().unwrap()
 }
 
 #[derive(Debug, Clone, Default)]

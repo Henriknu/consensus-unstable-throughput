@@ -1,0 +1,62 @@
+{{- range $i := until (.Values.n_parties | int)}}
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: abft-{{$i}}
+spec:
+  selector:
+    matchLabels:
+      app: abft-{{$i}}
+  template:
+    metadata:
+      labels:
+        app: abft-{{$i}}
+    spec:
+      containers:
+      - name: abft
+        image: abft
+        imagePullPolicy: Never
+        resources:
+          limits:
+            memory: "128Mi"
+            cpu: "500m"
+        ports:
+        - containerPort: 50000
+        args:
+        - "--id"
+        - "{{$.Values.id}}"
+        - "-i"
+        - "{{$i}}"
+        - "-n"
+        - "{{$.Values.n_parties}}"
+        - "--crypto"
+        - "crypto"
+        - "-C"
+        - "$(POD_IP):$(ABFT_{{$i}}_SERVICE_SERVICE_PORT)"
+        env:
+          - name: POD_IP
+            valueFrom:
+              fieldRef:
+                fieldPath: status.podIP
+          - name: RUST_LOG
+            value: "info"
+
+
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: abft-{{$i}}-service
+spec:
+  selector:
+    app: abft-{{$i}}
+  type: LoadBalancer
+  ports:
+  - port: 50000
+    targetPort: 50000
+    nodePort: {{ add 30000 $i }}
+
+--- 
+{{- end}}
