@@ -5,6 +5,7 @@ package abft;
 // Interface exported by the server.
 service ABFT {
     rpc protocol_exchange(ProtocolMessage) returns (ProtocolResponse){}
+    rpc finished(FinishedMessage) returns (FinishedResponse){}
 }
 
 message ProtocolMessage {
@@ -20,7 +21,6 @@ message ProtocolMessage {
 }
 
 message ProtocolResponse{}
-
 
 enum ProtocolMessageType{
 
@@ -51,5 +51,11 @@ enum ProtocolMessageType{
 
     //ABFT 
     ABFTDecryptionShare = 12;
-
 }
+
+message FinishedMessage{
+    uint32 protocol_id = 1;
+    uint32 send_id = 2;
+    uint32 recv_id = 3;
+}
+message FinishedResponse{}

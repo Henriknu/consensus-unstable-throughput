@@ -1,9 +1,14 @@
 use bincode::deserialize;
 use clap::{App, Arg};
 use consensus_core::crypto::KeySet;
+use futures::future::join_all;
 use log::{error, info, warn};
 
-use std::{collections::HashMap, net::SocketAddr, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    net::SocketAddr,
+    time::Duration,
+};
 use tonic::{
     transport::{Channel, Uri},
     Request, Response,
@@ -14,7 +19,7 @@ use abft::{
     proto::{
         abft_client::AbftClient,
         abft_server::{Abft, AbftServer},
-        ProtocolMessage, ProtocolResponse,
+        FinishedMessage, FinishedResponse, ProtocolMessage, ProtocolResponse,
     },
     protocols::{
         acs::buffer::ACSBufferCommand, mvba::buffer::MVBABufferCommand,
@@ -46,6 +51,10 @@ async fn main() {
         sender: buff_cmd_send.clone(),
     });
 
+    // Finished manager - handle "finished" messages from peers, know when one can gracefully exit without stalling others.
+
+    let (fin_tx, fin_rx) = mpsc::channel::<u32>(args.n_parties as usize);
+
     // ABFT protocol instance
 
     let protocol = init_protocol(
@@ -71,11 +80,14 @@ async fn main() {
 
     let server_buff_send = buff_cmd_send.clone();
 
+    let server_finished_send = fin_tx.clone();
+
     tokio::spawn(async move {
         let service = ABFTService {
             index: server_args.index,
             protocol: server_protocol,
             buff_send: server_buff_send,
+            finished_send: server_finished_send,
         };
 
         let server = AbftServer::new(service);
@@ -110,7 +122,87 @@ async fn main() {
         }
     }
 
-    tokio::time::sleep(Duration::from_secs(5)).await;
+    send_finished(&*args).await;
+
+    wait_for_finish_and_exit(fin_rx, &*args).await;
+}
+
+async fn send_finished(args: &ABFTCliArgs) {
+    let mut handles = Vec::with_capacity((args.n_parties - 1) as usize);
+    let id = args.id;
+    let index = args.index;
+
+    for i in 0..(args.n_parties as usize) {
+        if i != args.index as usize {
+            handles.push(tokio::spawn(async move {
+                // Attempt to establish a channel, sleeping a couple of seconds until we succesfully are able to connect.
+                let channel: Channel;
+
+                loop {
+                    let addr = get_client_uri(i);
+
+                    match Channel::builder(addr)
+                        .timeout(Duration::from_secs(5))
+                        .connect()
+                        .await
+                    {
+                        Ok(c) => {
+                            info!("Party {} connected with Party {}", index, i);
+                            channel = c;
+                            break;
+                        }
+                        Err(e) => {
+                            info!(
+                                "Party {} could not connect with Party {}, with error: {}",
+                                index, i, e
+                            );
+                            tokio::time::sleep(Duration::from_secs(5)).await;
+                        }
+                    }
+                }
+
+                let mut client = AbftClient::new(channel);
+
+                match client
+                    .finished(FinishedMessage {
+                        protocol_id: id,
+                        send_id: index,
+                        recv_id: i as u32,
+                    })
+                    .await
+                {
+                    Ok(_) => {}
+                    Err(e) => {
+                        warn!(
+                            "Party {} got non-ok status code when sending finish to {}: {}",
+                            index, i, e
+                        );
+                    }
+                }
+            }));
+        }
+    }
+
+    join_all(handles).await;
+}
+
+async fn wait_for_finish_and_exit(mut fin_rx: Receiver<u32>, args: &ABFTCliArgs) {
+    let mut finished = HashSet::<u32>::with_capacity(args.n_parties as usize);
+
+    info!("Party {} waiting to gracefully exit", args.index);
+
+    while let Some(index) = fin_rx.recv().await {
+        info!("Party {} got finished message from {}", args.index, index);
+
+        if !finished.contains(&index) {
+            finished.insert(index);
+        }
+        if finished.len() == (args.n_parties - 1) as usize {
+            break;
+        }
+    }
+
+    info!("Party {} gracefully exit", args.index);
 }
 
 fn spawn_client_managers(own_index: u32, n_parties: u32) -> ChannelSender {
@@ -374,6 +466,7 @@ pub struct ABFTService {
     index: u32,
     protocol: Arc<ABFT<ChannelSender, ABFTBufferManager, Value>>,
     buff_send: Sender<ABFTBufferCommand>,
+    finished_send: Sender<u32>,
 }
 
 #[tonic::async_trait]
@@ -429,5 +522,23 @@ impl Abft for ABFTService {
         }
 
         Ok(Response::new(ProtocolResponse {}))
+    }
+    async fn finished(
+        &self,
+        request: Request<abft::proto::FinishedMessage>,
+    ) -> Result<Response<abft::proto::FinishedResponse>, tonic::Status> {
+        let message = request.into_inner();
+
+        match self.finished_send.send(message.send_id).await {
+            Ok(_) => {}
+            Err(e) => {
+                error!(
+                    "Party {} got error when handling protocol message: {}",
+                    message.recv_id, e
+                )
+            }
+        }
+
+        Ok(Response::new(FinishedResponse {}))
     }
 }
