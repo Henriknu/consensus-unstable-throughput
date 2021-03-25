@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Generate crypto
-( cd .. ; ls; echo $1; cargo r --quiet --bin generate_crypto -- $1 )
+( cd .. ; cargo r --quiet --bin generate_crypto -- $1 &>/dev/null)
 
 
 # Rebuild Docker image

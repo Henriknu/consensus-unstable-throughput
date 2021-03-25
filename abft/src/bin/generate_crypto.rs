@@ -41,8 +41,6 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     fs::create_dir_all("abft/crypto/")?;
 
-    println!("Created dir");
-
     for i in 0..n_parties {
         let keyset = KeySet::new(
             prbc_signers.remove(0),
