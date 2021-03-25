@@ -4,6 +4,7 @@ package abft;
 
 // Interface exported by the server.
 service ABFT {
+    rpc setup_ack (SetupAck) returns (SetupAckResponse){}
     rpc protocol_exchange(ProtocolMessage) returns (ProtocolResponse){}
     rpc finished(FinishedMessage) returns (FinishedResponse){}
 }
@@ -59,3 +60,10 @@ message FinishedMessage{
     uint32 recv_id = 3;
 }
 message FinishedResponse{}
+
+message SetupAck{
+    uint32 protocol_id = 1;
+    uint32 send_id = 2;
+    uint32 recv_id = 3;
+}
+message SetupAckResponse{}

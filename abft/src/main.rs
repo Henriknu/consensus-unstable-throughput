@@ -19,7 +19,8 @@ use abft::{
     proto::{
         abft_client::AbftClient,
         abft_server::{Abft, AbftServer},
-        FinishedMessage, FinishedResponse, ProtocolMessage, ProtocolResponse,
+        FinishedMessage, FinishedResponse, ProtocolMessage, ProtocolResponse, SetupAck,
+        SetupAckResponse,
     },
     protocols::{
         acs::buffer::ACSBufferCommand, mvba::buffer::MVBABufferCommand,
@@ -32,6 +33,9 @@ use abft::{
 use std::sync::Arc;
 use tokio::sync::mpsc::{self, Receiver, Sender};
 
+const RECV_TIMEOUT_SECS: u64 = 5;
+const CLIENT_RETRY_TIMEOUT_SECS: u64 = 1;
+
 #[tokio::main]
 async fn main() {
     let args = Arc::new(parse_args());
@@ -40,7 +44,8 @@ async fn main() {
 
     // client managers
 
-    let client_manager_sender = Arc::new(spawn_client_managers(args.index, args.n_parties));
+    let (client_manager_sender, client_ready_rx) =
+        spawn_client_managers(args.index, args.n_parties);
 
     // Buffer manager
 
@@ -50,6 +55,10 @@ async fn main() {
     let buffer_handle = Arc::new(ABFTBufferManager {
         sender: buff_cmd_send.clone(),
     });
+
+    // Setup manager - handle "setup" messages from peers, ensure that all clients are setup when invoking ABFT, for precise timing.
+
+    let (setup_tx, setup_rx) = mpsc::channel::<u32>(args.n_parties as usize);
 
     // Finished manager - handle "finished" messages from peers, know when one can gracefully exit without stalling others.
 
@@ -80,6 +89,8 @@ async fn main() {
 
     let server_buff_send = buff_cmd_send.clone();
 
+    let server_setup_send = setup_tx.clone();
+
     let server_finished_send = fin_tx.clone();
 
     tokio::spawn(async move {
@@ -87,6 +98,7 @@ async fn main() {
             index: server_args.index,
             protocol: server_protocol,
             buff_send: server_buff_send,
+            setup_send: server_setup_send,
             finished_send: server_finished_send,
         };
 
@@ -108,6 +120,16 @@ async fn main() {
         }
     });
 
+    // wait for setup to complete
+
+    wait_for_clients(client_ready_rx, &*args).await;
+
+    send_setup_ack(&*args).await;
+
+    wait_for_setup_ack(setup_rx, &*args).await;
+
+    // Invoke protocol
+
     info!("Invoking ABFT");
 
     match protocol.invoke(Value::new(args.index * 1000)).await {
@@ -127,6 +149,110 @@ async fn main() {
     wait_for_finish_and_exit(fin_rx, &*args).await;
 }
 
+async fn wait_for_clients(mut client_ready_rx: Receiver<u32>, args: &ABFTCliArgs) {
+    let mut connected = HashSet::<u32>::with_capacity(args.n_parties as usize);
+
+    info!(
+        "Party {} waiting for clients to succesfully connect",
+        args.index
+    );
+
+    while let Some(index) = client_ready_rx.recv().await {
+        info!("Party {}'s client {} connected", args.index, index);
+
+        if !connected.contains(&index) {
+            connected.insert(index);
+        }
+        if connected.len() == (args.n_parties - 1) as usize {
+            break;
+        }
+    }
+
+    info!("Party {} all connected", args.index);
+}
+
+async fn send_setup_ack(args: &ABFTCliArgs) {
+    let mut handles = Vec::with_capacity((args.n_parties - 1) as usize);
+    let id = args.id;
+    let index = args.index;
+
+    for i in 0..(args.n_parties as usize) {
+        if i != args.index as usize {
+            handles.push(tokio::spawn(async move {
+                // Attempt to establish a channel, sleeping a couple of seconds until we succesfully are able to connect.
+                let channel: Channel;
+
+                loop {
+                    let addr = get_client_uri(i);
+
+                    match Channel::builder(addr)
+                        .timeout(Duration::from_secs(RECV_TIMEOUT_SECS))
+                        .connect()
+                        .await
+                    {
+                        Ok(c) => {
+                            info!("Party {} connected with Party {}", index, i);
+                            channel = c;
+                            break;
+                        }
+                        Err(e) => {
+                            info!(
+                                "Party {} could not connect with Party {}, with error: {}",
+                                index, i, e
+                            );
+                            tokio::time::sleep(Duration::from_secs(CLIENT_RETRY_TIMEOUT_SECS))
+                                .await;
+                        }
+                    }
+                }
+
+                let mut client = AbftClient::new(channel);
+
+                match client
+                    .setup_ack(SetupAck {
+                        protocol_id: id,
+                        send_id: index,
+                        recv_id: i as u32,
+                    })
+                    .await
+                {
+                    Ok(_) => {}
+                    Err(e) => {
+                        warn!(
+                            "Party {} got non-ok status code when sending setup_ack to {}: {}",
+                            index, i, e
+                        );
+                    }
+                }
+            }));
+        }
+    }
+
+    join_all(handles).await;
+}
+
+async fn wait_for_setup_ack(mut setup_rx: Receiver<u32>, args: &ABFTCliArgs) {
+    let mut setup_acked = HashSet::<u32>::with_capacity(args.n_parties as usize);
+
+    info!(
+        "Party {} waiting for all parties to finish setup",
+        args.index
+    );
+
+    while let Some(index) = setup_rx.recv().await {
+        info!("Party {} got setup ack from {}", args.index, index);
+
+        if !setup_acked.contains(&index) {
+            setup_acked.insert(index);
+        }
+        if setup_acked.len() == (args.n_parties - 1) as usize {
+            break;
+        }
+    }
+
+    info!("Party {} finished setup", args.index);
+}
+
 async fn send_finished(args: &ABFTCliArgs) {
     let mut handles = Vec::with_capacity((args.n_parties - 1) as usize);
     let id = args.id;
@@ -142,7 +268,7 @@ async fn send_finished(args: &ABFTCliArgs) {
                     let addr = get_client_uri(i);
 
                     match Channel::builder(addr)
-                        .timeout(Duration::from_secs(5))
+                        .timeout(Duration::from_secs(RECV_TIMEOUT_SECS))
                         .connect()
                         .await
                     {
@@ -156,7 +282,8 @@ async fn send_finished(args: &ABFTCliArgs) {
                                 "Party {} could not connect with Party {}, with error: {}",
                                 index, i, e
                             );
-                            tokio::time::sleep(Duration::from_secs(5)).await;
+                            tokio::time::sleep(Duration::from_secs(CLIENT_RETRY_TIMEOUT_SECS))
+                                .await;
                         }
                     }
                 }
@@ -205,7 +332,9 @@ async fn wait_for_finish_and_exit(mut fin_rx: Receiver<u32>, args: &ABFTCliArgs)
     info!("Party {} gracefully exit", args.index);
 }
 
-fn spawn_client_managers(own_index: u32, n_parties: u32) -> ChannelSender {
+fn spawn_client_managers(own_index: u32, n_parties: u32) -> (Arc<ChannelSender>, Receiver<u32>) {
+    let (client_ready_send, client_ready_receive) = mpsc::channel(n_parties as usize);
+
     let mut channels: Vec<_> = (0..n_parties)
         .map(|_| {
             let (tx, rx) =
@@ -218,6 +347,8 @@ fn spawn_client_managers(own_index: u32, n_parties: u32) -> ChannelSender {
         if i != own_index as usize {
             let mut recv = channels[i].1.take().unwrap();
 
+            let client_send = client_ready_send.clone();
+
             tokio::spawn(async move {
                 // Attempt to establish a channel, sleeping a couple of seconds until we succesfully are able to connect.
                 let channel: Channel;
@@ -226,7 +357,7 @@ fn spawn_client_managers(own_index: u32, n_parties: u32) -> ChannelSender {
                     let addr = get_client_uri(i);
 
                     match Channel::builder(addr)
-                        .timeout(Duration::from_secs(5))
+                        .timeout(Duration::from_secs(RECV_TIMEOUT_SECS))
                         .connect()
                         .await
                     {
@@ -240,12 +371,22 @@ fn spawn_client_managers(own_index: u32, n_parties: u32) -> ChannelSender {
                                 "Party {} could not connect with Party {}, with error: {}",
                                 own_index, i, e
                             );
-                            tokio::time::sleep(Duration::from_secs(5)).await;
+                            tokio::time::sleep(Duration::from_secs(CLIENT_RETRY_TIMEOUT_SECS))
+                                .await;
                         }
                     }
                 }
 
                 let mut client = AbftClient::new(channel);
+
+                // Signify that the client is connected to setup manager
+
+                match client_send.send(i as u32).await {
+                    Ok(_) => {}
+                    Err(e) => {
+                        warn!("Got error when sending to setup_manager: {}", e);
+                    }
+                }
 
                 while let Some(message) = recv.recv().await {
                     match client.protocol_exchange(message).await {
@@ -271,7 +412,7 @@ fn spawn_client_managers(own_index: u32, n_parties: u32) -> ChannelSender {
         })
         .collect();
 
-    ChannelSender { senders }
+    (Arc::new(ChannelSender { senders }), client_ready_receive)
 }
 
 fn spawn_buffer_manager(
@@ -466,6 +607,7 @@ pub struct ABFTService {
     index: u32,
     protocol: Arc<ABFT<ChannelSender, ABFTBufferManager, Value>>,
     buff_send: Sender<ABFTBufferCommand>,
+    setup_send: Sender<u32>,
     finished_send: Sender<u32>,
 }
 
@@ -540,5 +682,24 @@ impl Abft for ABFTService {
         }
 
         Ok(Response::new(FinishedResponse {}))
+    }
+
+    async fn setup_ack(
+        &self,
+        request: Request<abft::proto::SetupAck>,
+    ) -> Result<Response<abft::proto::SetupAckResponse>, tonic::Status> {
+        let message = request.into_inner();
+
+        match self.setup_send.send(message.send_id).await {
+            Ok(_) => {}
+            Err(e) => {
+                error!(
+                    "Party {} got error when handling protocol message: {}",
+                    message.recv_id, e
+                )
+            }
+        }
+
+        Ok(Response::new(SetupAckResponse {}))
     }
 }

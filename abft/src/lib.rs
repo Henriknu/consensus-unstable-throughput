@@ -425,8 +425,8 @@ impl<
         };
 
         info!(
-            "Party {} decrypting payload from Party {}, with encrypter: {:?}",
-            self.index, index, symmetric
+            "Party {} decrypting payload from Party {}",
+            self.index, index
         );
 
         let decrypted = symmetric.decrypt(&encrypted.payload)?;
