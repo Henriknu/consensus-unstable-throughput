@@ -34,7 +34,7 @@ pub struct ACS<V: ABFTValue> {
     value: V,
 
     // sub-protocols
-    prbcs: RwLock<Option<HashMap<u32, Arc<PRBC<V>>>>>,
+    prbcs: RwLock<Option<HashMap<u32, Arc<PRBC>>>>,
     mvba: RwLock<Option<MVBA<SignatureVector>>>,
 }
 

@@ -29,12 +29,12 @@ pub mod rbc;
 
 pub type PRBCResult<T> = Result<T, PRBCError>;
 
-pub struct PRBC<V: ABFTValue> {
+pub struct PRBC {
     id: u32,
     index: u32,
     n_parties: u32,
     pub(crate) send_id: u32,
-    value: RwLock<Option<V>>,
+    serialized_value: RwLock<Option<Vec<u8>>>,
     shares: RwLock<BTreeMap<usize, SignatureShare>>,
     notify_shares: Arc<Notify>,
     has_signature: AtomicBool,
@@ -43,14 +43,14 @@ pub struct PRBC<V: ABFTValue> {
     rbc: RwLock<Option<RBC>>,
 }
 
-impl<V: ABFTValue> PRBC<V> {
+impl PRBC {
     pub fn init(id: u32, index: u32, n_parties: u32, send_id: u32) -> Self {
         Self {
             id,
             index,
             n_parties,
             send_id,
-            value: RwLock::new(None),
+            serialized_value: RwLock::new(None),
             shares: Default::default(),
             notify_shares: Default::default(),
             has_signature: AtomicBool::new(false),
@@ -58,7 +58,7 @@ impl<V: ABFTValue> PRBC<V> {
         }
     }
 
-    pub async fn invoke<F: ProtocolMessageSender + Sync + Send, R: PRBCReceiver>(
+    pub async fn invoke<F: ProtocolMessageSender + Sync + Send, R: PRBCReceiver, V: ABFTValue>(
         &self,
         value: Option<V>,
         recv_handle: &R,
@@ -78,10 +78,16 @@ impl<V: ABFTValue> PRBC<V> {
 
         let value = rbc.invoke(value, send_handle).await?;
 
-        {
-            let mut lock = self.value.write().await;
+        let share;
 
-            lock.replace(value.clone());
+        {
+            let mut lock = self.serialized_value.write().await;
+
+            let serialized = serialize(&value)?;
+
+            share = signer.sign(&serialized);
+
+            lock.replace(serialized);
         }
 
         info!(
@@ -90,8 +96,6 @@ impl<V: ABFTValue> PRBC<V> {
         );
 
         recv_handle.drain_prbc_done(self.send_id).await?;
-
-        let share = signer.sign(&serialize(&value)?);
 
         let done_message = PRBCDoneMessage::new(share);
 
@@ -126,7 +130,7 @@ impl<V: ABFTValue> PRBC<V> {
             self.index, signature
         );
 
-        self.has_signature.store(true, Ordering::SeqCst);
+        self.has_signature.store(true, Ordering::Relaxed);
 
         Ok(PRBCSignature {
             value,
@@ -161,7 +165,7 @@ impl<V: ABFTValue> PRBC<V> {
         match ProtocolMessageType::from_i32(message_type).unwrap() {
             ProtocolMessageType::PrbcDone => {
                 // If we have already returned a signature, we can safely ignore any new protocol messages sent.
-                if self.has_signature.load(Ordering::SeqCst) {
+                if self.has_signature.load(Ordering::Relaxed) {
                     return Ok(());
                 }
 
@@ -266,13 +270,13 @@ impl<V: ABFTValue> PRBC<V> {
 
         debug!("Party {} went into on done prbc message. ", self.index);
 
-        let lock = self.value.read().await;
+        let lock = self.serialized_value.read().await;
 
-        let value = lock
+        let serialized_value = lock
             .as_ref()
             .ok_or_else(|| PRBCError::NotReadyForDoneMessage)?;
 
-        if !signer.verify_share(index as usize, &message.share, &serialize(&value)?) {
+        if !signer.verify_share(index as usize, &message.share, serialized_value) {
             warn!(
                 "Party {} got invalid signature share from {} on PRBC value.",
                 self.index, index

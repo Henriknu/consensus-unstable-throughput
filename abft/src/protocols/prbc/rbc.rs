@@ -320,6 +320,8 @@ impl RBC {
                 }
             }
 
+            // Don't need messages after this, can simply take the contents
+
             fragments = std::mem::take(
                 lock.get_mut(&root)
                     .ok_or_else(|| RBCError::NoReadyRootFound)?,
