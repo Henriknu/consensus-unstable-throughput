@@ -310,7 +310,7 @@ impl RBC {
         let mut erasures = Vec::<i32>::with_capacity(self.n_parties as usize);
 
         {
-            let lock = self.echo_messages.read().await;
+            let mut lock = self.echo_messages.write().await;
 
             let root_map = lock.get(&root).ok_or_else(|| RBCError::NoReadyRootFound)?;
 
@@ -320,12 +320,13 @@ impl RBC {
                 }
             }
 
-            fragments = lock
-                .get(&root)
-                .ok_or_else(|| RBCError::NoReadyRootFound)?
-                .values()
-                .map(|message| message.fragment.clone())
-                .collect();
+            fragments = std::mem::take(
+                lock.get_mut(&root)
+                    .ok_or_else(|| RBCError::NoReadyRootFound)?,
+            )
+            .into_iter()
+            .map(|(_, message)| message.fragment)
+            .collect();
         }
 
         let bytes = self.erasure.decode(&fragments, erasures)?;

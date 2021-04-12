@@ -20,7 +20,6 @@ COPY Cargo.lock .
 COPY /abft/proto $HOME/app/dummy/proto/
 COPY /abft/build.rs $HOME/app/dummy/build.rs
 
-
 # cache dependency compilation
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/home/root/app/target \
@@ -30,12 +29,9 @@ RUN rm src/*.rs
 
 COPY /abft/src $HOME/app/dummy/src/
 
-
-
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/home/root/app/target \
     cargo build --release
-
 
 RUN --mount=type=cache,target=/home/root/app/target cp target/release/abft $HOME/app/abft
 

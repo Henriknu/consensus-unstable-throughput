@@ -26,7 +26,7 @@ const THRESHOLD: usize = 1;
 const BUFFER_CAPACITY: usize = N_PARTIES * N_PARTIES * 50 + 1000;
 
 #[tokio::test(flavor = "multi_thread")]
-async fn acs_correctness() {
+async fn abft_correctness() {
     use env_logger::{Builder, Target};
 
     let mut builder = Builder::from_default_env();
