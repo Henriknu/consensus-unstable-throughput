@@ -266,16 +266,16 @@ impl<V: ABFTValue> ACS<V> {
         signatures: BTreeMap<u32, PRBCSignature<V>>,
         mut sig_recv: Receiver<(u32, PRBCSignature<V>)>,
     ) -> ValueVector<V> {
-        let mut result: BTreeMap<u32, V> = BTreeMap::new();
-
-        // Add all values we currently have
-        {
-            for index in vector.inner.keys() {
-                if signatures.contains_key(index) {
-                    result.insert(*index, signatures.get(index).unwrap().value.clone());
+        let mut result = signatures
+            .into_iter()
+            .filter_map(|(index, signature)| {
+                if vector.inner.contains_key(&index) {
+                    Some((index, signature.value))
+                } else {
+                    None
                 }
-            }
-        }
+            })
+            .collect::<BTreeMap<_, _>>();
 
         if result.len() == vector.inner.len() {
             return ValueVector { inner: result };
