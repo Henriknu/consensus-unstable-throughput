@@ -203,8 +203,13 @@ checksum = "d0d27fb6b6f1e43147af148af49d49329413ba781aa0d5e10979831c210173b5"
 name = "benches"
 version = "0.0.0"
 dependencies = [
+ "abft",
  "consensus-core",
  "criterion",
+ "env_logger",
+ "futures",
+ "log",
+ "tokio",
 ]
 
 [[package]]
@@ -395,6 +400,7 @@ dependencies = [
  "clap",
  "criterion-plot",
  "csv",
+ "futures",
  "itertools 0.10.0",
  "lazy_static",
  "num-traits",
@@ -407,6 +413,7 @@ dependencies = [
  "serde_derive",
  "serde_json",
  "tinytemplate",
+ "tokio",
  "walkdir",
 ]
 

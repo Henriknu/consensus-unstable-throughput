@@ -5,8 +5,13 @@ publish = false
 edition = "2018"
 
 [dependencies]
-criterion = "0.3"
+criterion = {version = "0.3", features = ["async_tokio"]}
 consensus-core = {path = "../consensus-core"}
+abft = {path = "../abft"}
+tokio = {version = "1.2", features = ["full"]}
+futures = "0.3"
+log = "0.4"
+env_logger = "0.8.3"
 
 
 [[bench]]
@@ -24,3 +29,22 @@ name = "aes"
 path = "aes.rs"
 harness = false
 
+[[bench]]
+name = "prbc"
+path = "prbc.rs"
+harness = false
+
+[[bench]]
+name = "acs"
+path = "acs.rs"
+harness = false
+
+[[bench]]
+name = "mvba"
+path = "mvba.rs"
+harness = false
+
+[[bench]]
+name = "abft"
+path = "abft.rs"
+harness = false
