@@ -9,13 +9,13 @@ fn criterion_benchmark(c: &mut Criterion) {
 
 criterion_group! {
     name = benches;
-    config = Criterion::default().sample_size(10);
+    config = Criterion::default().sample_size(50).measurement_time(Duration::from_secs(30));
     targets = criterion_benchmark
 }
 
 criterion_main!(benches);
 
-use std::{collections::HashMap, ops::Deref, sync::Arc};
+use std::{collections::HashMap, ops::Deref, sync::Arc, time::Duration};
 
 use futures::future::join_all;
 

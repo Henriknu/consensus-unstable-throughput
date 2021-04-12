@@ -93,7 +93,7 @@ impl<V: ABFTValue> ViewChange<V> {
             .lock()
             .map_err(|_| ViewChangeError::PoisonedMutex)?;
 
-        self.done.store(true, Ordering::SeqCst);
+        self.done.store(true, Ordering::Relaxed);
 
         Ok(result
             .take()
@@ -106,7 +106,7 @@ impl<V: ABFTValue> ViewChange<V> {
         signer: &Signer,
     ) -> ViewChangeResult<()> {
         // Check if result already taken
-        if self.done.load(Ordering::SeqCst) {
+        if self.done.load(Ordering::Relaxed) {
             return Ok(());
         }
 
@@ -130,19 +130,19 @@ impl<V: ABFTValue> ViewChange<V> {
             new_result.lock.replace(message.view);
         }
 
-        if message.view > self.current_key_view && self.has_valid_key(&message, signer) {
-            let (value, sig) = try_unpack_value_and_sig(&message.leader_key)
-                .expect("Asserted that message had valid key");
-            new_result.key.replace(Key {
-                view: message.view,
-                value,
-                proof: Some(sig),
-            });
+        if message.view > self.current_key_view {
+            if let Some((value, sig)) = self.get_valid_key(&message, signer) {
+                new_result.key.replace(Key {
+                    view: message.view,
+                    value,
+                    proof: Some(sig),
+                });
+            }
         }
 
         self.update(new_result)?;
 
-        let num_messages = self.num_messages.fetch_add(1, Ordering::SeqCst);
+        let num_messages = self.num_messages.fetch_add(1, Ordering::Relaxed);
 
         if num_messages >= (self.n_parties * 2 / 3) {
             self.notify_messages.notify_one();
@@ -222,14 +222,14 @@ impl<V: ABFTValue> ViewChange<V> {
         false
     }
 
-    fn has_valid_key(&self, message: &ViewChangeMessage<V>, signer: &Signer) -> bool {
+    fn get_valid_key(&self, message: &ViewChangeMessage<V>, signer: &Signer) -> Option<(V, PBSig)> {
         if let Some((value, sig)) = try_unpack_value_and_sig(&message.leader_key) {
             let response = PBResponse {
                 id: PBID {
                     id: PPID { inner: self.id },
                     step: PPStatus::Step1,
                 },
-                value,
+                value: value.clone(),
             };
 
             if signer.verify_signature(
@@ -237,14 +237,14 @@ impl<V: ABFTValue> ViewChange<V> {
                 &serialize(&response)
                     .expect("Could not serialize reconstructed PB response on_view_change_message"),
             ) {
-                return true;
+                return Some((value, sig));
             }
             warn!(
                 "Party {} received ViewChange message with invalid signature for key",
                 self.index
             );
         }
-        false
+        None
     }
 }
 

@@ -1,7 +1,13 @@
 use consensus_core::crypto::sign::{Signature, SignatureShare, Signer};
 use log::warn;
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+};
 use tokio::sync::{Mutex, Notify};
 
 use bincode::serialize;
@@ -37,35 +43,49 @@ pub enum PBError {
     CryptoError,
 }
 
-pub struct PBSender<V: ABFTValue> {
+pub struct PBSender {
     id: PBID,
     index: u32,
     n_parties: u32,
     notify_shares: Arc<Notify>,
-    proposal: PPProposal<V>,
+    serialized_proposal_response: Vec<u8>,
     shares: Mutex<BTreeMap<usize, PBSigShare>>,
 }
 
-impl<V: ABFTValue> PBSender<V> {
-    pub fn init(id: PBID, index: u32, n_parties: u32, proposal: PPProposal<V>) -> Self {
+impl PBSender {
+    pub fn init<V: ABFTValue>(
+        id: PBID,
+        index: u32,
+        n_parties: u32,
+        proposal: &PPProposal<V>,
+    ) -> Self {
+        let proposal_response = PBResponse {
+            id,
+            value: proposal.value.clone(),
+        };
+
+        let serialized_proposal_response =
+            serialize(&proposal_response).expect("Could not serialize pb response");
+
         Self {
             id,
             index,
             n_parties,
             notify_shares: Arc::new(Notify::new()),
-            proposal,
+            serialized_proposal_response,
             shares: Default::default(),
         }
     }
 
-    pub async fn broadcast<F: ProtocolMessageSender>(
+    pub async fn broadcast<F: ProtocolMessageSender, V: ABFTValue>(
         &self,
+        proposal: PPProposal<V>,
         signer: &Signer,
         send_handle: &F,
     ) -> PBResult<PBSig> {
         //send <ID, SEND, value, proof> to all parties
 
-        let pb_send = PBSendMessage::new(self.id, self.proposal.clone());
+        let pb_send = PBSendMessage::new(self.id, proposal);
 
         send_handle
             .broadcast(
@@ -86,11 +106,11 @@ impl<V: ABFTValue> PBSender<V> {
 
         // deliver proof of value being broadcasted
 
-        let lock = self.shares.lock().await;
+        let mut lock = self.shares.lock().await;
 
-        let shares = lock
-            .iter()
-            .map(|(index, share)| (*index, share.inner.clone()))
+        let shares = std::mem::take(&mut *lock)
+            .into_iter()
+            .map(|(index, share)| (index, share.inner))
             .collect();
 
         drop(lock);
@@ -110,17 +130,12 @@ impl<V: ABFTValue> PBSender<V> {
     ) -> PBResult<()> {
         let share = message.share;
 
-        let response = PBResponse {
-            id: self.id,
-            value: self.proposal.value.clone(),
-        };
-
         let mut shares = self.shares.lock().await;
 
         if signer.verify_share(
             index as usize,
             &share.inner,
-            &serialize(&response).expect("Could not serialize PB message for ack"),
+            &self.serialized_proposal_response,
         ) {
             shares.insert(index as usize, share);
         } else {
@@ -144,7 +159,7 @@ impl<V: ABFTValue> PBSender<V> {
 pub struct PBReceiver<V: ABFTValue> {
     pub id: PBID,
     index: u32,
-    should_stop: Mutex<bool>,
+    should_stop: AtomicBool,
     proposal: Mutex<Option<PPProposal<V>>>,
     notify_proposal: Arc<Notify>,
 }
@@ -154,7 +169,7 @@ impl<V: ABFTValue> PBReceiver<V> {
         Self {
             id,
             index,
-            should_stop: Mutex::new(false),
+            should_stop: AtomicBool::new(false),
             proposal: Mutex::new(None),
             notify_proposal: Arc::new(Notify::new()),
         }
@@ -188,13 +203,11 @@ impl<V: ABFTValue> PBReceiver<V> {
     ) -> PBResult<()> {
         let proposal = message.proposal;
 
-        let mut should_stop = self.should_stop.lock().await;
-
-        if !*should_stop
+        if !self.should_stop.load(Ordering::Relaxed)
             && self.evaluate_pb_val(&proposal, message.id, mvba_id, leader_index, lock, signer)?
         {
-            *should_stop = true;
-            drop(should_stop);
+            self.should_stop.store(true, Ordering::Relaxed);
+
             let response = PBResponse {
                 id: message.id,
                 value: proposal.value.clone(),

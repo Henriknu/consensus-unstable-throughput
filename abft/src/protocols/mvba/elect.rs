@@ -29,7 +29,7 @@ impl Elect {
             view,
             n_parties,
             tag,
-            shares: Default::default(),
+            shares: Mutex::new(Vec::with_capacity((n_parties / 3 + 1) as usize)),
             notify_shares: Arc::new(Notify::new()),
         }
     }

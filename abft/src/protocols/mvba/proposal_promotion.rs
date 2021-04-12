@@ -44,7 +44,7 @@ pub struct PPSender<V: ABFTValue> {
     key: RwLock<Option<PPProposal<V>>>,
     lock: RwLock<Option<PPProposal<V>>>,
     commit: RwLock<Option<PPProposal<V>>>,
-    inner_pb: RwLock<Option<PBSender<V>>>,
+    inner_pb: RwLock<Option<PBSender>>,
 }
 
 impl<V: ABFTValue> PPSender<V> {
@@ -79,43 +79,49 @@ impl<V: ABFTValue> PPSender<V> {
 
         // Step 1
         {
-            self.init_pb(PPStatus::Step1, proposal.clone()).await;
+            self.init_pb(PPStatus::Step1, &proposal).await;
             let lock = self.inner_pb.read().await;
             let pb = lock.as_ref().expect("PB instance should be initialized");
-            proof_prev.replace(pb.broadcast(signer, send_handle).await?);
-            proposal.proof.proof_prev = proof_prev.clone();
+            proposal
+                .proof
+                .proof_prev
+                .replace(pb.broadcast(proposal.clone(), signer, send_handle).await?);
 
             let mut _key = self.key.write().await;
             _key.replace(proposal.clone());
         }
         // Step 2
         {
-            self.init_pb(PPStatus::Step2, proposal.clone()).await;
+            self.init_pb(PPStatus::Step2, &proposal).await;
             let lock = self.inner_pb.read().await;
             let pb = lock.as_ref().expect("PB instance should be initialized");
-            proof_prev.replace(pb.broadcast(signer, send_handle).await?);
-            proposal.proof.proof_prev = proof_prev.clone();
+            proposal
+                .proof
+                .proof_prev
+                .replace(pb.broadcast(proposal.clone(), signer, send_handle).await?);
 
             let mut _lock = self.lock.write().await;
             _lock.replace(proposal.clone());
         }
         // Step 3
         {
-            self.init_pb(PPStatus::Step3, proposal.clone()).await;
+            self.init_pb(PPStatus::Step3, &proposal).await;
             let lock = self.inner_pb.read().await;
             let pb = lock.as_ref().expect("PB instance should be initialized");
-            proof_prev.replace(pb.broadcast(signer, send_handle).await?);
-            proposal.proof.proof_prev = proof_prev.clone();
+            proposal
+                .proof
+                .proof_prev
+                .replace(pb.broadcast(proposal.clone(), signer, send_handle).await?);
 
             let mut _commit = self.commit.write().await;
             _commit.replace(proposal.clone());
         }
         // Step 4
         {
-            self.init_pb(PPStatus::Step4, proposal.clone()).await;
+            self.init_pb(PPStatus::Step4, &proposal).await;
             let lock = self.inner_pb.read().await;
             let pb = lock.as_ref().expect("PB instance should be initialized");
-            proof_prev.replace(pb.broadcast(signer, send_handle).await?);
+            proof_prev.replace(pb.broadcast(proposal, signer, send_handle).await?);
         }
 
         Ok(proof_prev)
@@ -157,7 +163,7 @@ impl<V: ABFTValue> PPSender<V> {
         PPLeader { key, lock, commit }
     }
 
-    async fn init_pb(&self, step: PPStatus, proposal: PPProposal<V>) {
+    async fn init_pb(&self, step: PPStatus, proposal: &PPProposal<V>) {
         let pb = PBSender::init(
             PBID { id: self.id, step },
             self.index,

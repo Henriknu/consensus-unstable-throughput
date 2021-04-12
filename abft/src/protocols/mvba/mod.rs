@@ -561,8 +561,7 @@ impl<V: ABFTValue> MVBA<V> {
         {
       
 
-            let shares = state.pp_skip[&id.view]
-                .clone()
+            let shares = std::mem::take(state.pp_skip.get_mut(&id.view).unwrap())
                 .into_iter()
                 .map(|(i, skip_share)| (i as usize, skip_share.inner))
                 .collect();
@@ -889,14 +888,14 @@ impl<V: ABFTValue> MVBAState<V> {
                 value,
                 proof: None,
             },
-            leaders: Default::default(),
-            has_received_done: Default::default(),
-            pp_done: Default::default(),
-            has_received_skip_share: Default::default(),
-            has_sent_skip_share: Default::default(),
-            pp_skip: Default::default(),
-            has_sent_skip: Default::default(),
-            skip: Default::default(),
+            leaders: HashMap::with_capacity(3),
+            has_received_done: HashMap::with_capacity(3),
+            pp_done: HashMap::with_capacity(3),
+            has_received_skip_share: HashMap::with_capacity(3),
+            has_sent_skip_share: HashMap::with_capacity(3),
+            pp_skip: HashMap::with_capacity(3),
+            has_sent_skip: HashMap::with_capacity(3),
+            skip: HashMap::with_capacity(3),
         }
     }
 
