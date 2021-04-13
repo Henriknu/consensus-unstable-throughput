@@ -8,7 +8,7 @@ use buffer::{ABFTBufferCommand, ABFTReceiver};
 use consensus_core::crypto::{
     aes::{SymmetricEncrypter, SymmetricEncrypterError},
     commoncoin::Coin,
-    encrypt::{EncodedCiphertext, Encrypter},
+    encrypt::{Ciphertext, DecryptionShare, EncodedCiphertext, Encrypter},
     sign::Signer,
 };
 use log::{debug, info, warn};
@@ -40,13 +40,13 @@ pub struct ABFT<
     index: u32,
     n_parties: u32,
 
-    encrypted_values: RwLock<Option<ValueVector<EncryptedValue>>>,
+    encrypted_values: RwLock<Option<BTreeMap<u32, EncryptedValue>>>,
     notify_decrypt: Arc<Notify>,
-    decryption_shares: RwLock<HashMap<u32, HashMap<u32, ABFTDecryptionShareMessage>>>,
+    decryption_shares: RwLock<HashMap<u32, HashMap<u32, DecryptionSharePair>>>,
     decrypted: RwLock<BTreeMap<u32, V>>,
 
     // sub-protocol
-    acs: RwLock<Option<ACS<EncryptedValue>>>,
+    acs: RwLock<Option<ACS<EncodedEncryptedValue>>>,
 
     // infrastructure
     send_handle: Arc<F>,
@@ -103,7 +103,7 @@ impl<
         let (payload, sym_encrypter) = SymmetricEncrypter::encrypt(&serialize(&value)?)?;
 
         // Encrypt the symmetric encryption key with threshold encrypter.
-        let encrypted = EncryptedValue {
+        let encrypted = EncodedEncryptedValue {
             key: self
                 .encrypter
                 .encrypt(&sym_encrypter.key(), &[0u8; 32])
@@ -134,28 +134,30 @@ impl<
             .await?
         };
 
+        let encrypted_values = Self::decode_value_vector(value_vector);
+
         // save value vector
 
         {
-            let mut vector = self.encrypted_values.write().await;
-            vector.replace(value_vector);
+            let mut lock = self.encrypted_values.write().await;
+            lock.replace(encrypted_values);
         }
 
         {
             // decrypt and broadcast shares
 
-            let vector_lock = self.encrypted_values.read().await;
+            let encrypted_values_lock = self.encrypted_values.read().await;
 
-            let vector = vector_lock.as_ref().unwrap();
+            let encrypted_values = encrypted_values_lock.as_ref().unwrap();
 
-            for (index, transaction_set) in &vector.inner {
+            for (index, encrypted_value) in encrypted_values {
                 let dec_key = self
                     .encrypter
-                    .decrypt_share(&transaction_set.key.clone().into())
+                    .decrypt_share(&encrypted_value.key)
                     .expect("Ciphertext should be valid. If not, question party #index");
                 let dec_nonce = self
                     .encrypter
-                    .decrypt_share(&transaction_set.nonce.clone().into())
+                    .decrypt_share(&encrypted_value.nonce)
                     .expect("Ciphertext should be valid. If not, question party #index");
 
                 let decrypt_message =
@@ -321,13 +323,13 @@ impl<
 
             let vector = vector_lock.as_ref().unwrap();
 
-            n_values = vector.inner.len();
+            n_values = vector.len();
 
-            let encrypted = vector.inner.get(&message.index).unwrap();
+            let encrypted = vector.get(&message.index).unwrap();
 
             if !self
                 .encrypter
-                .verify_share(&encrypted.key.clone().into(), &message.key.clone().into())
+                .verify_share(&encrypted.key, &message.key.clone().into())
             {
                 warn!(
                     "Party {} received a faulty decryption share for value {}'s key, from {}",
@@ -336,10 +338,10 @@ impl<
                 return Ok(());
             }
 
-            if !self.encrypter.verify_share(
-                &encrypted.nonce.clone().into(),
-                &message.nonce.clone().into(),
-            ) {
+            if !self
+                .encrypter
+                .verify_share(&encrypted.nonce, &message.nonce.clone().into())
+            {
                 warn!(
                     "Party {} received a faulty decryption share for value {}'s nonce, from {}",
                     self.index, message.index, send_id
@@ -349,12 +351,15 @@ impl<
         }
 
         // insert share
-        let index = message.index;
 
-        shares
-            .entry(message.index)
-            .or_default()
-            .insert(send_id, message);
+        let ABFTDecryptionShareMessage { index, key, nonce } = message;
+
+        let share = DecryptionSharePair {
+            key: key.into(),
+            nonce: nonce.into(),
+        };
+
+        shares.entry(index).or_default().insert(send_id, share);
 
         // if we have enough shares, decrypt
 
@@ -383,40 +388,42 @@ impl<
     }
 
     async fn decrypt_value(&self, index: u32) -> ABFTResult<()> {
-        //assume that we do actually have enough shares for this.
+        // take the shares. If two tasks are trying to decrypt at same time, return early if no shares found.
 
-        let (key_shares, nonce_shares) = {
-            let shares_lock = self.decryption_shares.read().await;
+        let (key_shares, nonce_shares): (Vec<_>, Vec<_>) = {
+            let mut shares_lock = self.decryption_shares.write().await;
 
-            let shares = shares_lock.get(&index).unwrap();
+            let shares = std::mem::take(shares_lock.get_mut(&index).unwrap());
 
-            let key_shares = shares
-                .iter()
-                .map(|(_, message)| message.key.clone().into())
-                .collect();
-
-            let nonce_shares = shares
-                .iter()
-                .map(|(_, message)| message.nonce.clone().into())
-                .collect();
-
-            (key_shares, nonce_shares)
+            shares
+                .into_iter()
+                .map(|(_, pair)| (pair.key, pair.nonce))
+                .unzip()
         };
+
+        debug!(
+            "Party {} extracted decrypt info for {}. Key shares: {:?}, Nonce shares: {:?}",
+            self.index, index, key_shares, nonce_shares
+        );
+
+        if key_shares.is_empty() || nonce_shares.is_empty() {
+            return Ok(());
+        }
 
         let vector_lock = self.encrypted_values.read().await;
 
         let vector = vector_lock.as_ref().unwrap();
 
-        let encrypted = vector.inner.get(&index).unwrap();
+        let encrypted = vector.get(&index).unwrap();
 
         let key = self
             .encrypter
-            .combine_shares(&encrypted.key.clone().into(), key_shares)
+            .combine_shares(&encrypted.key, key_shares)
             .unwrap();
 
         let nonce = self
             .encrypter
-            .combine_shares(&encrypted.nonce.clone().into(), nonce_shares)
+            .combine_shares(&encrypted.nonce, nonce_shares)
             .unwrap();
 
         let symmetric = SymmetricEncrypter {
@@ -441,7 +448,7 @@ impl<
         Ok(())
     }
 
-    async fn init_acs(&self, encrypted: EncryptedValue) {
+    async fn init_acs(&self, encrypted: EncodedEncryptedValue) {
         let acs = ACS::init(self.id, self.index, self.n_parties, encrypted);
 
         let mut lock = self.acs.write().await;
@@ -451,6 +458,18 @@ impl<
 
     pub fn index(&self) -> u32 {
         self.index
+    }
+
+    fn decode_value_vector(
+        value_vector_encoded: ValueVector<EncodedEncryptedValue>,
+    ) -> BTreeMap<u32, EncryptedValue> {
+        let mut inner = BTreeMap::new();
+
+        for (index, encoded) in value_vector_encoded.inner {
+            inner.insert(index, encoded.into());
+        }
+
+        inner
     }
 }
 
@@ -465,10 +484,43 @@ impl<V> ABFTValue for V where
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
-pub struct EncryptedValue {
+pub struct EncodedEncryptedValue {
     key: EncodedCiphertext,
     nonce: EncodedCiphertext,
     payload: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct EncryptedValue {
+    key: Ciphertext,
+    nonce: Ciphertext,
+    payload: Vec<u8>,
+}
+
+impl From<EncodedEncryptedValue> for EncryptedValue {
+    fn from(encoded: EncodedEncryptedValue) -> Self {
+        let EncodedEncryptedValue {
+            key,
+            nonce,
+            payload,
+        } = encoded;
+
+        let key = key.into();
+
+        let nonce = nonce.into();
+
+        EncryptedValue {
+            key,
+            nonce,
+            payload,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DecryptionSharePair {
+    key: DecryptionShare,
+    nonce: DecryptionShare,
 }
 
 /// Dummy value, useful for testing
