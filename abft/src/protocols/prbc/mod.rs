@@ -6,6 +6,7 @@ use std::{
     },
 };
 
+use byteorder::{self, ByteOrder};
 use log::{debug, info, warn};
 use tokio::sync::{mpsc::error::SendError, Notify, RwLock};
 
@@ -19,7 +20,7 @@ use crate::{
     proto::{ProtocolMessage, ProtocolMessageType},
     ABFTValue,
 };
-use bincode::{deserialize, serialize, Error as BincodeError};
+use bincode::{deserialize, Error as BincodeError};
 use consensus_core::crypto::sign::{Signature, SignatureShare, Signer};
 use thiserror::Error;
 
@@ -35,7 +36,7 @@ pub struct PRBC {
     f_tolerance: u32,
     n_parties: u32,
     pub(crate) send_id: u32,
-    serialized_value: RwLock<Option<Vec<u8>>>,
+    value_identifier: [u8; 8],
     shares: RwLock<BTreeMap<usize, SignatureShare>>,
     notify_shares: Arc<Notify>,
     has_signature: AtomicBool,
@@ -46,13 +47,17 @@ pub struct PRBC {
 
 impl PRBC {
     pub fn init(id: u32, index: u32, f_tolerance: u32, n_parties: u32, send_id: u32) -> Self {
+        let mut value_identifier = [0u8; 8];
+
+        byteorder::NativeEndian::write_u32_into(&[id, send_id], &mut value_identifier);
+
         Self {
             id,
             index,
             f_tolerance,
             n_parties,
             send_id,
-            serialized_value: RwLock::new(None),
+            value_identifier,
             shares: Default::default(),
             notify_shares: Default::default(),
             has_signature: AtomicBool::new(false),
@@ -80,17 +85,7 @@ impl PRBC {
 
         let value = rbc.invoke(value, send_handle).await?;
 
-        let share;
-
-        {
-            let mut lock = self.serialized_value.write().await;
-
-            let serialized = serialize(&value)?;
-
-            share = signer.sign(&serialized);
-
-            lock.replace(serialized);
-        }
+        let share = signer.sign(&self.value_identifier);
 
         info!(
             "Party {} draining prbc messages from buffer, for PRBC {}",
@@ -272,13 +267,7 @@ impl PRBC {
 
         debug!("Party {} went into on done prbc message. ", self.index);
 
-        let lock = self.serialized_value.read().await;
-
-        let serialized_value = lock
-            .as_ref()
-            .ok_or_else(|| PRBCError::NotReadyForDoneMessage)?;
-
-        if !signer.verify_share(index as usize, &message.share, serialized_value) {
+        if !signer.verify_share(index as usize, &message.share, &self.value_identifier) {
             warn!(
                 "Party {} got invalid signature share from {} on PRBC value.",
                 self.index, index
@@ -323,6 +312,12 @@ impl PRBC {
 pub struct PRBCSignature<V: ABFTValue> {
     pub(crate) value: V,
     pub(crate) inner: Signature,
+}
+
+#[derive(Debug, Clone, PartialEq, PartialOrd)]
+pub struct PRBCID {
+    epoch: u32,
+    send_id: u32,
 }
 
 #[derive(Error, Debug)]

@@ -16,7 +16,7 @@ use messaging::{ABFTDecryptionShareMessage, ProtocolMessageSender};
 use proto::{ProtocolMessage, ProtocolMessageType};
 use protocols::{
     acs::{ACSError, ValueVector, ACS},
-    mvba::buffer::MVBAReceiver,
+    mvba::{buffer::MVBAReceiver, MvbaValue},
     prbc::buffer::PRBCReceiver,
 };
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -541,6 +541,12 @@ pub struct Value {
 impl Value {
     pub fn new(inner: u32) -> Self {
         Self { inner }
+    }
+}
+
+impl MvbaValue for Value {
+    fn eval_mvba(&self, _id: u32, _f_tolerance: u32, _n_parties: u32, _signer: &Signer) -> bool {
+        true
     }
 }
 

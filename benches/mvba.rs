@@ -19,13 +19,13 @@ use std::{collections::HashMap, ops::Deref, sync::Arc, time::Duration};
 
 use futures::future::join_all;
 
-use abft::protocols::{
-    acs::SignatureVector,
-    mvba::{
+use abft::{
+    protocols::mvba::{
         buffer::{MVBABuffer, MVBABufferCommand},
         error::MVBAError,
         MVBA,
     },
+    Value,
 };
 
 use consensus_core::crypto::{commoncoin::Coin, sign::Signer};
@@ -74,9 +74,7 @@ async fn mvba_correctness() {
 
         let f: Arc<ChannelSender> = Arc::new(ChannelSender { senders });
 
-        let signature_vector = SignatureVector {
-            inner: Default::default(),
-        };
+        let signature_vector = Value::new((i * 1000) as u32);
 
         let mvba = Arc::new(MVBA::init(
             0,
@@ -115,6 +113,7 @@ async fn mvba_correctness() {
                             message,
                             buffer_f.deref(),
                             &buffer_signer,
+                            &buffer_signer,
                             &buffer_coin,
                         )
                         .await
@@ -150,7 +149,13 @@ async fn mvba_correctness() {
         tokio::spawn(async move {
             while let Some(message) = recv.recv().await {
                 match msg_mvba
-                    .handle_protocol_message(message, msg_f.deref(), &msg_signer, &msg_coin)
+                    .handle_protocol_message(
+                        message,
+                        msg_f.deref(),
+                        &msg_signer,
+                        &msg_signer,
+                        &msg_coin,
+                    )
                     .await
                 {
                     Ok(_) => {}

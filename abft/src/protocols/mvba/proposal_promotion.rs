@@ -10,7 +10,7 @@ use super::{
     buffer::{MVBABufferCommand, MVBAReceiver},
     messages::{PBSendMessage, PBShareAckMessage},
     provable_broadcast::*,
-    MVBAID,
+    MvbaValue, MVBAID,
 };
 use consensus_core::crypto::sign::Signer;
 use num_derive::FromPrimitive;
@@ -181,10 +181,12 @@ impl<V: ABFTValue> PPSender<V> {
 }
 
 #[derive(Default)]
-pub struct PPReceiver<V: ABFTValue> {
+pub struct PPReceiver<V: ABFTValue + MvbaValue> {
     id: PPID,
     index: u32,
     send_id: u32,
+    f_tolerance: u32,
+    n_parties: u32,
     key: RwLock<Option<PPProposal<V>>>,
     lock: RwLock<Option<PPProposal<V>>>,
     commit: RwLock<Option<PPProposal<V>>>,
@@ -192,11 +194,13 @@ pub struct PPReceiver<V: ABFTValue> {
     notify_abandon: Arc<Notify>,
 }
 
-impl<V: ABFTValue> PPReceiver<V> {
-    pub fn init(id: PPID, index: u32, send_id: u32) -> Self {
+impl<V: ABFTValue + MvbaValue> PPReceiver<V> {
+    pub fn init(id: PPID, index: u32, f_tolerance: u32, n_parties: u32, send_id: u32) -> Self {
         Self {
             id,
             index,
+            f_tolerance,
+            n_parties,
             send_id,
             key: RwLock::new(None),
             lock: RwLock::new(None),
@@ -270,7 +274,8 @@ impl<V: ABFTValue> PPReceiver<V> {
         id: &MVBAID,
         leader_index: u32,
         lock: u32,
-        signer: &Signer,
+        signer_mvba: &Signer,
+        signer_prbc: &Signer,
         send_handle: &F,
     ) -> PPResult<()> {
         let inner_pb = self.inner_pb.read().await;
@@ -278,8 +283,17 @@ impl<V: ABFTValue> PPReceiver<V> {
         if let Some(pb) = &*inner_pb {
             Self::check_step(&message, pb)?;
 
-            pb.on_value_send_message(index, message, id, leader_index, lock, signer, send_handle)
-                .await?;
+            pb.on_value_send_message(
+                index,
+                message,
+                id,
+                leader_index,
+                lock,
+                signer_mvba,
+                signer_prbc,
+                send_handle,
+            )
+            .await?;
         } else {
             return Err(PPError::NotReadyForSend);
         }
@@ -337,7 +351,7 @@ impl<V: ABFTValue> PPReceiver<V> {
     async fn init_pb(&self, step: PPStatus) {
         let id = PBID { id: self.id, step };
 
-        let new_pb = PBReceiver::init(id, self.index);
+        let new_pb = PBReceiver::init(id, self.index, self.f_tolerance, self.n_parties);
 
         let mut inner_pb = self.inner_pb.write().await;
 

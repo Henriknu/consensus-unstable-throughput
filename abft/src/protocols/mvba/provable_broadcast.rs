@@ -20,7 +20,7 @@ use crate::{messaging::ProtocolMessageSender, ABFTValue};
 use super::{
     messages::{PBSendMessage, PBShareAckMessage},
     proposal_promotion::{PPProposal, PPStatus, PPID},
-    MVBAID,
+    MvbaValue, MVBAID,
 };
 
 type PBResult<T> = Result<T, PBError>;
@@ -159,19 +159,23 @@ impl PBSender {
     }
 }
 
-pub struct PBReceiver<V: ABFTValue> {
+pub struct PBReceiver<V: ABFTValue + MvbaValue> {
     pub id: PBID,
     index: u32,
+    f_tolerance: u32,
+    n_parties: u32,
     should_stop: AtomicBool,
     proposal: Mutex<Option<PPProposal<V>>>,
     notify_proposal: Arc<Notify>,
 }
 
-impl<V: ABFTValue> PBReceiver<V> {
-    pub fn init(id: PBID, index: u32) -> Self {
+impl<V: ABFTValue + MvbaValue> PBReceiver<V> {
+    pub fn init(id: PBID, index: u32, f_tolerance: u32, n_parties: u32) -> Self {
         Self {
             id,
             index,
+            f_tolerance,
+            n_parties,
             should_stop: AtomicBool::new(false),
             proposal: Mutex::new(None),
             notify_proposal: Arc::new(Notify::new()),
@@ -201,13 +205,22 @@ impl<V: ABFTValue> PBReceiver<V> {
         mvba_id: &MVBAID,
         leader_index: u32,
         lock: u32,
-        signer: &Signer,
+        signer_mvba: &Signer,
+        signer_prbc: &Signer,
         send_handle: &F,
     ) -> PBResult<()> {
         let proposal = message.proposal;
 
         if !self.should_stop.load(Ordering::Relaxed)
-            && self.evaluate_pb_val(&proposal, message.id, mvba_id, leader_index, lock, signer)?
+            && self.evaluate_pb_val(
+                &proposal,
+                message.id,
+                mvba_id,
+                leader_index,
+                lock,
+                signer_mvba,
+                signer_prbc,
+            )?
         {
             self.should_stop.store(true, Ordering::Relaxed);
 
@@ -216,7 +229,7 @@ impl<V: ABFTValue> PBReceiver<V> {
                 value: proposal.value.clone(),
             };
 
-            let inner = signer.sign(
+            let inner = signer_mvba.sign(
                 &serialize(&response).expect("Could not serialize message for on_value_send"),
             );
 
@@ -249,14 +262,23 @@ impl<V: ABFTValue> PBReceiver<V> {
         mvba_id: &MVBAID,
         leader_index: u32,
         lock: u32,
-        signer: &Signer,
+        signer_mvba: &Signer,
+        signer_prbc: &Signer,
     ) -> PBResult<bool> {
         let step = message_id.step;
         let PBProof { key, proof_prev } = &proposal.proof;
 
         // If first step, verify that the key provided is valid
         if step == PPStatus::Step1
-            && self.check_key(&proposal.value, key, mvba_id, leader_index, lock, signer)?
+            && self.check_key(
+                &proposal.value,
+                key,
+                mvba_id,
+                leader_index,
+                lock,
+                signer_mvba,
+                signer_prbc,
+            )?
         {
             return Ok(true);
         }
@@ -272,7 +294,7 @@ impl<V: ABFTValue> PBReceiver<V> {
         // If later step, verify that the proof provided is valid for the previous step.
         if step > PPStatus::Step1
             && proof_prev.is_some()
-            && signer.verify_signature(
+            && signer_mvba.verify_signature(
                 &proof_prev.as_ref().unwrap().inner,
                 &serialize(&response_prev)
                     .expect("Could not serialize response_prev for evaluate_pb_val"),
@@ -291,10 +313,11 @@ impl<V: ABFTValue> PBReceiver<V> {
         id: &MVBAID,
         leader_index: u32,
         lock: u32,
-        signer: &Signer,
+        signer_mvba: &Signer,
+        signer_prbc: &Signer,
     ) -> PBResult<bool> {
         // Check that value is valid high-level application
-        if !eval_mvba_val(value) {
+        if !value.eval_mvba(id.id, self.f_tolerance, self.n_parties, signer_prbc) {
             return Err(PBError::FailedExternalValidation);
         }
 
@@ -320,7 +343,7 @@ impl<V: ABFTValue> PBReceiver<V> {
         // Verify the validity of the key provided
         if *view != 0
             && (view_key_proof.is_none()
-                || !signer.verify_signature(
+                || !signer_mvba.verify_signature(
                     &view_key_proof.as_ref().unwrap().inner,
                     &serialize(&view_key).expect("Could not serialize view_key for check_key"),
                 ))
@@ -337,11 +360,6 @@ impl<V: ABFTValue> PBReceiver<V> {
 
         Ok(true)
     }
-}
-
-fn eval_mvba_val<V: ABFTValue>(_value: &V) -> bool {
-    //TODO
-    true
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

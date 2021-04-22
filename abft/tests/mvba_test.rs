@@ -2,13 +2,13 @@ use std::{collections::HashMap, ops::Deref, sync::Arc};
 
 use futures::future::join_all;
 
-use abft::protocols::{
-    acs::SignatureVector,
-    mvba::{
+use abft::{
+    protocols::mvba::{
         buffer::{MVBABuffer, MVBABufferCommand},
         error::MVBAError,
         MVBA,
     },
+    Value,
 };
 
 use consensus_core::crypto::{commoncoin::Coin, sign::Signer};
@@ -16,12 +16,13 @@ use tokio::sync::mpsc::{self, Sender};
 
 use log::error;
 
-const N_PARTIES: usize = THRESHOLD * 3 + 1;
-const THRESHOLD: usize = 10;
+const N_PARTIES: usize = THRESHOLD * 4;
+const THRESHOLD: usize = 2;
 const BUFFER_CAPACITY: usize = THRESHOLD * 30;
 
 use abft::test_helpers::{ChannelSender, MVBABufferManager};
 
+// We use same signer for mvba and prbc. Ok as Value do not use it in MvbaValue::eval_mvba.
 #[tokio::test(flavor = "multi_thread")]
 async fn mvba_correctness() {
     env_logger::init();
@@ -60,16 +61,14 @@ async fn mvba_correctness() {
 
         let f: Arc<ChannelSender> = Arc::new(ChannelSender { senders });
 
-        let signature_vector = SignatureVector {
-            inner: Default::default(),
-        };
+        let value = Value::new((i * 1000) as u32);
 
         let mvba = Arc::new(MVBA::init(
             0,
             i as u32,
             THRESHOLD as u32,
             N_PARTIES as u32,
-            signature_vector,
+            value,
         ));
 
         // Setup buffer manager
@@ -100,6 +99,7 @@ async fn mvba_correctness() {
                         .handle_protocol_message(
                             message,
                             buffer_f.deref(),
+                            &buffer_signer,
                             &buffer_signer,
                             &buffer_coin,
                         )
@@ -136,7 +136,13 @@ async fn mvba_correctness() {
         tokio::spawn(async move {
             while let Some(message) = recv.recv().await {
                 match msg_mvba
-                    .handle_protocol_message(message, msg_f.deref(), &msg_signer, &msg_coin)
+                    .handle_protocol_message(
+                        message,
+                        msg_f.deref(),
+                        &msg_signer,
+                        &msg_signer,
+                        &msg_coin,
+                    )
                     .await
                 {
                     Ok(_) => {}

@@ -1,3 +1,4 @@
+use byteorder::{self, ByteOrder};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashMap},
@@ -9,7 +10,7 @@ use consensus_core::crypto::{
     commoncoin::Coin,
     sign::{Signature, Signer},
 };
-use log::{error, info};
+use log::{error, info, warn};
 use tokio::sync::{mpsc::Receiver, RwLock};
 
 use crate::{
@@ -19,7 +20,7 @@ use crate::{
 };
 
 use super::{
-    mvba::{buffer::MVBAReceiver, error::MVBAError, MVBA},
+    mvba::{buffer::MVBAReceiver, error::MVBAError, MvbaValue, MVBA},
     prbc::{buffer::PRBCReceiver, PRBCError, PRBCSignature, PRBC},
 };
 
@@ -140,10 +141,10 @@ impl<V: ABFTValue> ACS<V> {
                 "Party {} has received {} PRBC signatures, need: {}",
                 self.index,
                 signatures.len(),
-                (self.n_parties * 2 / 3 + 1)
+                (self.n_parties - self.f_tolerance)
             );
 
-            if signatures.len() >= (self.f_tolerance * 2 + 1) as usize {
+            if signatures.len() >= (self.n_parties - self.f_tolerance) as usize {
                 info!(
                     "Party {} has received enough PRBC signatures to continue on to MVBA",
                     self.index
@@ -228,7 +229,13 @@ impl<V: ABFTValue> ACS<V> {
 
                 if let Some(mvba) = &*mvba {
                     match mvba
-                        .handle_protocol_message(message, send_handle, signer_mvba, coin)
+                        .handle_protocol_message(
+                            message,
+                            send_handle,
+                            signer_mvba,
+                            signer_prbc,
+                            coin,
+                        )
                         .await
                     {
                         Ok(_) => {}
@@ -351,6 +358,33 @@ pub enum ACSError {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct SignatureVector {
     pub inner: BTreeMap<u32, Signature>,
+}
+
+impl MvbaValue for SignatureVector {
+    fn eval_mvba(&self, id: u32, f_tolerance: u32, n_parties: u32, signer: &Signer) -> bool {
+        info!(
+            "Evaluating signature vector {:?}, f: {}, n: {}",
+            self, f_tolerance, n_parties
+        );
+
+        if self.inner.len() < (n_parties - f_tolerance) as usize {
+            warn!("Not enough signatures");
+            return false;
+        }
+
+        let mut data = [0u8; 8];
+
+        for (index, signature) in &self.inner {
+            byteorder::NativeEndian::write_u32_into(&[id, *index], &mut data);
+
+            if !signer.verify_signature(&signature, &data) {
+                warn!("invalid signature");
+                return false;
+            }
+        }
+
+        true
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -39,7 +39,7 @@ pub mod provable_broadcast;
 pub mod view_change;
 
 /// Instance of Multi-valued Validated Byzantine Agreement
-pub struct MVBA<V: ABFTValue> {
+pub struct MVBA<V: ABFTValue + MvbaValue> {
     /// Identifier for protocol
     id: u32,
     index: u32,
@@ -56,7 +56,7 @@ pub struct MVBA<V: ABFTValue> {
     view_change: RwLock<Option<ViewChange<V>>>,
 }
 
-impl<V: ABFTValue> MVBA<V> {
+impl<V: ABFTValue + MvbaValue> MVBA<V> {
     pub fn init(id: u32, index: u32, f_tolerance: u32, n_parties: u32, value: V) -> Self {
         Self {
             id,
@@ -230,7 +230,8 @@ impl<V: ABFTValue> MVBA<V> {
         &self,
         message: ProtocolMessage,
         send_handle: &F,
-        signer: &Signer,
+        signer_mvba: &Signer,
+        signer_prbc: &Signer,
         coin: &Coin,
     ) -> MVBAResult<()> {
         let ProtocolMessage {
@@ -255,19 +256,19 @@ impl<V: ABFTValue> MVBA<V> {
             ProtocolMessageType::MvbaDone => {
                 let inner: MVBADoneMessage<V> = deserialize(&message_data)?;
 
-                self.on_done_message(send_id, inner, send_handle, signer)
+                self.on_done_message(send_id, inner, send_handle, signer_mvba)
                     .await?;
             }
             ProtocolMessageType::MvbaSkipShare => {
                 let inner: MVBASkipShareMessage = deserialize(&message_data)?;
 
-                self.on_skip_share_message(send_id, inner, send_handle, signer)
+                self.on_skip_share_message(send_id, inner, send_handle, signer_mvba)
                     .await?;
             }
             ProtocolMessageType::MvbaSkip => {
                 let inner: MVBASkipMessage = deserialize(&message_data)?;
 
-                self.on_skip_message(inner, send_handle, signer).await?;
+                self.on_skip_message(inner, send_handle, signer_mvba).await?;
             }
             ProtocolMessageType::PbSend => {
                 let pp_recvs = self.pp_recvs.read().await;
@@ -276,7 +277,7 @@ impl<V: ABFTValue> MVBA<V> {
                         let inner: PBSendMessage<V> = deserialize(&message_data)?;
 
                         match self
-                            .on_pb_send_message(pp, inner, send_id, send_handle, signer)
+                            .on_pb_send_message(pp, inner, send_id, send_handle, signer_mvba, signer_prbc)
                             .await
                         {
                             Ok(_) => return Ok(()),
@@ -325,7 +326,7 @@ impl<V: ABFTValue> MVBA<V> {
                     let inner: PBShareAckMessage = deserialize(&message_data)?;
 
                     if let Err(PPError::NotReadyForShareAck) =
-                        pp_send.on_share_ack(send_id, inner, signer).await
+                        pp_send.on_share_ack(send_id, inner, signer_mvba).await
                     {
                         warn!("pp_send not ready for message at Party {}!", recv_id);
                         return Err(MVBAError::NotReadyForMessage(ProtocolMessage {
@@ -365,7 +366,7 @@ impl<V: ABFTValue> MVBA<V> {
                 if let Some(view_change) = &*view_change {
                     let inner: ViewChangeMessage<V> = deserialize(&message_data)?;
 
-                    match view_change.on_view_change_message(&inner, signer) {
+                    match view_change.on_view_change_message(&inner, signer_mvba) {
                         Ok(_) => return Ok(()),
                         Err(ViewChangeError::ResultAlreadyTaken) => {
                             // If ViewChangeResult was taken, this should only happen if the result was returned
@@ -646,7 +647,8 @@ impl<V: ABFTValue> MVBA<V> {
         message: PBSendMessage<V>,
         send_id: u32,
         send_handle: &F,
-        signer: &Signer,
+        signer_mvba: &Signer,
+        signer_prbc: &Signer,
     ) -> PPResult<()> {
         let state = self.state.read().await;
 
@@ -672,7 +674,8 @@ impl<V: ABFTValue> MVBA<V> {
             &id,
             leader_index,
             lock,
-            signer,
+            signer_mvba,
+            signer_prbc,
             send_handle,
         )
         .await?;
@@ -796,7 +799,7 @@ impl<V: ABFTValue> MVBA<V> {
             let pp_recvs = (0..self.n_parties)
                 .filter_map(|i| {
                     if self.index != i {
-                        Some((i, Arc::new(PPReceiver::init(pp_id, self.index, i))))
+                        Some((i, Arc::new(PPReceiver::init(pp_id, self.index, self.f_tolerance, self.n_parties, i))))
                     } else {
                         None
                     }
@@ -933,4 +936,11 @@ pub struct SkipShare {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SkipSig {
     inner: Signature,
+}
+
+
+pub trait MvbaValue{
+
+    fn eval_mvba(&self, id: u32, f_tolerance: u32, n_parties: u32, signer: &Signer) -> bool;
+
 }
