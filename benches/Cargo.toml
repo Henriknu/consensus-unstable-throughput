@@ -25,6 +25,11 @@ path = "encrypt.rs"
 harness = false
 
 [[bench]]
+name = "erasure"
+path = "erasure.rs"
+harness = false
+
+[[bench]]
 name = "aes"
 path = "aes.rs"
 harness = false
