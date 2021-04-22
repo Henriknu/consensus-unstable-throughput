@@ -77,7 +77,13 @@ async fn acs_correctness() {
         //let value = Value::new(i * 1000);
         let value = EncodedEncryptedValue::default();
 
-        let acs = Arc::new(ACS::init(0, i as u32, N_PARTIES as u32, value));
+        let acs = Arc::new(ACS::init(
+            0,
+            i as u32,
+            THRESHOLD as u32,
+            N_PARTIES as u32,
+            value,
+        ));
 
         // Setup buffer manager
 

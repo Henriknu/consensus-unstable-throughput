@@ -69,6 +69,7 @@ async fn main() {
     let protocol = init_protocol(
         args.id,
         args.index,
+        args.f_tolerance,
         args.n_parties,
         args.crypto.clone(),
         client_manager_sender,
@@ -494,6 +495,13 @@ fn parse_args() -> ABFTCliArgs {
                 .takes_value(true),
         )
         .arg(
+            Arg::with_name("Fault tolerance")
+                .short("f")
+                .value_name("INTEGER")
+                .help("Number of possibly faulty nodes")
+                .takes_value(true),
+        )
+        .arg(
             Arg::with_name("Crypto")
                 .long("crypto")
                 .value_name("PATH")
@@ -527,6 +535,12 @@ fn parse_args() -> ABFTCliArgs {
         .parse::<u32>()
         .unwrap();
 
+    let f_tolerance = matches
+        .value_of("Fault tolerance")
+        .unwrap()
+        .parse::<u32>()
+        .unwrap_or(n_parties / 3);
+
     let crypto = String::from(matches.value_of("Crypto").unwrap_or("abft/crypto"));
 
     let server_endpoint = String::from(
@@ -541,6 +555,7 @@ fn parse_args() -> ABFTCliArgs {
     ABFTCliArgs {
         id,
         index,
+        f_tolerance,
         n_parties,
         crypto,
         server_endpoint,
@@ -550,6 +565,7 @@ fn parse_args() -> ABFTCliArgs {
 fn init_protocol(
     id: u32,
     index: u32,
+    f_tolerance: u32,
     n_parties: u32,
     crypto: String,
     send_handle: Arc<ChannelSender>,
@@ -562,6 +578,7 @@ fn init_protocol(
     let abft = Arc::new(ABFT::init(
         id,
         index,
+        f_tolerance,
         n_parties,
         send_handle,
         recv_handle,
@@ -598,6 +615,7 @@ fn get_client_uri(index: usize) -> Uri {
 pub struct ABFTCliArgs {
     id: u32,
     index: u32,
+    f_tolerance: u32,
     n_parties: u32,
     crypto: String,
     server_endpoint: String,

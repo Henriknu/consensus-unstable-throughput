@@ -14,6 +14,7 @@ pub struct Elect {
     id: u32,
     index: u32,
     view: u32,
+    f_tolerance: u32,
     n_parties: u32,
     tag: String,
     shares: Mutex<Vec<CoinShare>>,
@@ -21,12 +22,13 @@ pub struct Elect {
 }
 
 impl Elect {
-    pub fn init(id: u32, index: u32, view: u32, n_parties: u32) -> Elect {
+    pub fn init(id: u32, index: u32, view: u32, f_tolerance: u32, n_parties: u32) -> Elect {
         let tag = format!("{}", id);
         Elect {
             id,
             index,
             view,
+            f_tolerance,
             n_parties,
             tag,
             shares: Mutex::new(Vec::with_capacity((n_parties / 3 + 1) as usize)),
@@ -75,7 +77,7 @@ impl Elect {
             shares.push(share);
         }
 
-        if shares.len() >= (self.n_parties / 3 + 1) as usize {
+        if shares.len() >= (self.f_tolerance + 1) as usize {
             self.notify_shares.notify_one();
         }
 

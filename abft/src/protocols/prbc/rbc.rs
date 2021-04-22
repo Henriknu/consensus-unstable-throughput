@@ -25,6 +25,7 @@ pub type RBCResult<T> = Result<T, RBCError>;
 pub struct RBC {
     id: u32,
     index: u32,
+    f_tolerance: u32,
     n_parties: u32,
     send_id: u32,
     erasure: ErasureCoder,
@@ -36,10 +37,17 @@ pub struct RBC {
 }
 
 impl RBC {
-    pub fn init(id: u32, index: u32, n_parties: u32, send_id: u32) -> RBCResult<Self> {
+    pub fn try_init(
+        id: u32,
+        index: u32,
+        f_tolerance: u32,
+        n_parties: u32,
+        send_id: u32,
+    ) -> RBCResult<Self> {
         Ok(Self {
             id,
             index,
+            f_tolerance,
             n_parties,
             send_id,
             erasure: ErasureCoder::new(
@@ -152,7 +160,7 @@ impl RBC {
             n_echo_messages = lock.entry(root).or_default().len();
         }
 
-        if n_echo_messages >= (self.n_parties / 3 + 1) as usize {
+        if n_echo_messages >= (self.f_tolerance + 1) as usize {
             info!(
                 "Party {} notifying echo on RBC instance {}",
                 self.index, self.send_id
@@ -160,7 +168,7 @@ impl RBC {
             self.notify_echo.notify_one();
         }
 
-        if n_echo_messages >= (self.n_parties * 2 / 3 + 1) as usize
+        if n_echo_messages >= (self.f_tolerance * 2 + 1) as usize
             && !self.has_sent_ready.load(Ordering::SeqCst)
         {
             info!(
@@ -215,7 +223,7 @@ impl RBC {
             n_ready_messages = lock.entry(root).or_default().len();
         }
 
-        if n_ready_messages >= (self.n_parties / 3 + 1) as usize
+        if n_ready_messages >= (self.f_tolerance + 1) as usize
             && !self.has_sent_ready.load(Ordering::SeqCst)
         {
             let ready_message = RBCReadyMessage::new(root);
@@ -234,7 +242,7 @@ impl RBC {
             self.has_sent_ready.store(true, Ordering::SeqCst);
         }
 
-        if n_ready_messages >= (self.n_parties * 2 / 3 + 1) as usize {
+        if n_ready_messages >= (self.f_tolerance * 2 + 1) as usize {
             self.notify_ready.notify_one();
         }
 
@@ -342,7 +350,7 @@ impl RBC {
         let lock = self.ready_messages.read().await;
 
         for (root, map) in lock.iter() {
-            if map.len() >= (self.n_parties * 2 / 3 + 1) as usize {
+            if map.len() >= (self.f_tolerance * 2 + 1) as usize {
                 return Ok(*root);
             }
         }

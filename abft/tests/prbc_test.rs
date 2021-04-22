@@ -64,7 +64,13 @@ async fn prbc_correctness() {
             value = None;
         }
 
-        let prbc = Arc::new(PRBC::init(0, i as u32, N_PARTIES as u32, 0));
+        let prbc = Arc::new(PRBC::init(
+            0,
+            i as u32,
+            THRESHOLD as u32,
+            N_PARTIES as u32,
+            0,
+        ));
 
         // Setup buffer manager
 

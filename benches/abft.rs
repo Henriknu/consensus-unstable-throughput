@@ -96,6 +96,7 @@ async fn abft_correctness() {
         let abft = Arc::new(ABFT::init(
             0,
             i as u32,
+            THRESHOLD as u32,
             N_PARTIES as u32,
             f,
             r,

@@ -43,6 +43,7 @@ pub struct MVBA<V: ABFTValue> {
     /// Identifier for protocol
     id: u32,
     index: u32,
+    f_tolerance: u32,
     n_parties: u32,
     /// Internal state
     state: RwLock<MVBAState<V>>,
@@ -56,12 +57,13 @@ pub struct MVBA<V: ABFTValue> {
 }
 
 impl<V: ABFTValue> MVBA<V> {
-    pub fn init(id: u32, index: u32, n_parties: u32, value: V) -> Self {
+    pub fn init(id: u32, index: u32, f_tolerance: u32, n_parties: u32, value: V) -> Self {
         Self {
             id,
             index,
+            f_tolerance,
             n_parties,
-            state: RwLock::new(MVBAState::new(n_parties, value)),
+            state: RwLock::new(MVBAState::new(value)),
             notify_skip: Arc::new(Notify::new()),
             pp_send: RwLock::new(None),
             pp_recvs: RwLock::new(None),
@@ -474,7 +476,7 @@ impl<V: ABFTValue> MVBA<V> {
         // If enough done messages have been collected to elect leader, and we have not sent out skip_share, send it.
 
         if !*state.has_sent_skip_share.entry(id.view).or_default()
-            && state.pp_done[&id.view] >= (state.n_parties * 2 / 3) + 1
+            && state.pp_done[&id.view] >= (self.n_parties - self.f_tolerance)
         {
             let tag = self.tag_skip_share(id.id, id.view);
 
@@ -557,7 +559,7 @@ impl<V: ABFTValue> MVBA<V> {
 
         if !*state.has_sent_skip.entry(id.view).or_default()
             && state.pp_skip.entry(id.view).or_default().len()
-                >= (state.n_parties * 2 / 3 + 1) as usize
+                >= (self.n_parties - self.f_tolerance) as usize
         {
       
 
@@ -766,7 +768,7 @@ impl<V: ABFTValue> MVBA<V> {
     async fn init_state(&self) {
         let mut state = self.state.write().await;
 
-        state.step();
+        state.step(self.n_parties);
     }
 
     async fn init_pp(&self) {
@@ -783,7 +785,7 @@ impl<V: ABFTValue> MVBA<V> {
         drop(state);
 
         {
-            let pp_send = PPSender::init(pp_id, self.index, self.n_parties);
+            let pp_send = PPSender::init(pp_id, self.index, self.f_tolerance, self.n_parties);
 
             let mut lock = self.pp_send.write().await;
 
@@ -808,7 +810,7 @@ impl<V: ABFTValue> MVBA<V> {
     }
 
     async fn init_elect(&self, view: u32) {
-        let elect = Elect::init(self.id, self.index, view, self.n_parties);
+        let elect = Elect::init(self.id, self.index, view, self.f_tolerance, self.n_parties);
 
         let mut lock = self.elect.write().await;
 
@@ -821,6 +823,7 @@ impl<V: ABFTValue> MVBA<V> {
             id_leader,
             index,
             view,
+            self.f_tolerance,
             self.n_parties,
             state.KEY.view,
             state.LOCK,
@@ -856,7 +859,6 @@ pub struct MVBAID {
 struct MVBAState<V: ABFTValue> {
     /// Number of parties taking part in protocol
     view: u32,
-    n_parties: u32,
     LOCK: u32,
     KEY: Key<V>,
     /// Index of elected leader per view, if existing.
@@ -878,10 +880,9 @@ struct MVBAState<V: ABFTValue> {
 }
 
 impl<V: ABFTValue> MVBAState<V> {
-    fn new(n_parties: u32, value: V) -> Self {
+    fn new( value: V) -> Self {
         Self {
             view: 0,
-            n_parties,
             LOCK: 0,
             KEY: Key {
                 view: 0,
@@ -899,7 +900,7 @@ impl<V: ABFTValue> MVBAState<V> {
         }
     }
 
-    fn step(&mut self) {
+    fn step(&mut self, n_parties: u32) {
         self.view += 1;
 
         let view = self.view;
@@ -911,9 +912,9 @@ impl<V: ABFTValue> MVBAState<V> {
         self.pp_skip.insert(view, HashMap::new());
 
         self.has_received_done
-            .insert(view, (0..self.n_parties).map(|i| (i, false)).collect());
+            .insert(view, (0..n_parties).map(|i| (i, false)).collect());
         self.has_received_skip_share
-            .insert(view, (0..self.n_parties).map(|i| (i, false)).collect());
+            .insert(view, (0..n_parties).map(|i| (i, false)).collect());
     }
 }
 

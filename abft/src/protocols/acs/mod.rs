@@ -30,6 +30,7 @@ pub mod buffer;
 pub struct ACS<V: ABFTValue> {
     id: u32,
     index: u32,
+    f_tolerance: u32,
     n_parties: u32,
     value: V,
 
@@ -39,10 +40,11 @@ pub struct ACS<V: ABFTValue> {
 }
 
 impl<V: ABFTValue> ACS<V> {
-    pub fn init(id: u32, index: u32, n_parties: u32, value: V) -> Self {
+    pub fn init(id: u32, index: u32, f_tolerance: u32, n_parties: u32, value: V) -> Self {
         Self {
             id,
             index,
+            f_tolerance,
             n_parties,
             value,
 
@@ -141,7 +143,7 @@ impl<V: ABFTValue> ACS<V> {
                 (self.n_parties * 2 / 3 + 1)
             );
 
-            if signatures.len() >= (self.n_parties * 2 / 3 + 1) as usize {
+            if signatures.len() >= (self.f_tolerance * 2 + 1) as usize {
                 info!(
                     "Party {} has received enough PRBC signatures to continue on to MVBA",
                     self.index
@@ -309,7 +311,13 @@ impl<V: ABFTValue> ACS<V> {
             .map(|i| {
                 (
                     i,
-                    Arc::new(PRBC::init(self.id, self.index, self.n_parties, i)),
+                    Arc::new(PRBC::init(
+                        self.id,
+                        self.index,
+                        self.f_tolerance,
+                        self.n_parties,
+                        i,
+                    )),
                 )
             })
             .collect();
@@ -319,7 +327,7 @@ impl<V: ABFTValue> ACS<V> {
     }
 
     async fn init_mvba(&self, value: SignatureVector) {
-        let mvba = MVBA::init(self.id, self.index, self.n_parties, value);
+        let mvba = MVBA::init(self.id, self.index, self.f_tolerance, self.n_parties, value);
 
         let mut lock = self.mvba.write().await;
 
