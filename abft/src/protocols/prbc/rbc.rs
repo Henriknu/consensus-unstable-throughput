@@ -51,10 +51,9 @@ impl RBC {
             n_parties,
             send_id,
             erasure: ErasureCoder::new(
-                NonZeroUsize::new((n_parties / 3 + 1) as usize)
+                NonZeroUsize::new((n_parties - 2 * f_tolerance) as usize)
                     .ok_or_else(|| RBCError::ZeroUsize)?,
-                NonZeroUsize::new((n_parties * 2 / 3) as usize)
-                    .ok_or_else(|| RBCError::ZeroUsize)?,
+                NonZeroUsize::new((2 * f_tolerance) as usize).ok_or_else(|| RBCError::ZeroUsize)?,
             )?,
             echo_messages: Default::default(),
             ready_messages: Default::default(),

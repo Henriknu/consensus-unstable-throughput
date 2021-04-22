@@ -24,7 +24,7 @@ impl BlockHeader {
 pub struct Block {
     header: BlockHeader,
     header_signature: [u8; 32],
-    transactions: Vec<Transaction>,
+    _transactions: Vec<Transaction>,
 }
 
 impl Block {
@@ -59,7 +59,7 @@ impl BlockBuilder {
         Block {
             header,
             header_signature,
-            transactions: self.transactions,
+            _transactions: self.transactions,
         }
     }
 }
@@ -73,6 +73,6 @@ mod tests {
         let block = BlockBuilder::new().build_block();
 
         assert!(block.validate_header());
-        assert_eq!(block.transactions.len(), 0);
+        assert_eq!(block._transactions.len(), 0);
     }
 }

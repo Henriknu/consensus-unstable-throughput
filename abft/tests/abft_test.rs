@@ -7,13 +7,14 @@ use abft::{
     ABFTError, ABFT,
 };
 
-use abft::Value;
-
 use std::{collections::HashMap, sync::Arc};
 
 use futures::future::join_all;
 
-use consensus_core::crypto::{commoncoin::Coin, encrypt::Encrypter, sign::Signer};
+use consensus_core::{
+    crypto::{commoncoin::Coin, encrypt::Encrypter, sign::Signer},
+    data::transaction::TransactionSet,
+};
 
 use tokio::sync::mpsc::{self, Sender};
 
@@ -22,7 +23,8 @@ use log::{debug, error, info};
 use abft::test_helpers::{ABFTBufferManager, ChannelSender};
 
 const N_PARTIES: usize = THRESHOLD * 4;
-const THRESHOLD: usize = 2;
+const THRESHOLD: usize = 3;
+const BATCH_SIZE: u64 = 100_000;
 const BUFFER_CAPACITY: usize = N_PARTIES * N_PARTIES * 50 + 1000;
 
 #[tokio::test(flavor = "multi_thread")]
@@ -205,8 +207,11 @@ async fn abft_correctness() {
 
         // setup main thread
 
+        let transactions =
+            TransactionSet::generate_transactions(42, BATCH_SIZE).random_selection(N_PARTIES);
+
         let main_handle = tokio::spawn(async move {
-            match abft.invoke(Value::new(i as u32 * 1000)).await {
+            match abft.invoke(transactions).await {
                 Ok(value) => return Ok(value),
                 Err(e) => {
                     error!("Party {} got error when invoking abft: {}", i, e);
