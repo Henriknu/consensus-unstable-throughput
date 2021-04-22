@@ -46,6 +46,7 @@ pub enum PBError {
 pub struct PBSender {
     id: PBID,
     index: u32,
+    f_tolerance: u32,
     n_parties: u32,
     notify_shares: Arc<Notify>,
     serialized_proposal_response: Vec<u8>,
@@ -56,6 +57,7 @@ impl PBSender {
     pub fn init<V: ABFTValue>(
         id: PBID,
         index: u32,
+        f_tolerance: u32,
         n_parties: u32,
         proposal: &PPProposal<V>,
     ) -> Self {
@@ -70,6 +72,7 @@ impl PBSender {
         Self {
             id,
             index,
+            f_tolerance,
             n_parties,
             notify_shares: Arc::new(Notify::new()),
             serialized_proposal_response,
@@ -148,7 +151,7 @@ impl PBSender {
             return Err(PBError::InvalidShareAckSignature);
         }
 
-        if shares.len() >= (self.n_parties * 2 / 3 + 1) as usize {
+        if shares.len() >= (self.n_parties - self.f_tolerance) as usize {
             self.notify_shares.notify_one();
         }
 

@@ -23,6 +23,7 @@ pub struct ViewChange<V: ABFTValue> {
     id: MVBAID,
     index: u32,
     view: u32,
+    f_tolerance: u32,
     n_parties: u32,
     current_key_view: u32,
     current_lock: u32,
@@ -37,6 +38,7 @@ impl<V: ABFTValue> ViewChange<V> {
         id: MVBAID,
         index: u32,
         view: u32,
+        f_tolerance: u32,
         n_parties: u32,
         current_key_view: u32,
         current_lock: u32,
@@ -45,13 +47,14 @@ impl<V: ABFTValue> ViewChange<V> {
             id,
             index,
             view,
+            f_tolerance,
+            n_parties,
             current_key_view,
             current_lock,
             result: Mutex::new(Some(Changes::default())),
             done: AtomicBool::new(false),
             num_messages: AtomicU32::new(0),
             notify_messages: Arc::new(Notify::new()),
-            n_parties,
         }
     }
 
@@ -144,7 +147,7 @@ impl<V: ABFTValue> ViewChange<V> {
 
         let num_messages = self.num_messages.fetch_add(1, Ordering::Relaxed);
 
-        if num_messages >= (self.n_parties * 2 / 3) {
+        if num_messages >= (self.n_parties - self.f_tolerance) {
             self.notify_messages.notify_one();
         }
 

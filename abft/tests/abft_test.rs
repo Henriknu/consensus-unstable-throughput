@@ -21,8 +21,8 @@ use log::{debug, error, info};
 
 use abft::test_helpers::{ABFTBufferManager, ChannelSender};
 
-const N_PARTIES: usize = THRESHOLD * 3 + 1;
-const THRESHOLD: usize = 1;
+const N_PARTIES: usize = THRESHOLD * 4;
+const THRESHOLD: usize = 2;
 const BUFFER_CAPACITY: usize = N_PARTIES * N_PARTIES * 50 + 1000;
 
 #[tokio::test(flavor = "multi_thread")]
@@ -88,6 +88,7 @@ async fn abft_correctness() {
         let abft = Arc::new(ABFT::init(
             0,
             i as u32,
+            THRESHOLD as u32,
             N_PARTIES as u32,
             f,
             r,

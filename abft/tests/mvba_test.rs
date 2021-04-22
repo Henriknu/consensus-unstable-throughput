@@ -64,7 +64,13 @@ async fn mvba_correctness() {
             inner: Default::default(),
         };
 
-        let mvba = Arc::new(MVBA::init(0, i as u32, N_PARTIES as u32, signature_vector));
+        let mvba = Arc::new(MVBA::init(
+            0,
+            i as u32,
+            THRESHOLD as u32,
+            N_PARTIES as u32,
+            signature_vector,
+        ));
 
         // Setup buffer manager
 

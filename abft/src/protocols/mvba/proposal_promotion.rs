@@ -40,6 +40,7 @@ pub type PPResult<T> = Result<T, PPError>;
 pub struct PPSender<V: ABFTValue> {
     id: PPID,
     index: u32,
+    f_tolerance: u32,
     n_parties: u32,
     key: RwLock<Option<PPProposal<V>>>,
     lock: RwLock<Option<PPProposal<V>>>,
@@ -48,10 +49,11 @@ pub struct PPSender<V: ABFTValue> {
 }
 
 impl<V: ABFTValue> PPSender<V> {
-    pub fn init(id: PPID, index: u32, n_parties: u32) -> Self {
+    pub fn init(id: PPID, index: u32, f_tolerance: u32, n_parties: u32) -> Self {
         Self {
             id,
             index,
+            f_tolerance,
             n_parties,
             key: RwLock::new(None),
             lock: RwLock::new(None),
@@ -167,6 +169,7 @@ impl<V: ABFTValue> PPSender<V> {
         let pb = PBSender::init(
             PBID { id: self.id, step },
             self.index,
+            self.f_tolerance,
             self.n_parties,
             proposal,
         );

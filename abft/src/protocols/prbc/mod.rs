@@ -32,6 +32,7 @@ pub type PRBCResult<T> = Result<T, PRBCError>;
 pub struct PRBC {
     id: u32,
     index: u32,
+    f_tolerance: u32,
     n_parties: u32,
     pub(crate) send_id: u32,
     serialized_value: RwLock<Option<Vec<u8>>>,
@@ -44,10 +45,11 @@ pub struct PRBC {
 }
 
 impl PRBC {
-    pub fn init(id: u32, index: u32, n_parties: u32, send_id: u32) -> Self {
+    pub fn init(id: u32, index: u32, f_tolerance: u32, n_parties: u32, send_id: u32) -> Self {
         Self {
             id,
             index,
+            f_tolerance,
             n_parties,
             send_id,
             serialized_value: RwLock::new(None),
@@ -289,7 +291,7 @@ impl PRBC {
             if !lock.contains_key(&(index as usize)) {
                 lock.insert(index as usize, message.share);
 
-                if lock.len() >= (self.n_parties / 3 + 1) as usize {
+                if lock.len() >= (self.f_tolerance + 1) as usize {
                     self.notify_shares.notify_one();
                 }
             }
@@ -301,7 +303,13 @@ impl PRBC {
     }
 
     async fn init_rbc(&self) -> PRBCResult<()> {
-        let rbc = RBC::init(self.id, self.index, self.n_parties, self.send_id)?;
+        let rbc = RBC::try_init(
+            self.id,
+            self.index,
+            self.f_tolerance,
+            self.n_parties,
+            self.send_id,
+        )?;
 
         let mut lock = self.rbc.write().await;
 

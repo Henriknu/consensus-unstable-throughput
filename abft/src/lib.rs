@@ -38,6 +38,7 @@ pub struct ABFT<
 > {
     id: u32,
     index: u32,
+    f_tolerance: u32,
     n_parties: u32,
 
     encrypted_values: RwLock<Option<BTreeMap<u32, EncryptedValue>>>,
@@ -66,6 +67,7 @@ impl<
     pub fn init(
         id: u32,
         index: u32,
+        f_tolerance: u32,
         n_parties: u32,
         send_handle: Arc<F>,
         recv_handle: Arc<R>,
@@ -77,6 +79,7 @@ impl<
         Self {
             id,
             index,
+            f_tolerance,
             n_parties,
 
             encrypted_values: RwLock::new(None),
@@ -371,7 +374,7 @@ impl<
             (self.n_parties / 3 + 1)
         );
 
-        if shares.entry(index).or_default().len() as u32 >= (self.n_parties / 3 + 1) {
+        if shares.entry(index).or_default().len() as u32 >= (self.f_tolerance + 1) {
             drop(shares);
             self.decrypt_value(index).await?;
 
@@ -449,7 +452,13 @@ impl<
     }
 
     async fn init_acs(&self, encrypted: EncodedEncryptedValue) {
-        let acs = ACS::init(self.id, self.index, self.n_parties, encrypted);
+        let acs = ACS::init(
+            self.id,
+            self.index,
+            self.f_tolerance,
+            self.n_parties,
+            encrypted,
+        );
 
         let mut lock = self.acs.write().await;
 
