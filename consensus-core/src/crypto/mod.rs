@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 pub mod aes;
 pub mod commoncoin;
 pub mod encrypt;
+pub mod encrypt_dalek;
 pub mod hash;
 pub mod merkle;
 pub mod sign;

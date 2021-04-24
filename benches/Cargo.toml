@@ -6,6 +6,7 @@ edition = "2018"
 
 [dependencies]
 criterion = {version = "0.3", features = ["async_tokio", "html_reports"]}
+curve25519-dalek = {version = "3.1.0", default-features=false,  features = ["std", "simd_backend"]}
 consensus-core = {path = "../consensus-core"}
 abft = {path = "../abft"}
 tokio = {version = "1.2", features = ["full"]}
@@ -13,6 +14,10 @@ futures = "0.3"
 log = "0.4"
 env_logger = "0.8.3"
 threshold_crypto = "0.4"
+rand = "0.7"
+
+[build]
+rustflags = ["target-cpu=native", "target-feature=+aes,+sse2,+sse4.1,+ssse3,+avx512ifma,+avx2"]   
 
 
 [[bench]]
@@ -20,9 +25,16 @@ name = "sign"
 path = "sign.rs"
 harness = false
 
+
+
 [[bench]]
 name = "encrypt"
 path = "encrypt.rs"
+harness = false
+
+[[bench]]
+name = "commoncoin"
+path = "commoncoin.rs"
 harness = false
 
 [[bench]]
@@ -53,4 +65,9 @@ harness = false
 [[bench]]
 name = "abft"
 path = "abft.rs"
+harness = false
+
+[[bench]]
+name = "dalek"
+path = "dalek.rs"
 harness = false

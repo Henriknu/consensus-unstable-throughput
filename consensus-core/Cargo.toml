@@ -10,6 +10,7 @@ edition = "2018"
 aes = "0.6"
 aes-gcm = "0.8.0"
 bincode = "1.3"
+curve25519-dalek = {version = "3.1.0", default-features=false,  features = ["std", "simd_backend"]}
 byteorder = "1.4.2"
 libjerasure = {git = "https://github.com/Henriknu/libjerasure", branch="main" }
 frost = {git = "https://github.com/Henriknu/frost", branch="main"}
@@ -27,4 +28,4 @@ thiserror = "1.0"
 
 
 [build]
-rustflags = ["target-cpu=sandybridge", "target-feature=+aes,+sse2,+sse4.1,+ssse3"]        # custom flags to pass to all compiler invocations
+rustflags = ["target-cpu=native", "target-feature=+aes,+sse2,+sse4.1,+ssse3,+avx512ifma"]        # custom flags to pass to all compiler invocations

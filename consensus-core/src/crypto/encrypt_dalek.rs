@@ -1,23 +1,20 @@
-use p256::{
-    elliptic_curve::sec1::FromEncodedPoint, AffinePoint, EncodedPoint, FieldBytes, NonZeroScalar,
-    ProjectivePoint, Scalar,
-};
-use rand_core::OsRng;
-use std::{collections::HashSet, ops::Deref, str};
-
+use crate::crypto::hash::dalek::*;
+use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
+use curve25519_dalek::scalar::Scalar;
+use curve25519_dalek::{constants, traits::Identity};
+use rand::thread_rng;
 use serde::{Deserialize, Serialize};
-
-use super::hash::threshold::{hash1, hash2, hash4};
+use std::collections::HashSet;
+use std::str;
 
 #[derive(Clone, Copy)]
 struct PublicK {
-    g: AffinePoint,
-    g1: AffinePoint,
-    h: AffinePoint,
+    g1: RistrettoPoint,
+    h: RistrettoPoint,
 }
 #[derive(Clone)]
 struct VerifyK {
-    elements: Vec<AffinePoint>,
+    elements: Vec<RistrettoPoint>,
 }
 #[derive(Clone, Copy)]
 struct SecretK {
@@ -39,13 +36,11 @@ impl Encrypter {
         assert!(threshold > 0);
         assert!(n_actors >= threshold);
 
-        let g = AffinePoint::generator();
+        let mut rng = thread_rng();
 
-        let g1 = AffinePoint::generator() * NonZeroScalar::random(&mut OsRng);
+        let g1 = &constants::RISTRETTO_BASEPOINT_TABLE * &Scalar::random(&mut rng);
 
-        let coefficients: Vec<NonZeroScalar> = (0..threshold)
-            .map(|_| NonZeroScalar::random(&mut OsRng))
-            .collect();
+        let coefficients: Vec<Scalar> = (0..threshold).map(|_| Scalar::random(&mut rng)).collect();
 
         let secrets: Vec<Scalar> = (0..n_actors + 1)
             .map(|i| {
@@ -54,21 +49,21 @@ impl Encrypter {
                 let index = Scalar::from(i as u64);
 
                 for coeff in &coefficients {
-                    sum = sum + (coeff.deref() * &factor);
+                    sum = sum + (coeff * &factor);
                     factor = factor * index;
                 }
                 sum
             })
             .collect();
 
-        let mut publics: Vec<AffinePoint> = secrets
+        let mut publics: Vec<RistrettoPoint> = secrets
             .iter()
-            .map(|secret| (ProjectivePoint::generator() * secret).to_affine())
+            .map(|secret| &constants::RISTRETTO_BASEPOINT_TABLE * secret)
             .collect();
 
         let h = publics.remove(0);
 
-        let public = PublicK { g, g1, h };
+        let public = PublicK { g1, h };
 
         let verify = VerifyK { elements: publics };
 
@@ -89,23 +84,30 @@ impl Encrypter {
     }
 
     pub fn encrypt(&self, data: &[u8; 32], label: &[u8; 32]) -> Ciphertext {
-        let r = NonZeroScalar::random(&mut OsRng);
-        let s = NonZeroScalar::random(&mut OsRng);
+        let mut rng = thread_rng();
+
+        let r = Scalar::random(&mut rng);
+        let s = Scalar::random(&mut rng);
 
         let h1 = hash1(*&self.public.h * r);
-        let c: Vec<u8> = data.iter().zip(&h1).map(|(m, h)| m ^ h).collect();
 
-        let u = *&self.public.g * r;
-        let w = *&self.public.g * s;
+        let mut c = [0u8; 32];
+
+        for (i, (m, h)) in data.iter().zip(&h1).enumerate() {
+            c[i] = m ^ h;
+        }
+
+        let u = constants::RISTRETTO_BASEPOINT_POINT * r;
+        let w = constants::RISTRETTO_BASEPOINT_POINT * s;
         let u1 = *&self.public.g1 * r;
         let w1 = *&self.public.g1 * s;
 
         let e = hash2(&c, label, u, w, u1, w1);
-        let f = s.deref() + &(r.deref() * &e);
+        let f = s + &(r * &e);
 
         Ciphertext {
             c,
-            label: label.to_vec(),
+            label: *label,
             u,
             u1,
             e,
@@ -113,7 +115,7 @@ impl Encrypter {
         }
     }
     pub fn extract_label(&self, ciphertext: &Ciphertext) -> Vec<u8> {
-        ciphertext.label.clone()
+        ciphertext.label.to_vec()
     }
 
     pub fn decrypt_share(&self, ciphertext: &Ciphertext) -> Option<DecryptionShare> {
@@ -121,13 +123,15 @@ impl Encrypter {
             return None;
         };
 
-        let ss = NonZeroScalar::random(&mut OsRng);
+        let mut rng = thread_rng();
 
-        let uu = (ProjectivePoint::from(ciphertext.u) * self.secret.secret_scalar).to_affine();
+        let ss = Scalar::random(&mut rng);
+
+        let uu = ciphertext.u * self.secret.secret_scalar;
         let uu1 = ciphertext.u * ss;
-        let hh = *&self.public.g * ss;
+        let hh = constants::RISTRETTO_BASEPOINT_POINT * ss;
         let ee = hash4(uu, uu1, hh);
-        let ff = *ss + (self.secret.secret_scalar * ee);
+        let ff = ss + (self.secret.secret_scalar * ee);
 
         Some(DecryptionShare {
             index: self.index,
@@ -151,11 +155,10 @@ impl Encrypter {
             index
         );
 
-        let uu1 = (ProjectivePoint::from(ciphertext.u) * ff) - (ProjectivePoint::from(*uu) * ee);
-        let hh1 = (ProjectivePoint::from(*&self.public.g) * ff)
-            - (ProjectivePoint::from(*&self.verify.elements[*index]) * ee);
+        let uu1 = ciphertext.u * ff - *uu * ee;
+        let hh1 = constants::RISTRETTO_BASEPOINT_POINT * ff - &self.verify.elements[*index] * ee;
 
-        *ee == hash4(*uu, uu1.to_affine(), hh1.to_affine())
+        *ee == hash4(*uu, uu1, hh1)
     }
 
     pub fn combine_shares(
@@ -174,12 +177,12 @@ impl Encrypter {
         let result = shares
             .iter()
             .zip(coefficients)
-            .fold(ProjectivePoint::identity(), |acc, (share, coeff)| {
-                acc + (ProjectivePoint::from(share.uu) * coeff)
+            .fold(RistrettoPoint::identity(), |acc, (share, coeff)| {
+                acc + (RistrettoPoint::from(share.uu) * coeff)
             });
 
         // m = H1(res) XOR c
-        let h1 = hash1(result.to_affine());
+        let h1 = hash1(result);
 
         let mut data = [0u8; 32];
 
@@ -202,9 +205,9 @@ impl Encrypter {
             e,
             f,
         } = ciphertext;
-        let w = (ProjectivePoint::from(*&self.public.g) * f) - (ProjectivePoint::from(*u) * e);
-        let w1 = (ProjectivePoint::from(*&self.public.g1) * f) - (ProjectivePoint::from(*u1) * e);
-        ciphertext.e == hash2(c, label, *u, w.to_affine(), *u1, w1.to_affine())
+        let w = (constants::RISTRETTO_BASEPOINT_POINT * f) - (*u * e);
+        let w1 = (*&self.public.g1 * f) - (*u1 * e);
+        ciphertext.e == hash2(c, label, *u, w, *u1, w1)
     }
 
     fn calculate_lagrange_coefficients(&self, shares: &Vec<DecryptionShare>) -> Vec<Scalar> {
@@ -243,7 +246,7 @@ impl Encrypter {
                     "Expect denumerator to not be zero"
                 );
                 // TODO: Ensure Denumerator is always  invertible, e.g. not zero.
-                numerator * denumerator.invert().unwrap()
+                numerator * denumerator.invert()
             })
             .collect()
     }
@@ -252,34 +255,31 @@ impl Encrypter {
 #[derive(Serialize, Deserialize)]
 pub struct EncodedEncrypter {
     index: usize,
-    g: Vec<u8>,
-    g1: Vec<u8>,
-    h: Vec<u8>,
-    elements: Vec<Vec<u8>>,
-    secret_scalar: Vec<u8>,
+    g1: [u8; 32],
+    h: [u8; 32],
+    elements: Vec<[u8; 32]>,
+    secret_scalar: [u8; 32],
 }
 
 impl From<Encrypter> for EncodedEncrypter {
     fn from(encrypter: Encrypter) -> Self {
         let Encrypter {
             index,
-            public: PublicK { g, g1, h },
+            public: PublicK { g1, h },
             verify: VerifyK { elements },
             secret: SecretK { secret_scalar },
         } = encrypter;
 
-        let g = EncodedPoint::from(g).as_bytes().to_vec();
-        let g1 = EncodedPoint::from(g1).as_bytes().to_vec();
-        let h = EncodedPoint::from(h).as_bytes().to_vec();
+        let g1 = g1.compress().to_bytes();
+        let h = h.compress().to_bytes();
         let elements = elements
             .into_iter()
-            .map(|ele| EncodedPoint::from(ele).as_bytes().to_vec())
+            .map(|ele| ele.compress().to_bytes())
             .collect();
-        let secret_scalar = secret_scalar.to_bytes().as_slice().to_vec();
+        let secret_scalar = secret_scalar.to_bytes();
 
         Self {
             index,
-            g,
             g1,
             h,
             elements,
@@ -292,47 +292,31 @@ impl From<EncodedEncrypter> for Encrypter {
     fn from(encoded: EncodedEncrypter) -> Self {
         let EncodedEncrypter {
             index,
-            g,
             g1,
             h,
             elements,
             secret_scalar,
         } = encoded;
 
-        let g = AffinePoint::from_encoded_point(
-            &EncodedPoint::from_bytes(g)
-                .expect("Could not deserialize Sec1 encoded string to encoded point"),
-        )
-        .expect("Could not decode encoded point as affine point");
+        let g1 = CompressedRistretto::decompress(&CompressedRistretto::from_slice(&g1))
+            .expect("Could not decode encoded point as ristretto point");
 
-        let g1 = AffinePoint::from_encoded_point(
-            &EncodedPoint::from_bytes(g1)
-                .expect("Could not deserialize Sec1 encoded string to encoded point"),
-        )
-        .expect("Could not decode encoded point as affine point");
-
-        let h = AffinePoint::from_encoded_point(
-            &EncodedPoint::from_bytes(h)
-                .expect("Could not deserialize Sec1 encoded string to encoded point"),
-        )
-        .expect("Could not decode encoded point as affine point");
+        let h = CompressedRistretto::decompress(&CompressedRistretto::from_slice(&h))
+            .expect("Could not decode encoded point as ristretto point");
 
         let elements = elements
             .into_iter()
             .map(|ele| {
-                AffinePoint::from_encoded_point(
-                    &EncodedPoint::from_bytes(ele)
-                        .expect("Could not deserialize Sec1 encoded string to encoded point"),
-                )
-                .expect("Could not decode encoded point as affine point")
+                CompressedRistretto::decompress(&CompressedRistretto::from_slice(&ele))
+                    .expect("Could not decode encoded point as ristretto point")
             })
             .collect();
 
-        let secret_scalar = Scalar::from_bytes_reduced(FieldBytes::from_slice(&secret_scalar));
+        let secret_scalar = Scalar::from_bytes_mod_order(secret_scalar);
 
         Self {
             index,
-            public: PublicK { g, g1, h },
+            public: PublicK { g1, h },
             verify: VerifyK { elements },
             secret: SecretK { secret_scalar },
         }
@@ -341,22 +325,22 @@ impl From<EncodedEncrypter> for Encrypter {
 
 #[derive(Default, Debug, Clone, PartialEq)]
 pub struct Ciphertext {
-    c: Vec<u8>,
-    label: Vec<u8>,
-    u: AffinePoint,
-    u1: AffinePoint,
+    c: [u8; 32],
+    label: [u8; 32],
+    u: RistrettoPoint,
+    u1: RistrettoPoint,
     e: Scalar,
     f: Scalar,
 }
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct EncodedCiphertext {
-    c: Vec<u8>,
-    label: Vec<u8>,
-    u: Vec<u8>,
-    u1: Vec<u8>,
-    e: Vec<u8>,
-    f: Vec<u8>,
+    c: [u8; 32],
+    label: [u8; 32],
+    u: [u8; 32],
+    u1: [u8; 32],
+    e: [u8; 32],
+    f: [u8; 32],
 }
 
 impl From<Ciphertext> for EncodedCiphertext {
@@ -370,12 +354,12 @@ impl From<Ciphertext> for EncodedCiphertext {
             f,
         } = ciphetext;
 
-        let u = EncodedPoint::from(u).as_bytes().to_vec();
-        let u1 = EncodedPoint::from(u1).as_bytes().to_vec();
+        let u = u.compress().to_bytes();
+        let u1 = u1.compress().to_bytes();
 
-        let e = e.to_bytes().as_slice().to_vec();
+        let e = e.to_bytes();
 
-        let f = f.to_bytes().as_slice().to_vec();
+        let f = f.to_bytes();
 
         Self {
             c,
@@ -399,21 +383,14 @@ impl From<EncodedCiphertext> for Ciphertext {
             f,
         } = encoded;
 
-        let u = AffinePoint::from_encoded_point(
-            &EncodedPoint::from_bytes(u)
-                .expect("Could not deserialize Sec1 encoded string to encoded point"),
-        )
-        .expect("Could not decode encoded point as affine point");
+        let u = CompressedRistretto::decompress(&CompressedRistretto::from_slice(&u))
+            .expect("Could not decode encoded point as ristretto point");
 
-        let u1 = AffinePoint::from_encoded_point(
-            &EncodedPoint::from_bytes(u1)
-                .expect("Could not deserialize Sec1 encoded string to encoded point"),
-        )
-        .expect("Could not decode encoded point as affine point");
+        let u1 = CompressedRistretto::decompress(&CompressedRistretto::from_slice(&u1))
+            .expect("Could not decode encoded point as ristretto point");
 
-        let e = Scalar::from_bytes_reduced(FieldBytes::from_slice(&e));
-
-        let f = Scalar::from_bytes_reduced(FieldBytes::from_slice(&f));
+        let e = Scalar::from_bytes_mod_order(e);
+        let f = Scalar::from_bytes_mod_order(f);
 
         Self {
             c,
@@ -429,7 +406,7 @@ impl From<EncodedCiphertext> for Ciphertext {
 #[derive(Debug, Clone, PartialEq)]
 pub struct DecryptionShare {
     index: usize,
-    uu: AffinePoint,
+    uu: RistrettoPoint,
     ee: Scalar,
     ff: Scalar,
 }
@@ -437,20 +414,20 @@ pub struct DecryptionShare {
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
 pub struct EncodedDecryptionShare {
     index: usize,
-    uu: Vec<u8>,
-    ee: Vec<u8>,
-    ff: Vec<u8>,
+    uu: [u8; 32],
+    ee: [u8; 32],
+    ff: [u8; 32],
 }
 
 impl From<DecryptionShare> for EncodedDecryptionShare {
     fn from(share: DecryptionShare) -> Self {
         let DecryptionShare { index, uu, ee, ff } = share;
 
-        let uu = EncodedPoint::from(uu).as_bytes().to_vec();
+        let uu = uu.compress().to_bytes();
 
-        let ee = ee.to_bytes().as_slice().to_vec();
+        let ee = ee.to_bytes();
 
-        let ff = ff.to_bytes().as_slice().to_vec();
+        let ff = ff.to_bytes();
 
         Self { index, uu, ee, ff }
     }
@@ -460,15 +437,12 @@ impl From<EncodedDecryptionShare> for DecryptionShare {
     fn from(encoded: EncodedDecryptionShare) -> Self {
         let EncodedDecryptionShare { index, uu, ee, ff } = encoded;
 
-        let uu = AffinePoint::from_encoded_point(
-            &EncodedPoint::from_bytes(uu)
-                .expect("Could not deserialize Sec1 encoded string to encoded point"),
-        )
-        .expect("Could not decode encoded point as affine point");
+        let uu = CompressedRistretto::decompress(&CompressedRistretto::from_slice(&uu))
+            .expect("Could not decode encoded point as ristretto point");
 
-        let ee = Scalar::from_bytes_reduced(FieldBytes::from_slice(&ee));
+        let ee = Scalar::from_bytes_mod_order(ee);
 
-        let ff = Scalar::from_bytes_reduced(FieldBytes::from_slice(&ff));
+        let ff = Scalar::from_bytes_mod_order(ff);
 
         Self { index, uu, ee, ff }
     }

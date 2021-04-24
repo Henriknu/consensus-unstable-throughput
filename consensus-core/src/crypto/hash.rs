@@ -113,6 +113,61 @@ pub(crate) mod threshold {
         Scalar::from_bytes_reduced(FieldBytes::from_slice(&output))
     }
 }
+
+pub(crate) mod dalek {
+
+    use curve25519_dalek::constants;
+    use curve25519_dalek::ristretto::RistrettoPoint;
+    use curve25519_dalek::scalar::Scalar;
+    use rand::thread_rng;
+    use tiny_keccak::{Hasher, Sha3};
+
+    /// Hash function H: G -> {0, 1}^32
+    pub(crate) fn hash1(point: RistrettoPoint) -> [u8; 32] {
+        let mut sha3 = Sha3::v256();
+        let mut output = [0u8; 32];
+        sha3.update(point.compress().as_bytes());
+        sha3.finalize(&mut output);
+        output
+    }
+
+    /// Hash function H: {0, 1}^32 x {0, 1}^32 x  G^4 -> Zq
+    pub(crate) fn hash2(
+        ciphertext: &[u8],
+        label: &[u8],
+        u: RistrettoPoint,
+        w: RistrettoPoint,
+        u1: RistrettoPoint,
+        w1: RistrettoPoint,
+    ) -> Scalar {
+        let mut sha3 = Sha3::v256();
+        let mut output = [0u8; 32];
+
+        sha3.update(ciphertext);
+        sha3.update(label);
+        sha3.update(u.compress().as_bytes());
+        sha3.update(u1.compress().as_bytes());
+        sha3.update(w.compress().as_bytes());
+        sha3.update(w1.compress().as_bytes());
+        sha3.finalize(&mut output);
+
+        Scalar::from_bytes_mod_order(output)
+    }
+
+    /// Hash function H: G^3 -> Zq
+    pub(crate) fn hash4(u: RistrettoPoint, u1: RistrettoPoint, h: RistrettoPoint) -> Scalar {
+        let mut sha3 = Sha3::v256();
+        let mut output = [0u8; 32];
+
+        sha3.update(u.compress().as_bytes());
+        sha3.update(u1.compress().as_bytes());
+        sha3.update(h.compress().as_bytes());
+        sha3.finalize(&mut output);
+
+        Scalar::from_bytes_mod_order(output)
+    }
+}
+
 /// Hash functions used within the TDH2 threshold encryption system.
 pub(crate) mod commoncoin {
 
