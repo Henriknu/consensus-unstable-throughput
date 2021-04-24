@@ -4,8 +4,9 @@ use curve25519_dalek::traits::BasepointTable;
 use curve25519_dalek::{constants, traits::Identity};
 use curve25519_dalek::{
     edwards::{
-        EdwardsBasepointTableRadix128, EdwardsBasepointTableRadix16, EdwardsBasepointTableRadix256,
-        EdwardsBasepointTableRadix32, EdwardsBasepointTableRadix64, EdwardsPoint,
+        EdwardsBasepointTable, EdwardsBasepointTableRadix128, EdwardsBasepointTableRadix16,
+        EdwardsBasepointTableRadix256, EdwardsBasepointTableRadix32, EdwardsBasepointTableRadix64,
+        EdwardsPoint,
     },
     ristretto::RistrettoPoint,
 };
@@ -39,29 +40,37 @@ fn edward(c: &mut Criterion) {
 
     let point = EdwardsPoint::identity() * scalar;
 
-    let table16 = EdwardsBasepointTableRadix16::create(&point);
-    let table32 = EdwardsBasepointTableRadix32::create(&point);
-    let table64 = EdwardsBasepointTableRadix64::create(&point);
-    let table128 = EdwardsBasepointTableRadix128::create(&point);
-    let table256 = EdwardsBasepointTableRadix256::create(&point);
+    let table = Box::new(EdwardsBasepointTable::create(&point));
+    let table16 = Box::new(EdwardsBasepointTableRadix16::create(&point));
+    let table32 = Box::new(EdwardsBasepointTableRadix32::create(&point));
+    let table64 = Box::new(EdwardsBasepointTableRadix64::create(&point));
+    let table128 = Box::new(EdwardsBasepointTableRadix128::create(&point));
+    let table256 = Box::new(EdwardsBasepointTableRadix256::create(&point));
 
     c.bench_function("Scalar mul point w/o table", |b| b.iter(|| point * scalar));
+    c.bench_function("Scalar mul point with base_table", |b| {
+        b.iter(|| table.as_ref() * &scalar)
+    });
     c.bench_function("Scalar mul point with table16", |b| {
-        b.iter(|| &table16 * &scalar)
+        b.iter(|| table16.as_ref() * &scalar)
     });
     c.bench_function("Scalar mul point with table32", |b| {
-        b.iter(|| &table32 * &scalar)
+        b.iter(|| table32.as_ref() * &scalar)
     });
     c.bench_function("Scalar mul point with table64", |b| {
-        b.iter(|| &table64 * &scalar)
+        b.iter(|| table64.as_ref() * &scalar)
     });
     c.bench_function("Scalar mul point with table128", |b| {
-        b.iter(|| &table128 * &scalar)
+        b.iter(|| table128.as_ref() * &scalar)
     });
     c.bench_function("Scalar mul point with table256", |b| {
-        b.iter(|| &table256 * &scalar)
+        b.iter(|| table256.as_ref() * &scalar)
     });
 }
 
-criterion_group!(benches, edward);
+criterion_group! {
+name = benches;
+config = Criterion::default().sample_size(1000);
+targets = edward
+}
 criterion_main!(benches);

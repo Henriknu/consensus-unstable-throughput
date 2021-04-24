@@ -3,7 +3,7 @@ use p256::{
     ProjectivePoint, Scalar,
 };
 use rand_core::OsRng;
-use std::{collections::HashSet, ops::Deref, str};
+use std::{ops::Deref, str};
 
 use serde::{Deserialize, Serialize};
 
@@ -117,10 +117,6 @@ impl Encrypter {
     }
 
     pub fn decrypt_share(&self, ciphertext: &Ciphertext) -> Option<DecryptionShare> {
-        if !self.is_proof_valid(&ciphertext) {
-            return None;
-        };
-
         let ss = NonZeroScalar::random(&mut OsRng);
 
         let uu = (ProjectivePoint::from(ciphertext.u) * self.secret.secret_scalar).to_affine();
@@ -138,10 +134,6 @@ impl Encrypter {
     }
     // TODO: Verify_share should really accept a decryption share for a invalid ciphertext (e.g. "i, ?"). Currently just return false on invalid proof.
     pub fn verify_share(&self, ciphertext: &Ciphertext, decrypt_share: &DecryptionShare) -> bool {
-        if !self.is_proof_valid(&ciphertext) {
-            return false;
-        };
-
         let DecryptionShare { uu, ee, ff, index } = decrypt_share;
 
         assert!(
@@ -163,10 +155,6 @@ impl Encrypter {
         ciphertext: &Ciphertext,
         shares: Vec<DecryptionShare>,
     ) -> Option<Plaintext> {
-        if !self.is_proof_valid(&ciphertext) {
-            return None;
-        };
-
         let coefficients = self.calculate_lagrange_coefficients(&shares);
 
         // res = Summation over uu * coeff
@@ -193,7 +181,7 @@ impl Encrypter {
         Some(Plaintext { data })
     }
 
-    fn is_proof_valid(&self, ciphertext: &Ciphertext) -> bool {
+    fn _is_ciphertext_valid(&self, ciphertext: &Ciphertext) -> bool {
         let Ciphertext {
             c,
             label,
@@ -208,7 +196,7 @@ impl Encrypter {
     }
 
     fn calculate_lagrange_coefficients(&self, shares: &Vec<DecryptionShare>) -> Vec<Scalar> {
-        let index_set: HashSet<_> = shares.iter().map(|share| share.index).collect();
+        let index_set: Vec<_> = shares.iter().map(|share| share.index).collect();
 
         // Interpolate over the points, get coefficients
         shares
@@ -499,7 +487,7 @@ mod tests {
         let encrypted = actors[0].encrypt(&data, &data);
 
         for actor in &actors {
-            assert!(actor.is_proof_valid(&encrypted));
+            assert!(actor._is_ciphertext_valid(&encrypted));
         }
     }
 

@@ -44,10 +44,10 @@ fn decrypt_share(c: &mut Criterion) {
     c.bench_function("threshold_decrypt_share_tdh2_p256", |b| {
         b.iter(|| encrypter_p256.decrypt_share(&ciphertext_p256))
     });
-    c.bench_function("threshold_decrypt_shar_curve25519_dalek", |b| {
+    c.bench_function("threshold_decrypt_share_curve25519_dalek", |b| {
         b.iter(|| encrypter_dalek.decrypt_share(&ciphertext_dalek))
     });
-    c.bench_function("threshold_decrypt_shar_pairing", |b| {
+    c.bench_function("threshold_decrypt_share_pairing", |b| {
         b.iter(|| secret.decrypt_share_no_verify(&ciphertext_pairing))
     });
 }

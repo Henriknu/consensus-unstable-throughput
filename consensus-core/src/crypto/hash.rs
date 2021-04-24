@@ -116,10 +116,8 @@ pub(crate) mod threshold {
 
 pub(crate) mod dalek {
 
-    use curve25519_dalek::constants;
     use curve25519_dalek::ristretto::RistrettoPoint;
     use curve25519_dalek::scalar::Scalar;
-    use rand::thread_rng;
     use tiny_keccak::{Hasher, Sha3};
 
     /// Hash function H: G -> {0, 1}^32

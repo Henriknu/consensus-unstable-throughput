@@ -1,19 +1,13 @@
 use super::hash::commoncoin::{hash_1, hash_2, hash_3};
 use p256::{
-    elliptic_curve::{group::ScalarMul, sec1::FromEncodedPoint},
-    AffinePoint, EncodedPoint, FieldBytes, NonZeroScalar, ProjectivePoint, Scalar,
+    elliptic_curve::sec1::FromEncodedPoint, AffinePoint, EncodedPoint, FieldBytes, NonZeroScalar,
+    ProjectivePoint, Scalar,
 };
 use serde::{Deserialize, Serialize};
 // TODO: Look into if OsRng can be switched out for ThreadRNG or other PRNGS. Problem with rand vs rand_core trait contracts in p256...
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use rand_core::OsRng;
 use std::{collections::HashSet, ops::Deref, str};
-
-pub struct KeySet {
-    public: PublicK,
-    verify: VerifyK,
-    secrets: Vec<SecretK>,
-}
 
 #[derive(Clone, Copy)]
 struct PublicK {

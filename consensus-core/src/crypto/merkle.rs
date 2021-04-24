@@ -1,5 +1,3 @@
-use std::hash::Hash;
-
 use serde::{Deserialize, Serialize};
 
 use super::hash::{Hashable, H256};

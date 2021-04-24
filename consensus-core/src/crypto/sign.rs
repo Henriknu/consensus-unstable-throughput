@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use rand::{rngs::StdRng, SeedableRng};
 
 use std::collections::BTreeMap;
@@ -69,7 +67,6 @@ mod tests {
         let mut rng = StdRng::from_entropy();
         let sk_set = SecretKeySet::random(3, &mut rng);
         let pk_set = sk_set.public_keys();
-        let pk_master = pk_set.public_key();
 
         let msg = "Totally real news";
 
