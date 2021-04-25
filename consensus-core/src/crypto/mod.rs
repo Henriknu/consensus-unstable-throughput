@@ -1,14 +1,40 @@
 use serde::{Deserialize, Serialize};
 
 pub mod aes;
-pub mod commoncoin;
-pub mod encrypt;
-pub mod encrypt_dalek;
-pub mod encrypt_dalek_precomputed;
 pub mod hash;
 pub mod merkle;
 pub mod sign;
 //pub mod sign2;
+
+pub mod encrypt_dalek;
+pub mod encrypt_dalek_precomputed;
+pub mod encrypt_p256;
+
+pub mod commoncoin_dalek_precomputed;
+pub mod commoncoin_p256;
+
+pub mod encrypt {
+
+    #[cfg(feature = "encrypt-dalek-precomputed")]
+    pub use crate::crypto::encrypt_dalek_precomputed::*;
+
+    #[cfg(all(not(feature = "encrypt-dalek-precomputed"), feature = "encrypt-dalek"))]
+    pub use crate::crypto::encrypt_dalek::*;
+
+    #[cfg(all(
+        not(feature = "encrypt-dalek-precomputed"),
+        not(feature = "encrypt-dalek")
+    ))]
+    pub use crate::crypto::encrypt_p256::*;
+}
+
+pub mod commoncoin {
+    #[cfg(feature = "commoncoin-dalek-precomputed")]
+    pub use crate::crypto::commoncoin_dalek_precomputed::*;
+
+    #[cfg(not(feature = "commoncoin-dalek-precomputed"))]
+    pub use crate::crypto::commoncoin_p256::*;
+}
 
 #[derive(Serialize, Deserialize)]
 pub struct KeySet {

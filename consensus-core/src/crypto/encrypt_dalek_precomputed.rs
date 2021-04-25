@@ -1,4 +1,5 @@
 use crate::crypto::hash::dalek::*;
+use curve25519_dalek::ristretto::RistrettoBasepointTable;
 use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
 use curve25519_dalek::scalar::Scalar;
 use curve25519_dalek::{constants, traits::Identity};
@@ -6,14 +7,14 @@ use rand::thread_rng;
 use serde::{Deserialize, Serialize};
 use std::str;
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct PublicK {
-    g1: RistrettoPoint,
-    h: RistrettoPoint,
+    g1: Box<RistrettoBasepointTable>,
+    h: Box<RistrettoBasepointTable>,
 }
 #[derive(Clone)]
 struct VerifyK {
-    elements: Vec<RistrettoPoint>,
+    elements: Vec<RistrettoBasepointTable>,
 }
 #[derive(Clone, Copy)]
 struct SecretK {
@@ -37,7 +38,9 @@ impl Encrypter {
 
         let mut rng = thread_rng();
 
-        let g1 = &constants::RISTRETTO_BASEPOINT_TABLE * &Scalar::random(&mut rng);
+        let g1 = Box::new(RistrettoBasepointTable::create(
+            &(&constants::RISTRETTO_BASEPOINT_TABLE * &Scalar::random(&mut rng)),
+        ));
 
         let coefficients: Vec<Scalar> = (0..threshold).map(|_| Scalar::random(&mut rng)).collect();
 
@@ -55,12 +58,14 @@ impl Encrypter {
             })
             .collect();
 
-        let mut publics: Vec<RistrettoPoint> = secrets
+        let mut publics: Vec<RistrettoBasepointTable> = secrets
             .iter()
-            .map(|secret| &constants::RISTRETTO_BASEPOINT_TABLE * secret)
+            .map(|secret| {
+                RistrettoBasepointTable::create(&(&constants::RISTRETTO_BASEPOINT_TABLE * secret))
+            })
             .collect();
 
-        let h = publics.remove(0);
+        let h = Box::new(publics.remove(0));
 
         let public = PublicK { g1, h };
 
@@ -75,7 +80,7 @@ impl Encrypter {
         (0..n_actors)
             .map(|index| Encrypter {
                 index,
-                public,
+                public: public.clone(),
                 verify: verify.clone(),
                 secret: secrets[index],
             })
@@ -88,7 +93,7 @@ impl Encrypter {
         let r = Scalar::random(&mut rng);
         let s = Scalar::random(&mut rng);
 
-        let h1 = hash1(*&self.public.h * r);
+        let h1 = hash1(&*self.public.h * &r);
 
         let mut c = [0u8; 32];
 
@@ -96,10 +101,10 @@ impl Encrypter {
             c[i] = m ^ h;
         }
 
-        let u = constants::RISTRETTO_BASEPOINT_POINT * r;
-        let w = constants::RISTRETTO_BASEPOINT_POINT * s;
-        let u1 = *&self.public.g1 * r;
-        let w1 = *&self.public.g1 * s;
+        let u = &constants::RISTRETTO_BASEPOINT_TABLE * &r;
+        let w = &constants::RISTRETTO_BASEPOINT_TABLE * &s;
+        let u1 = &*self.public.g1 * &r;
+        let w1 = &*self.public.g1 * &s;
 
         let e = hash2(&c, label, u, w, u1, w1);
         let f = s + &(r * &e);
@@ -124,7 +129,7 @@ impl Encrypter {
 
         let uu = ciphertext.u * self.secret.secret_scalar;
         let uu1 = ciphertext.u * ss;
-        let hh = constants::RISTRETTO_BASEPOINT_POINT * ss;
+        let hh = &constants::RISTRETTO_BASEPOINT_TABLE * &ss;
         let ee = hash4(uu, uu1, hh);
         let ff = ss + (self.secret.secret_scalar * ee);
 
@@ -140,15 +145,8 @@ impl Encrypter {
     pub fn verify_share(&self, ciphertext: &Ciphertext, decrypt_share: &DecryptionShare) -> bool {
         let DecryptionShare { uu, ee, ff, index } = decrypt_share;
 
-        assert!(
-            &self.verify.elements.len() > index,
-            "Fewer verify elements ({}) than index {}",
-            &self.verify.elements.len(),
-            index
-        );
-
         let uu1 = ciphertext.u * ff - *uu * ee;
-        let hh1 = constants::RISTRETTO_BASEPOINT_POINT * ff - &self.verify.elements[*index] * ee;
+        let hh1 = &constants::RISTRETTO_BASEPOINT_TABLE * ff - &self.verify.elements[*index] * ee;
 
         *ee == hash4(*uu, uu1, hh1)
     }
@@ -166,7 +164,7 @@ impl Encrypter {
             .iter()
             .zip(coefficients)
             .fold(RistrettoPoint::identity(), |acc, (share, coeff)| {
-                acc + (RistrettoPoint::from(share.uu) * coeff)
+                acc + (share.uu * coeff)
             });
 
         // m = H1(res) XOR c
@@ -174,12 +172,9 @@ impl Encrypter {
 
         let mut data = [0u8; 32];
 
-        data.copy_from_slice(
-            &h1.iter()
-                .zip(&ciphertext.c)
-                .map(|(h_ele, c_ele)| h_ele ^ c_ele)
-                .collect::<Vec<u8>>(),
-        );
+        for (i, (h, c)) in h1.iter().zip(&ciphertext.c).enumerate() {
+            data[i] = h ^ c;
+        }
 
         Some(Plaintext { data })
     }
@@ -193,8 +188,8 @@ impl Encrypter {
             e,
             f,
         } = ciphertext;
-        let w = (constants::RISTRETTO_BASEPOINT_POINT * f) - (*u * e);
-        let w1 = (*&self.public.g1 * f) - (*u1 * e);
+        let w = (&constants::RISTRETTO_BASEPOINT_TABLE * f) - (*u * e);
+        let w1 = (&*self.public.g1 * f) - (u1 * e);
         ciphertext.e == hash2(c, label, *u, w, *u1, w1)
     }
 
@@ -228,12 +223,6 @@ impl Encrypter {
                     }
                 });
 
-                assert_ne!(
-                    denumerator,
-                    Scalar::zero(),
-                    "Expect denumerator to not be zero"
-                );
-                // TODO: Ensure Denumerator is always  invertible, e.g. not zero.
                 numerator * denumerator.invert()
             })
             .collect()
@@ -258,11 +247,11 @@ impl From<Encrypter> for EncodedEncrypter {
             secret: SecretK { secret_scalar },
         } = encrypter;
 
-        let g1 = g1.compress().to_bytes();
-        let h = h.compress().to_bytes();
+        let g1 = g1.basepoint().compress().to_bytes();
+        let h = h.basepoint().compress().to_bytes();
         let elements = elements
             .into_iter()
-            .map(|ele| ele.compress().to_bytes())
+            .map(|ele| ele.basepoint().compress().to_bytes())
             .collect();
         let secret_scalar = secret_scalar.to_bytes();
 
@@ -286,17 +275,23 @@ impl From<EncodedEncrypter> for Encrypter {
             secret_scalar,
         } = encoded;
 
-        let g1 = CompressedRistretto::decompress(&CompressedRistretto::from_slice(&g1))
-            .expect("Could not decode encoded point as ristretto point");
+        let g1 = Box::new(RistrettoBasepointTable::create(
+            &CompressedRistretto::decompress(&CompressedRistretto::from_slice(&g1))
+                .expect("Could not decode encoded point as ristretto point"),
+        ));
 
-        let h = CompressedRistretto::decompress(&CompressedRistretto::from_slice(&h))
-            .expect("Could not decode encoded point as ristretto point");
+        let h = Box::new(RistrettoBasepointTable::create(
+            &CompressedRistretto::decompress(&CompressedRistretto::from_slice(&h))
+                .expect("Could not decode encoded point as ristretto point"),
+        ));
 
         let elements = elements
             .into_iter()
             .map(|ele| {
-                CompressedRistretto::decompress(&CompressedRistretto::from_slice(&ele))
-                    .expect("Could not decode encoded point as ristretto point")
+                RistrettoBasepointTable::create(
+                    &CompressedRistretto::decompress(&CompressedRistretto::from_slice(&ele))
+                        .expect("Could not decode encoded point as ristretto point"),
+                )
             })
             .collect();
 

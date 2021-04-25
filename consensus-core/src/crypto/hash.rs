@@ -1,7 +1,6 @@
 use std::fmt::Display;
 
-use byteorder::{BigEndian, ReadBytesExt};
-use p256::{AffinePoint, EncodedPoint, FieldBytes, NistP256, Scalar};
+use p256::{AffinePoint, EncodedPoint, FieldBytes, Scalar};
 use serde::{Deserialize, Serialize};
 use tiny_keccak::{Hasher, Sha3};
 use uint::{construct_uint, unroll};
@@ -169,17 +168,9 @@ pub(crate) mod dalek {
 /// Hash functions used within the TDH2 threshold encryption system.
 pub(crate) mod commoncoin {
 
-    use std::borrow::Borrow;
-
-    use p256::{
-        elliptic_curve::{ff::PrimeField, group::ScalarMul, sec1::FromEncodedPoint},
-        ProjectivePoint,
-    };
+    use p256::ProjectivePoint;
 
     use super::*;
-
-    static P256_B: &str =
-        "41058363725152142129326129780047268409114441015993725554835256314039467401291";
 
     // TODO: Verify assumption that H(m) = (h(m) to Zq) * g is sufficient. If not, current draft: https://tools.ietf.org/html/draft-irtf-cfrg-hash-to-curve-04#section-4.
     // Would require implementing square root functions for p-256. Rust impl: https://dusk-network.github.io/dusk-zerocaf/src/zerocaf/backend/u64/field.rs.html#380-442
@@ -192,42 +183,6 @@ pub(crate) mod commoncoin {
 
         (ProjectivePoint::generator() * Scalar::from_bytes_reduced(FieldBytes::from_slice(&output)))
             .to_affine()
-    }
-
-    fn icart(u: Scalar) -> AffinePoint {
-        if u == Scalar::zero() {
-            return AffinePoint::identity();
-        }
-
-        // ((3a - u^4)/6u)
-        let v = (Scalar::zero() - Scalar::from(9) - u.square().square())
-            * (u * Scalar::from(6)).invert_vartime().unwrap();
-
-        let partial = v.square()
-            - Scalar::from_str(P256_B).unwrap()
-            - u.pow_vartime(&[6, 0, 0, 0]) * Scalar::from(27).invert_vartime().unwrap();
-
-        assert_ne!(partial, Scalar::one());
-
-        // Cube root: N^12865787690039583195855271883267508169999661691570640038046917673452056893819
-        // P - 1 / 3 = [12003011744808111216, 4537280849171177345, 6148914691236517205, 6148914689804861440]
-        // 2P - 1 / 3 = [5559279415906670816, 9074561698342354691, 12297829382473034410, 12297829379609722880]
-        // p + 2 / 9 = [16298833297409071483, 1512426949723725781, 8198552921648689607, 2049638229934953813]
-        let x = (partial.pow_vartime(&[
-            16298833297409071483,
-            1512426949723725781,
-            8198552921648689607,
-            2049638229934953813,
-        ])) + (u.square() * Scalar::from(3).invert_vartime().unwrap());
-
-        let y = u * x + v;
-
-        AffinePoint::from_encoded_point(&EncodedPoint::from_affine_coordinates(
-            &x.to_bytes(),
-            &y.to_bytes(),
-            false,
-        ))
-        .unwrap()
     }
 
     // Hash function H:  G^6 -> Zq
@@ -265,13 +220,62 @@ pub(crate) mod commoncoin {
     }
 }
 
+pub(crate) mod commoncoin_dalek {
+    /// Hash functions used within the TDH2 threshold encryption system.
+    use curve25519_dalek::ristretto::RistrettoPoint;
+    use curve25519_dalek::scalar::Scalar;
+    use tiny_keccak::{Hasher, Sha3};
+
+    pub(crate) fn hash_1(data: &[u8]) -> RistrettoPoint {
+        let mut sha3 = Sha3::v512();
+        let mut output = [0u8; 64];
+        sha3.update(data);
+        sha3.finalize(&mut output);
+
+        RistrettoPoint::from_uniform_bytes(&output)
+    }
+
+    // Hash function H:  G^6 -> Zq
+    pub(crate) fn hash_2(
+        g: RistrettoPoint,
+        gg: RistrettoPoint,
+        h: RistrettoPoint,
+        g1: RistrettoPoint,
+        gg1: RistrettoPoint,
+        h1: RistrettoPoint,
+    ) -> Scalar {
+        let mut sha3 = Sha3::v256();
+        let mut output = [0u8; 32];
+
+        sha3.update(g.compress().as_bytes());
+        sha3.update(gg.compress().as_bytes());
+        sha3.update(h.compress().as_bytes());
+        sha3.update(g1.compress().as_bytes());
+        sha3.update(gg1.compress().as_bytes());
+        sha3.update(h1.compress().as_bytes());
+        sha3.finalize(&mut output);
+
+        Scalar::from_bytes_mod_order(output)
+    }
+
+    // Hash function H:  G -> {0,1}^32.
+    pub(crate) fn hash_3(g: RistrettoPoint) -> [u8; 32] {
+        let mut sha3 = Sha3::v256();
+        let mut output = [0u8; 32];
+
+        sha3.update(g.compress().as_bytes());
+        sha3.finalize(&mut output);
+
+        output
+    }
+}
+
 #[cfg(test)]
 mod test_super {
     use super::*;
 
     use byteorder::ByteOrder;
     use p256::elliptic_curve::ff::PrimeField;
-    use uint::construct_uint;
 
     #[test]
     fn test_() {

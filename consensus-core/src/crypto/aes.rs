@@ -61,7 +61,7 @@ pub enum SymmetricEncrypterError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crypto::encrypt::Encrypter;
+    use crate::crypto::encrypt_p256::Encrypter;
 
     #[test]
     fn it_works() {

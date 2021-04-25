@@ -26,6 +26,16 @@ subtle = "2.4"
 threshold_crypto = "0.4"
 thiserror = "1.0"
 
+[features]
+encrypt-p256 = []
+encrypt-dalek = []
+encrypt-dalek-precomputed = []
+
+commoncoin-p256 = []
+commoncoin-dalek-precomputed = []
+
+
+
 
 [build]
 rustflags = ["target-cpu=native", "target-feature=+aes,+sse2,+sse4.1,+ssse3,+avx512ifma"]        # custom flags to pass to all compiler invocations

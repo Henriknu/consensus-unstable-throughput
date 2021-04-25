@@ -11,10 +11,9 @@ use std::{collections::HashMap, sync::Arc};
 
 use futures::future::join_all;
 
-use consensus_core::{
-    crypto::{commoncoin::Coin, encrypt::Encrypter, sign::Signer},
-    data::transaction::TransactionSet,
-};
+use consensus_core::data::transaction::TransactionSet;
+
+use consensus_core::crypto::{commoncoin::Coin, encrypt::Encrypter, sign::Signer};
 
 use tokio::sync::mpsc::{self, Sender};
 
@@ -22,9 +21,11 @@ use log::{debug, error, info};
 
 use abft::test_helpers::{ABFTBufferManager, ChannelSender};
 
+use std::time::Instant;
+
 const N_PARTIES: usize = THRESHOLD * 4;
-const THRESHOLD: usize = 3;
-const BATCH_SIZE: u64 = 100_000;
+const THRESHOLD: usize = 1;
+const BATCH_SIZE: u64 = N_PARTIES as u64;
 const BUFFER_CAPACITY: usize = N_PARTIES * N_PARTIES * 50 + 1000;
 
 #[tokio::test(flavor = "multi_thread")]
@@ -223,9 +224,13 @@ async fn abft_correctness() {
         handles.push(main_handle);
     }
 
+    let time = Instant::now();
+
     let results = join_all(handles).await;
 
     println!();
+    println!("-------------------------------------------------------------");
+    println!("Time Elapsed: {:?}", time.elapsed());
     println!("-------------------------------------------------------------");
     println!();
 
