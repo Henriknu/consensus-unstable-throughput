@@ -4,7 +4,7 @@ pub mod aes;
 pub mod hash;
 pub mod merkle;
 pub mod sign;
-//pub mod sign2;
+pub mod sign_ecdsa;
 
 pub mod encrypt_dalek;
 pub mod encrypt_dalek_precomputed;
