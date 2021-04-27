@@ -1,7 +1,7 @@
 use criterion::{criterion_group, criterion_main, Criterion};
 
-use consensus_core::crypto::sign::Signer;
 use consensus_core::crypto::sign_ecdsa::Signer as ECDSA;
+use consensus_core::crypto::{sign::Signer, sign_ecdsa::SignatureIdentifier};
 
 const N: usize = T * 4;
 const T: usize = 25;
@@ -11,6 +11,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     let signer_pairing = &signers_vec_pairing[0];
     let signers_vec_ecdsa = ECDSA::generate_signers(N, T);
     let signer_ecdsa = &signers_vec_ecdsa[0];
+    let identifier = SignatureIdentifier::new(0, 0);
 
     let data = "Hello world!".as_bytes();
 
@@ -42,11 +43,11 @@ fn criterion_benchmark(c: &mut Criterion) {
     });
 
     c.bench_function("ECDSA Combine Shares, N = 100, T = 25", |b| {
-        b.iter(|| signer_ecdsa.combine_signatures(&shares_ecdsa))
+        b.iter(|| signer_ecdsa.combine_signatures(&shares_ecdsa, &identifier))
     });
 
     let signature_pairing = signer_pairing.combine_signatures(&shares_pairing).unwrap();
-    let signature_ecdsa = signer_ecdsa.combine_signatures(&shares_ecdsa);
+    let signature_ecdsa = signer_ecdsa.combine_signatures(&shares_ecdsa, &identifier);
 
     c.bench_function("threshold_crypto Verify Signature, N = 100, T = 25", |b| {
         b.iter(|| signer_pairing.verify_signature(&signature_pairing, data))
