@@ -21,7 +21,10 @@ use crate::{
     ABFTValue,
 };
 use bincode::{deserialize, Error as BincodeError};
-use consensus_core::crypto::sign::{Signature, SignatureShare, Signer};
+use consensus_core::crypto::{
+    sign::{Signature, SignatureShare, Signer},
+    SignatureIdentifier,
+};
 use thiserror::Error;
 
 pub mod buffer;
@@ -85,7 +88,9 @@ impl PRBC {
 
         let value = rbc.invoke(value, send_handle).await?;
 
-        let share = signer.sign(&self.value_identifier);
+        let identifier = SignatureIdentifier::new(0, self.send_id as usize);
+
+        let share = signer.sign(&self.value_identifier, &identifier);
 
         info!(
             "Party {} draining prbc messages from buffer, for PRBC {}",
@@ -118,13 +123,23 @@ impl PRBC {
 
         let lock = self.shares.write().await;
 
-        let signature = signer
-            .combine_signatures(&lock)
-            .map_err(|_| PRBCError::InvalidSignature("PRBC Invoke".to_string()))?;
+        let signature = signer.combine_signatures(&lock, &identifier);
+
+        if !signer.verify_signature(&signature, &self.value_identifier) {
+            warn!(
+                "Party {} got invalid signature. Shares: {:?}, ValueID: {:?}",
+                self.index, *lock, self.value_identifier
+            );
+
+            panic!(
+                "Party {} got invalid signature for Party {}. Abort and investigate.",
+                self.index, self.send_id
+            );
+        }
 
         info!(
-            "Party {} succesfully completed PRBC with signature: {:?}",
-            self.index, signature
+            "Party {} succesfully completed PRBC with signature for Party {}. Shares: {:?}, ValueID: {:?}",
+            self.index, self.send_id, *lock, self.value_identifier
         );
 
         self.has_signature.store(true, Ordering::Relaxed);
@@ -139,7 +154,7 @@ impl PRBC {
         &self,
         message: ProtocolMessage,
         send_handle: &F,
-        signer: &Signer,
+        _signer: &Signer,
     ) -> PRBCResult<()> {
         let ProtocolMessage {
             send_id,
@@ -168,7 +183,7 @@ impl PRBC {
 
                 let inner: PRBCDoneMessage = deserialize(&message_data)?;
 
-                match self.on_done_message(send_id, inner, signer).await {
+                match self.on_done_message(send_id, inner).await {
                     Ok(_) => {}
                     Err(PRBCError::NotReadyForDoneMessage) => {
                         return Err(PRBCError::NotReadyForMessage(ProtocolMessage {
@@ -257,23 +272,10 @@ impl PRBC {
         Ok(())
     }
 
-    pub async fn on_done_message(
-        &self,
-        index: u32,
-        message: PRBCDoneMessage,
-        signer: &Signer,
-    ) -> PRBCResult<()> {
+    pub async fn on_done_message(&self, index: u32, message: PRBCDoneMessage) -> PRBCResult<()> {
         // Need to ensure we have received value
 
         debug!("Party {} went into on done prbc message. ", self.index);
-
-        if !signer.verify_share(index as usize, &message.share, &self.value_identifier) {
-            warn!(
-                "Party {} got invalid signature share from {} on PRBC value.",
-                self.index, index
-            );
-            return Ok(());
-        }
 
         {
             let mut lock = self.shares.write().await;
@@ -308,7 +310,7 @@ impl PRBC {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, PartialOrd)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PRBCSignature<V: ABFTValue> {
     pub(crate) value: V,
     pub(crate) inner: Signature,

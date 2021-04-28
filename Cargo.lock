@@ -547,6 +547,7 @@ dependencies = [
  "digest 0.9.0",
  "packed_simd_2",
  "rand_core 0.5.1",
+ "serde",
  "subtle",
  "zeroize",
 ]
@@ -1349,10 +1350,6 @@ dependencies = [
  "smallvec",
  "winapi",
 ]
-
-[[package]]
-name = "pbft"
-version = "0.1.0"
 
 [[package]]
 name = "percent-encoding"

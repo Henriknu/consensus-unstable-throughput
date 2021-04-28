@@ -582,8 +582,8 @@ fn init_protocol(
         n_parties,
         send_handle,
         recv_handle,
-        Arc::new(keyset.signer_prbc),
-        keyset.signer_mvba,
+        Arc::new(keyset.signer_prbc.into()),
+        keyset.signer_mvba.into(),
         keyset.coin.into(),
         keyset.encrypter.into(),
     ));

@@ -1,7 +1,5 @@
 use criterion::{criterion_group, criterion_main, Criterion};
 
-use threshold_crypto::{PublicKey, SecretKey};
-
 use consensus_core::crypto::commoncoin_dalek_precomputed::Coin as CoinDalekPreComputed;
 use consensus_core::crypto::commoncoin_p256::Coin as CoinP256;
 

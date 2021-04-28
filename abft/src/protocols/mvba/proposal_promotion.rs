@@ -81,7 +81,7 @@ impl<V: ABFTValue> PPSender<V> {
 
         // Step 1
         {
-            self.init_pb(PPStatus::Step1, &proposal).await;
+            self.init_pb(PPStatus::Step1).await;
             let lock = self.inner_pb.read().await;
             let pb = lock.as_ref().expect("PB instance should be initialized");
             proposal
@@ -94,7 +94,7 @@ impl<V: ABFTValue> PPSender<V> {
         }
         // Step 2
         {
-            self.init_pb(PPStatus::Step2, &proposal).await;
+            self.init_pb(PPStatus::Step2).await;
             let lock = self.inner_pb.read().await;
             let pb = lock.as_ref().expect("PB instance should be initialized");
             proposal
@@ -107,7 +107,7 @@ impl<V: ABFTValue> PPSender<V> {
         }
         // Step 3
         {
-            self.init_pb(PPStatus::Step3, &proposal).await;
+            self.init_pb(PPStatus::Step3).await;
             let lock = self.inner_pb.read().await;
             let pb = lock.as_ref().expect("PB instance should be initialized");
             proposal
@@ -120,7 +120,7 @@ impl<V: ABFTValue> PPSender<V> {
         }
         // Step 4
         {
-            self.init_pb(PPStatus::Step4, &proposal).await;
+            self.init_pb(PPStatus::Step4).await;
             let lock = self.inner_pb.read().await;
             let pb = lock.as_ref().expect("PB instance should be initialized");
             proof_prev.replace(pb.broadcast(proposal, signer, send_handle).await?);
@@ -129,19 +129,25 @@ impl<V: ABFTValue> PPSender<V> {
         Ok(proof_prev)
     }
 
-    pub async fn on_share_ack(
-        &self,
-        index: u32,
-        message: PBShareAckMessage,
-        signer: &Signer,
-    ) -> PPResult<()> {
+    pub async fn on_share_ack(&self, index: u32, message: PBShareAckMessage) -> PPResult<()> {
         let inner_pb = self.inner_pb.read().await;
         if let Some(pb) = &*inner_pb {
-            pb.on_share_ack_message(index, message, signer).await?;
+            Self::check_step(&message, pb)?;
+
+            pb.on_share_ack_message(index, message).await?;
         } else {
             return Err(PPError::NotReadyForShareAck);
         }
         Ok(())
+    }
+
+    fn check_step(message: &PBShareAckMessage, pb: &PBSender) -> PPResult<()> {
+        match message.id.step.partial_cmp(&pb.id.step) {
+            Some(Ordering::Equal) => Ok(()),
+            Some(Ordering::Greater) => Err(PPError::NotReadyForSend),
+            Some(Ordering::Less) => Err(PPError::ExpiredMessage(message.id.step, pb.id.step)),
+            None => Err(PPError::FailedCompareStep),
+        }
     }
 
     pub async fn result(&self) -> PPLeader<V> {
@@ -165,13 +171,12 @@ impl<V: ABFTValue> PPSender<V> {
         PPLeader { key, lock, commit }
     }
 
-    async fn init_pb(&self, step: PPStatus, proposal: &PPProposal<V>) {
+    async fn init_pb(&self, step: PPStatus) {
         let pb = PBSender::init(
             PBID { id: self.id, step },
             self.index,
             self.f_tolerance,
             self.n_parties,
-            proposal,
         );
 
         let mut inner_pb = self.inner_pb.write().await;

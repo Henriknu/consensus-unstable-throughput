@@ -1,7 +1,7 @@
 use criterion::{criterion_group, criterion_main, Criterion};
 
 use curve25519_dalek::traits::BasepointTable;
-use curve25519_dalek::{constants, traits::Identity};
+use curve25519_dalek::traits::Identity;
 use curve25519_dalek::{
     edwards::{
         EdwardsBasepointTable, EdwardsBasepointTableRadix128, EdwardsBasepointTableRadix16,
@@ -13,7 +13,7 @@ use curve25519_dalek::{
 use curve25519_dalek::{ristretto::RistrettoBasepointTable, scalar::Scalar};
 use rand::{self, Rng};
 
-fn ristretto(c: &mut Criterion) {
+fn _ristretto(c: &mut Criterion) {
     let mut rng = rand::thread_rng();
 
     let scalar = Scalar::random(&mut rng);
