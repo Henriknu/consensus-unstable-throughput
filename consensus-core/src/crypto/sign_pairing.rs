@@ -9,6 +9,8 @@ pub use threshold_crypto::{Signature, SignatureShare};
 pub use threshold_crypto::error::Error;
 use threshold_crypto::{serde_impl::SerdeSecret, PublicKeySet, SecretKeySet, SecretKeyShare};
 
+use super::SignatureIdentifier;
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Signer {
     secret: SerdeSecret<SecretKeyShare>,
@@ -33,7 +35,7 @@ impl Signer {
             .collect()
     }
 
-    pub fn sign(&self, data: &[u8]) -> SignatureShare {
+    pub fn sign(&self, data: &[u8], _identifier: &SignatureIdentifier) -> SignatureShare {
         self.secret.sign(&data)
     }
 
@@ -44,6 +46,7 @@ impl Signer {
     pub fn combine_signatures(
         &self,
         shares: &BTreeMap<usize, SignatureShare>,
+        _identifier: &SignatureIdentifier,
     ) -> Result<Signature, Error> {
         self.publics.combine_signatures(shares)
     }
@@ -104,11 +107,12 @@ mod tests {
     fn test_signer() {
         let data = "Hello world".as_bytes();
         let signers = Signer::generate_signers(10, 5);
+        let identifier = SignatureIdentifier::new(0, 0);
 
         let shares: BTreeMap<usize, SignatureShare> = signers
             .iter()
             .enumerate()
-            .map(|(index, signer)| (index, signer.sign(&data)))
+            .map(|(index, signer)| (index, signer.sign(&data, &identifier)))
             .collect();
 
         for share in &shares {
@@ -119,7 +123,7 @@ mod tests {
             );
         }
 
-        let sig = signers[0].combine_signatures(&shares).unwrap();
+        let sig = signers[0].combine_signatures(&shares, &identifier).unwrap();
 
         assert!(signers[0].verify_signature(&sig, &data));
     }

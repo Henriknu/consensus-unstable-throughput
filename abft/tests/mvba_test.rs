@@ -17,7 +17,7 @@ use tokio::sync::mpsc::{self, Sender};
 use log::error;
 
 const N_PARTIES: usize = THRESHOLD * 4;
-const THRESHOLD: usize = 2;
+const THRESHOLD: usize = 10;
 const BUFFER_CAPACITY: usize = THRESHOLD * 30;
 
 use abft::test_helpers::{ChannelSender, MVBABufferManager};
@@ -27,7 +27,7 @@ use abft::test_helpers::{ChannelSender, MVBABufferManager};
 async fn mvba_correctness() {
     env_logger::init();
 
-    let mut signers = Signer::generate_signers(N_PARTIES, N_PARTIES - THRESHOLD - 1);
+    let mut signers = Signer::generate_signers(N_PARTIES, N_PARTIES - THRESHOLD);
     let mut coins = Coin::generate_coins(N_PARTIES, THRESHOLD + 1);
 
     assert_eq!(signers.len(), N_PARTIES);

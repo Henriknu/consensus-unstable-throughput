@@ -34,7 +34,7 @@ encrypt-dalek-precomputed = []
 commoncoin-p256 = []
 commoncoin-dalek-precomputed = []
 
-
+sign-ecdsa = []
 
 
 [build]

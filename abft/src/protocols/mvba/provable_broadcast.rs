@@ -1,5 +1,8 @@
-use consensus_core::crypto::sign::{Signature, SignatureShare, Signer};
-use log::warn;
+use consensus_core::crypto::{
+    sign::{Signature, SignatureShare, Signer},
+    SignatureIdentifier,
+};
+use log::{error, warn};
 
 use std::{
     collections::BTreeMap,
@@ -29,8 +32,8 @@ type PBResult<T> = Result<T, PBError>;
 pub enum PBError {
     #[error("Got invalid signature for ShareAck Message")]
     InvalidShareAckSignature,
-    #[error("Got invalid value proposed")]
-    InvalidValueProposed,
+    #[error("Got invalid value proposed, for step: {0}")]
+    InvalidValueProposed(usize),
     #[error("Key provided with proposal was invalid")]
     InvalidKeyIncluded,
     #[error("Key provided with proposal was older than current lock")]
@@ -44,38 +47,23 @@ pub enum PBError {
 }
 
 pub struct PBSender {
-    id: PBID,
+    pub id: PBID,
     index: u32,
     f_tolerance: u32,
     n_parties: u32,
     notify_shares: Arc<Notify>,
-    serialized_proposal_response: Vec<u8>,
     shares: Mutex<BTreeMap<usize, PBSigShare>>,
 }
 
 impl PBSender {
-    pub fn init<V: ABFTValue>(
-        id: PBID,
-        index: u32,
-        f_tolerance: u32,
-        n_parties: u32,
-        proposal: &PPProposal<V>,
-    ) -> Self {
-        let proposal_response = PBResponse {
-            id,
-            value: proposal.value.clone(),
-        };
-
-        let serialized_proposal_response =
-            serialize(&proposal_response).expect("Could not serialize pb response");
-
+    pub fn init(id: PBID, index: u32, f_tolerance: u32, n_parties: u32) -> Self {
         Self {
             id,
             index,
             f_tolerance,
             n_parties,
             notify_shares: Arc::new(Notify::new()),
-            serialized_proposal_response,
+
             shares: Default::default(),
         }
     }
@@ -88,7 +76,7 @@ impl PBSender {
     ) -> PBResult<PBSig> {
         //send <ID, SEND, value, proof> to all parties
 
-        let pb_send = PBSendMessage::new(self.id, proposal);
+        let pb_send = PBSendMessage::new(self.id, proposal.clone());
 
         send_handle
             .broadcast(
@@ -118,9 +106,20 @@ impl PBSender {
 
         drop(lock);
 
-        let signature = signer
-            .combine_signatures(&shares)
-            .map_err(|_| PBError::CryptoError)?;
+        let identifier = SignatureIdentifier::new(self.id.step as usize + 1, self.index as usize);
+
+        let signature = signer.combine_signatures(&shares, &identifier);
+
+        let response = PBResponse {
+            id: self.id,
+            value: proposal.value.clone(),
+        };
+
+        if !signer.verify_signature(&signature, &serialize(&response).unwrap()) {
+            error!("Party {} got invalid when promoting proposal.", self.index,);
+
+            panic!()
+        }
 
         Ok(PBSig { inner: signature })
     }
@@ -129,27 +128,12 @@ impl PBSender {
         &self,
         index: u32,
         message: PBShareAckMessage,
-        signer: &Signer,
     ) -> PBResult<()> {
         let share = message.share;
 
         let mut shares = self.shares.lock().await;
 
-        if signer.verify_share(
-            index as usize,
-            &share.inner,
-            &self.serialized_proposal_response,
-        ) {
-            shares.insert(index as usize, share);
-        } else {
-            warn!(
-                "Party {} got InvalidShareAckSignature from {}, with signer with threshold: {}",
-                self.index,
-                index,
-                signer.threshold()
-            );
-            return Err(PBError::InvalidShareAckSignature);
-        }
+        shares.insert(index as usize, share);
 
         if shares.len() >= (self.n_parties - self.f_tolerance) as usize {
             self.notify_shares.notify_one();
@@ -229,8 +213,11 @@ impl<V: ABFTValue + MvbaValue> PBReceiver<V> {
                 value: proposal.value.clone(),
             };
 
+            let identifier = SignatureIdentifier::new(message.id.step as usize + 1, index as usize);
+
             let inner = signer_mvba.sign(
                 &serialize(&response).expect("Could not serialize message for on_value_send"),
+                &identifier,
             );
 
             let pb_ack = PBShareAckMessage::new(self.id, PBSigShare { inner });
@@ -303,7 +290,7 @@ impl<V: ABFTValue + MvbaValue> PBReceiver<V> {
             return Ok(true);
         }
 
-        Err(PBError::InvalidValueProposed)
+        Err(PBError::InvalidValueProposed(step as usize + 1))
     }
 
     fn check_key(

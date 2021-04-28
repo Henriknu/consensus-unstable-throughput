@@ -37,13 +37,13 @@ async fn abft_correctness() {
 
     builder.init();
 
-    let mut mvba_signers = Signer::generate_signers(N_PARTIES, N_PARTIES - THRESHOLD - 1);
+    let mut mvba_signers = Signer::generate_signers(N_PARTIES, N_PARTIES - THRESHOLD);
     let mut coins = Coin::generate_coins(N_PARTIES, THRESHOLD + 1);
 
     assert_eq!(mvba_signers.len(), N_PARTIES);
     assert_eq!(coins.len(), N_PARTIES);
 
-    let mut prbc_signers = Signer::generate_signers(N_PARTIES, THRESHOLD);
+    let mut prbc_signers = Signer::generate_signers(N_PARTIES, THRESHOLD + 1);
 
     assert_eq!(prbc_signers.len(), N_PARTIES);
 

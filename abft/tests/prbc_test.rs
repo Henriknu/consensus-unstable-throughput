@@ -15,7 +15,7 @@ use tokio::sync::mpsc::{self, Sender};
 
 use log::{debug, error, info};
 
-const N_PARTIES: usize = THRESHOLD * 3 + 1;
+const N_PARTIES: usize = THRESHOLD * 4;
 const THRESHOLD: usize = 10;
 const BUFFER_CAPACITY: usize = THRESHOLD * 30;
 
@@ -25,7 +25,7 @@ use abft::test_helpers::{ChannelSender, PRBCBufferManager};
 async fn prbc_correctness() {
     env_logger::init();
 
-    let mut signers = Signer::generate_signers(N_PARTIES, THRESHOLD);
+    let mut signers = Signer::generate_signers(N_PARTIES, THRESHOLD + 1);
 
     assert_eq!(signers.len(), N_PARTIES);
 
@@ -178,7 +178,7 @@ async fn prbc_correctness() {
         match join_result {
             Ok(prbc_result) => match prbc_result {
                 Ok(value) => {
-                    println!("Value returned party {} = {:?}", i, value);
+                    println!("Value returned for party {}", i);
                     if cmp_value.is_none() {
                         cmp_value.replace(value.clone());
                     }

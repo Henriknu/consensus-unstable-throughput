@@ -4,8 +4,8 @@ use crate::{
     ABFTValue,
 };
 use bincode::{deserialize, serialize};
-use consensus_core::crypto::commoncoin::*;
 use consensus_core::crypto::sign::*;
+use consensus_core::crypto::{commoncoin::*, SignatureIdentifier};
 use proposal_promotion::{PPProposal, PPReceiver, PPSender, PPStatus};
 use provable_broadcast::{PBKey, PBProof};
 use serde::{Deserialize, Serialize};
@@ -22,8 +22,8 @@ use self::{
     elect::Elect,
     error::{MVBAError, MVBAResult},
     messages::{
-        ElectCoinShareMessage, MVBADoneMessage, MVBASkipMessage,
-        MVBASkipShareMessage, PBSendMessage, PBShareAckMessage, ViewChangeMessage,
+        ElectCoinShareMessage, MVBADoneMessage, MVBASkipMessage, MVBASkipShareMessage,
+        PBSendMessage, PBShareAckMessage, ViewChangeMessage,
     },
     proposal_promotion::{PPError, PPLeader, PPResult, PPID},
     provable_broadcast::{PBResponse, PBSig, PBID},
@@ -243,7 +243,6 @@ impl<V: ABFTValue + MvbaValue> MVBA<V> {
             message_data,
             message_type,
         } = message;
-       
 
         info!(
             "Handling message from {} to {} with message_type {:?}",
@@ -268,7 +267,8 @@ impl<V: ABFTValue + MvbaValue> MVBA<V> {
             ProtocolMessageType::MvbaSkip => {
                 let inner: MVBASkipMessage = deserialize(&message_data)?;
 
-                self.on_skip_message(inner, send_handle, signer_mvba).await?;
+                self.on_skip_message(inner, send_handle, signer_mvba)
+                    .await?;
             }
             ProtocolMessageType::PbSend => {
                 let pp_recvs = self.pp_recvs.read().await;
@@ -277,7 +277,14 @@ impl<V: ABFTValue + MvbaValue> MVBA<V> {
                         let inner: PBSendMessage<V> = deserialize(&message_data)?;
 
                         match self
-                            .on_pb_send_message(pp, inner, send_id, send_handle, signer_mvba, signer_prbc)
+                            .on_pb_send_message(
+                                pp,
+                                inner,
+                                send_id,
+                                send_handle,
+                                signer_mvba,
+                                signer_prbc,
+                            )
                             .await
                         {
                             Ok(_) => return Ok(()),
@@ -326,7 +333,7 @@ impl<V: ABFTValue + MvbaValue> MVBA<V> {
                     let inner: PBShareAckMessage = deserialize(&message_data)?;
 
                     if let Err(PPError::NotReadyForShareAck) =
-                        pp_send.on_share_ack(send_id, inner, signer_mvba).await
+                        pp_send.on_share_ack(send_id, inner).await
                     {
                         warn!("pp_send not ready for message at Party {}!", recv_id);
                         return Err(MVBAError::NotReadyForMessage(ProtocolMessage {
@@ -481,8 +488,10 @@ impl<V: ABFTValue + MvbaValue> MVBA<V> {
         {
             let tag = self.tag_skip_share(id.id, id.view);
 
+            let identifier = SignatureIdentifier::new(0, self.n_parties as usize);
+
             let share = SkipShare {
-                inner: signer.sign(&tag.as_bytes()),
+                inner: signer.sign(&tag.as_bytes(), &identifier),
             };
 
             let skip_share_message = MVBASkipShareMessage::new(id, share);
@@ -533,18 +542,6 @@ impl<V: ABFTValue + MvbaValue> MVBA<V> {
             }
         }
 
-        // Assert that skip share is valid for index
-
-        let tag = self.tag_skip_share(id.id, id.view);
-
-        if !signer.verify_share(index as usize, &share.inner, &tag.as_bytes()) {
-            warn!(
-                "Party {} received received skip share message from Party {} with invalid signature share",
-                self.index, index, 
-            );
-            return Ok(());
-        }
-
         // Update state
 
         let mut state = self.state.write().await;
@@ -557,13 +554,10 @@ impl<V: ABFTValue + MvbaValue> MVBA<V> {
 
         // If we have received enough skip_shares to construct a skip signature, construct and broadcast it.
 
-
         if !*state.has_sent_skip.entry(id.view).or_default()
             && state.pp_skip.entry(id.view).or_default().len()
                 >= (self.n_parties - self.f_tolerance) as usize
         {
-      
-
             let shares = std::mem::take(state.pp_skip.get_mut(&id.view).unwrap())
                 .into_iter()
                 .map(|(i, skip_share)| (i as usize, skip_share.inner))
@@ -571,9 +565,20 @@ impl<V: ABFTValue + MvbaValue> MVBA<V> {
 
             // All signatures should have been individually verified. Expect that the signature is valid.
 
-            let skip_proof = signer
-                .combine_signatures(&shares)
-                .map_err(|_| MVBAError::InvalidSignature("on_skip_share".to_string()))?;
+            let identifier = SignatureIdentifier::new(0, self.n_parties as usize);
+
+            let skip_proof = signer.combine_signatures(&shares, &identifier);
+
+            if !signer
+                .verify_signature(&skip_proof, &self.tag_skip_share(id.id, id.view).as_bytes())
+            {
+                error!(
+                    "Party {} got invalid when creating skip message.",
+                    self.index,
+                );
+
+                panic!()
+            }
 
             let skip_message = MVBASkipMessage::new(id, SkipSig { inner: skip_proof });
 
@@ -799,7 +804,16 @@ impl<V: ABFTValue + MvbaValue> MVBA<V> {
             let pp_recvs = (0..self.n_parties)
                 .filter_map(|i| {
                     if self.index != i {
-                        Some((i, Arc::new(PPReceiver::init(pp_id, self.index, self.f_tolerance, self.n_parties, i))))
+                        Some((
+                            i,
+                            Arc::new(PPReceiver::init(
+                                pp_id,
+                                self.index,
+                                self.f_tolerance,
+                                self.n_parties,
+                                i,
+                            )),
+                        ))
                     } else {
                         None
                     }
@@ -883,7 +897,7 @@ struct MVBAState<V: ABFTValue> {
 }
 
 impl<V: ABFTValue> MVBAState<V> {
-    fn new( value: V) -> Self {
+    fn new(value: V) -> Self {
         Self {
             view: 0,
             LOCK: 0,
@@ -928,7 +942,7 @@ pub struct Key<V: ABFTValue> {
     proof: Option<PBSig>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkipShare {
     inner: SignatureShare,
 }
@@ -938,9 +952,6 @@ pub struct SkipSig {
     inner: Signature,
 }
 
-
-pub trait MvbaValue{
-
+pub trait MvbaValue {
     fn eval_mvba(&self, id: u32, f_tolerance: u32, n_parties: u32, signer: &Signer) -> bool;
-
 }
