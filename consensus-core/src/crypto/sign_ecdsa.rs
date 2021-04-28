@@ -687,7 +687,7 @@ mod tests {
     }
 
     //#[test]
-    fn test_lagrange_reversed() {
+    fn _test_lagrange_reversed() {
         let mut rng = rand::thread_rng();
 
         let lagrange_constants = Signer::calculate_lagrange_constants(T);

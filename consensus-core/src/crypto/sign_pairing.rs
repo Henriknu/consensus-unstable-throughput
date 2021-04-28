@@ -21,7 +21,7 @@ pub struct Signer {
 impl Signer {
     pub fn generate_signers(n_parties: usize, threshold: usize) -> Vec<Signer> {
         let mut rng = StdRng::from_entropy();
-        let sk_set = SecretKeySet::random(threshold, &mut rng);
+        let sk_set = SecretKeySet::random(threshold - 1, &mut rng);
         let pk_set = sk_set.public_keys();
 
         (0..n_parties)
@@ -47,8 +47,8 @@ impl Signer {
         &self,
         shares: &BTreeMap<usize, SignatureShare>,
         _identifier: &SignatureIdentifier,
-    ) -> Result<Signature, Error> {
-        self.publics.combine_signatures(shares)
+    ) -> Signature {
+        self.publics.combine_signatures(shares).unwrap()
     }
 
     pub fn verify_signature(&self, sig: &Signature, data: &[u8]) -> bool {
@@ -123,7 +123,7 @@ mod tests {
             );
         }
 
-        let sig = signers[0].combine_signatures(&shares, &identifier).unwrap();
+        let sig = signers[0].combine_signatures(&shares, &identifier);
 
         assert!(signers[0].verify_signature(&sig, &data));
     }

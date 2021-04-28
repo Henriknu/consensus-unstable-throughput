@@ -47,9 +47,7 @@ fn criterion_benchmark(c: &mut Criterion) {
         b.iter(|| signer_ecdsa.combine_signatures(&shares_ecdsa, &identifier))
     });
 
-    let signature_pairing = signer_pairing
-        .combine_signatures(&shares_pairing, &identifier)
-        .unwrap();
+    let signature_pairing = signer_pairing.combine_signatures(&shares_pairing, &identifier);
     let signature_ecdsa = signer_ecdsa.combine_signatures(&shares_ecdsa, &identifier);
 
     c.bench_function("threshold_crypto Verify Signature, N = 100, T = 25", |b| {

@@ -154,7 +154,7 @@ impl PRBC {
         &self,
         message: ProtocolMessage,
         send_handle: &F,
-        signer: &Signer,
+        _signer: &Signer,
     ) -> PRBCResult<()> {
         let ProtocolMessage {
             send_id,
@@ -183,7 +183,7 @@ impl PRBC {
 
                 let inner: PRBCDoneMessage = deserialize(&message_data)?;
 
-                match self.on_done_message(send_id, inner, signer).await {
+                match self.on_done_message(send_id, inner).await {
                     Ok(_) => {}
                     Err(PRBCError::NotReadyForDoneMessage) => {
                         return Err(PRBCError::NotReadyForMessage(ProtocolMessage {
@@ -272,27 +272,10 @@ impl PRBC {
         Ok(())
     }
 
-    pub async fn on_done_message(
-        &self,
-        index: u32,
-        message: PRBCDoneMessage,
-        signer: &Signer,
-    ) -> PRBCResult<()> {
+    pub async fn on_done_message(&self, index: u32, message: PRBCDoneMessage) -> PRBCResult<()> {
         // Need to ensure we have received value
 
         debug!("Party {} went into on done prbc message. ", self.index);
-
-        /*
-        if !signer.verify_share(index as usize, &message.share, &self.value_identifier) {
-            warn!(
-                "Party {} got invalid signature share from {} on PRBC value.",
-                self.index, index
-            );
-            return Ok(());
-        }
-
-
-        */
 
         {
             let mut lock = self.shares.write().await;
