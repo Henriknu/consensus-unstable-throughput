@@ -17,6 +17,10 @@ spec:
       - name: abft
         image: abft
         imagePullPolicy: Never
+        securityContext:
+          capabilities:
+            add:
+              - NET_ADMIN
         resources:
           limits:
             memory: "128Mi"
@@ -30,6 +34,8 @@ spec:
         - "{{$i}}"
         - "-n"
         - "{{$.Values.n_parties}}"
+        - "-f"
+        - "{{$.Values.f_tolerance}}"
         - "--crypto"
         - "crypto"
         - "-C"

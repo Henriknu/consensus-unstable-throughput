@@ -11,25 +11,27 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let args = std::env::args();
 
-    assert_eq!(args.len(), 2);
+    assert_eq!(args.len(), 3);
 
-    let threshold: usize = args.skip(1).next().unwrap().parse()?;
+    let mut args = args.skip(1);
 
-    let n_parties = threshold * 3 + 1;
+    let n_parties: usize = args.next().unwrap().parse()?;
+
+    let threshold: usize = args.next().unwrap().parse()?;
 
     // generate crypto
 
-    let mut mvba_signers = Signer::generate_signers(n_parties, n_parties - threshold - 1);
+    let mut mvba_signers = Signer::generate_signers(n_parties, n_parties - threshold);
     let mut coins = Coin::generate_coins(n_parties, threshold + 1);
 
     assert_eq!(mvba_signers.len(), n_parties);
     assert_eq!(coins.len(), n_parties);
 
-    let mut prbc_signers = Signer::generate_signers(n_parties, threshold);
+    let mut prbc_signers = Signer::generate_signers(n_parties, threshold + 1);
 
     assert_eq!(prbc_signers.len(), n_parties);
 
-    let mut encrypters = Encrypter::generate_keys(n_parties, threshold);
+    let mut encrypters = Encrypter::generate_keys(n_parties, threshold + 1);
 
     assert_eq!(encrypters.len(), n_parties);
 

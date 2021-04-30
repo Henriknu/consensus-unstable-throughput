@@ -47,7 +47,7 @@ async fn abft_correctness() {
 
     assert_eq!(prbc_signers.len(), N_PARTIES);
 
-    let mut encrypters = Encrypter::generate_keys(N_PARTIES, THRESHOLD);
+    let mut encrypters = Encrypter::generate_keys(N_PARTIES, THRESHOLD + 1);
 
     assert_eq!(encrypters.len(), N_PARTIES);
 
