@@ -52,6 +52,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         );
 
         let mut file = File::create(format!("abft/crypto/key_material{}", i))?;
+
         file.write_all(&serialize(&keyset)?)?;
     }
 

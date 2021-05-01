@@ -1,3 +1,5 @@
 target
 
 abft/crypto
+experiments/ec2/.venv
+experiments/ec2/.vscode
