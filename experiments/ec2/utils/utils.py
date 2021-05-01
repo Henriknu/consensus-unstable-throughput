@@ -63,6 +63,8 @@ def launch(number):
     for instance in instances:
         instance.wait_until_running()
 
+    print(instances[0].public_dns_name)
+
 
 def terminate_all():
 
