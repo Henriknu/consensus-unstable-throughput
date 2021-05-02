@@ -1,8 +1,9 @@
 from fabric import Connection, ThreadingGroup, task
 from utils.utils import get_ec2_instances_ips
 from datetime import datetime
+#from multiprocessing import Pool
 
-N = 8
+N = 4
 F = N / 4
 
 
@@ -36,6 +37,35 @@ def upload_binary(c):
 
 
 @task
+def prepare_hosts(c):
+
+    group = get_group()
+
+    ips = get_ec2_instances_ips()
+    open('hosts', 'w').write('\n'.join(ips))
+
+    group.put("hosts")
+
+
+@task
+def prepare_logs(c):
+
+    group = get_group()
+
+    group.run("mkdir -p logs")
+
+    group.put("../../log4rs.yaml")
+
+
+@task
+def prepare_deps(c):
+
+    group = get_group()
+
+    group.sudo("apt-get install dtach -y")
+
+
+@task
 def download_logs(c):
 
     group = get_group()
@@ -44,7 +74,7 @@ def download_logs(c):
 
     for i, connection in enumerate(group):
         connection.get(
-            f"logs/log.txt", local=f'logs/execution_log-node{i}-{datetime.now().strftime("%m-%d, %H:%M:%S")}')
+            f"logs/execution.log", local=f'logs/execution_log-N{N}-node{i}-{datetime.now().strftime("%m-%d, %H:%M:%S")}')
 
 
 @task
@@ -54,8 +84,11 @@ def start_protocol(c):
     connection: Connection
 
     for i, connection in enumerate(group):
+
+        print(f"Starting connection: {i}")
+
         connection.run(
-            f"nohup abft --id 0 -i {i} -n {N} -f {F} --crypto crypto/ &> /dev/null &", pty=False)
+            f"RUST_LOG=info dtach -n `abft --id 0 -i {i} -n {N} -f {F} -h hosts -e $(curl -s http://169.254.169.254/latest/meta-data/local-ipv4) --crypto crypto/`", disown=True)
 
 
 @task
@@ -69,3 +102,6 @@ def stop_protocol(c):
 def prepare(c):
     upload_crypto(c)
     upload_binary(c)
+    prepare_hosts(c)
+    prepare_logs(c)
+    prepare_deps(c)

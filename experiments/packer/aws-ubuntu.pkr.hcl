@@ -45,7 +45,7 @@ build {
       "sudo add-apt-repository main && sudo add-apt-repository universe && sudo add-apt-repository multiverse && sudo add-apt-repository restricted",
       "sudo apt-get update -y",
       "sudo apt-get upgrade -y && sudo apt-get dist-upgrade -y",
-      "sudo apt-get install -y iproute2 build-essential make automake autoconf libtool",
+      "sudo apt-get install -y iproute2 dtach build-essential make automake autoconf libtool",
     ]
   }
 

@@ -37,6 +37,13 @@ def get_ec2_instances_ids(FilterNames: str = None):
     return ids
 
 
+def ipAll():
+    result = []
+    result += get_ec2_instances_ips()
+    open('hosts', 'w').write('\n'.join(result))
+    return result
+
+
 def launch(number):
 
     ec2_client = boto3.client('ec2', region_name=SERVER_REGION)

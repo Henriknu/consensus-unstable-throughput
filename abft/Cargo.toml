@@ -31,6 +31,7 @@ consensus-core = {path = "../consensus-core", features=["encrypt-dalek-precomput
 curve25519-dalek = {version = "3.1.0", default-features=false,  features = ["std", "simd_backend"]}
 futures = "0.3"
 log = "0.4"
+log4rs = "1.0.0"
 env_logger = "0.8.3"
 num-traits = "0.2"
 num-derive = "0.3"

@@ -6,6 +6,7 @@ use log::{error, info, warn};
 
 use std::{
     collections::{HashMap, HashSet},
+    io::BufRead,
     net::SocketAddr,
     time::Duration,
 };
@@ -35,17 +36,21 @@ use tokio::sync::mpsc::{self, Receiver, Sender};
 
 const RECV_TIMEOUT_SECS: u64 = 5;
 const CLIENT_RETRY_TIMEOUT_SECS: u64 = 1;
+const SERVER_PORT_NUMBER: u64 = 50000;
 
 #[tokio::main]
 async fn main() {
-    let args = Arc::new(parse_args());
+    // Configure logging
 
     init_logger();
 
+    info!("Booting up ...");
+
+    let args = Arc::new(parse_args());
+
     // client managers
 
-    let (client_manager_sender, client_ready_rx) =
-        spawn_client_managers(args.index, args.n_parties);
+    let (client_manager_sender, client_ready_rx) = spawn_client_managers(&args);
 
     // Buffer manager
 
@@ -105,7 +110,7 @@ async fn main() {
 
         let server = AbftServer::new(service);
 
-        let addr: SocketAddr = server_args.server_endpoint.parse().unwrap();
+        let addr: SocketAddr = server_args.server_endpoint;
 
         println!("Server Addr: {}", addr);
 
@@ -135,7 +140,7 @@ async fn main() {
 
     match protocol.invoke(Value::new(args.index * 1000)).await {
         Ok(value) => {
-            println!(
+            info!(
                 "Party {} terminated ABFT with value: {:?}",
                 args.index, value
             );
@@ -178,15 +183,14 @@ async fn send_setup_ack(args: &ABFTCliArgs) {
     let index = args.index;
 
     for i in 0..(args.n_parties as usize) {
+        let uri = args.hosts[&(i as u32)].to_string().parse::<Uri>().unwrap();
         if i != args.index as usize {
             handles.push(tokio::spawn(async move {
                 // Attempt to establish a channel, sleeping a couple of seconds until we succesfully are able to connect.
                 let channel: Channel;
 
                 loop {
-                    let addr = get_client_uri(i);
-
-                    match Channel::builder(addr)
+                    match Channel::builder(uri.clone())
                         .timeout(Duration::from_secs(RECV_TIMEOUT_SECS))
                         .connect()
                         .await
@@ -260,15 +264,15 @@ async fn send_finished(args: &ABFTCliArgs) {
     let index = args.index;
 
     for i in 0..(args.n_parties as usize) {
+        let uri = args.hosts[&(i as u32)].clone();
+
         if i != args.index as usize {
             handles.push(tokio::spawn(async move {
                 // Attempt to establish a channel, sleeping a couple of seconds until we succesfully are able to connect.
                 let channel: Channel;
 
                 loop {
-                    let addr = get_client_uri(i);
-
-                    match Channel::builder(addr)
+                    match Channel::builder(uri.clone())
                         .timeout(Duration::from_secs(RECV_TIMEOUT_SECS))
                         .connect()
                         .await
@@ -333,18 +337,23 @@ async fn wait_for_finish_and_exit(mut fin_rx: Receiver<u32>, args: &ABFTCliArgs)
     info!("Party {} gracefully exit", args.index);
 }
 
-fn spawn_client_managers(own_index: u32, n_parties: u32) -> (Arc<ChannelSender>, Receiver<u32>) {
-    let (client_ready_send, client_ready_receive) = mpsc::channel(n_parties as usize);
+fn spawn_client_managers(args: &ABFTCliArgs) -> (Arc<ChannelSender>, Receiver<u32>) {
+    let (client_ready_send, client_ready_receive) = mpsc::channel(args.n_parties as usize);
 
-    let mut channels: Vec<_> = (0..n_parties)
+    let mut channels: Vec<_> = (0..args.n_parties)
         .map(|_| {
-            let (tx, rx) =
-                mpsc::channel::<ProtocolMessage>((n_parties * n_parties * 50 + 100) as usize);
+            let (tx, rx) = mpsc::channel::<ProtocolMessage>(
+                (args.n_parties * args.n_parties * 50 + 100) as usize,
+            );
             (tx, Some(rx))
         })
         .collect();
 
-    for i in 0..(n_parties as usize) {
+    let own_index = args.index;
+
+    for i in 0..(args.n_parties as usize) {
+        let uri = args.hosts[&(i as u32)].clone();
+
         if i != own_index as usize {
             let mut recv = channels[i].1.take().unwrap();
 
@@ -355,9 +364,7 @@ fn spawn_client_managers(own_index: u32, n_parties: u32) -> (Arc<ChannelSender>,
                 let channel: Channel;
 
                 loop {
-                    let addr = get_client_uri(i);
-
-                    match Channel::builder(addr)
+                    match Channel::builder(uri.clone())
                         .timeout(Duration::from_secs(RECV_TIMEOUT_SECS))
                         .connect()
                         .await
@@ -509,10 +516,17 @@ fn parse_args() -> ABFTCliArgs {
                 .takes_value(true),
         )
         .arg(
-            Arg::with_name("connection")
-                .short("C")
+            Arg::with_name("Endpoint")
+                .short("e")
+                .value_name("SocketAddr")
+                .help("Endpoint for server to listen to")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("Hosts")
+                .short("h")
                 .value_name("PATH")
-                .help("Endpoint to listen at for server")
+                .help("Custom path to list of host ips")
                 .takes_value(true),
         )
         .get_matches();
@@ -521,7 +535,7 @@ fn parse_args() -> ABFTCliArgs {
         .value_of("Protocol ID")
         .unwrap()
         .parse::<u32>()
-        .unwrap();
+        .unwrap_or(0);
 
     let index = matches
         .value_of("Party Index")
@@ -539,18 +553,39 @@ fn parse_args() -> ABFTCliArgs {
         .value_of("Fault tolerance")
         .unwrap()
         .parse::<u32>()
-        .unwrap_or(n_parties / 3);
+        .unwrap_or(n_parties / 4);
 
     let crypto = String::from(matches.value_of("Crypto").unwrap_or("abft/crypto"));
 
-    let server_endpoint = String::from(
-        matches
-            .value_of("connection")
-            .unwrap_or(format!("[::1]:5000{}", index).as_str()),
-    );
+    let server_endpoint = String::from(matches.value_of("Endpoint").unwrap_or("[::1]"));
 
-    // more program logic goes here...
-    //
+    info!("Invoked with endpoint: {}", server_endpoint);
+
+    let server_endpoint = format!("{}:{}", server_endpoint, SERVER_PORT_NUMBER)
+        .parse::<SocketAddr>()
+        .unwrap();
+
+    info!("Evaluated endpoint to: {}", server_endpoint);
+
+    // Read hosts
+
+    let hosts_path = String::from(matches.value_of("Hosts").unwrap_or("hosts"));
+
+    let mut hosts = HashMap::with_capacity(n_parties as usize);
+
+    let file = std::fs::File::open(hosts_path).unwrap();
+
+    let lines = std::io::BufReader::new(file).lines();
+
+    for (i, line) in lines.enumerate() {
+        let line = line.unwrap();
+        hosts.insert(
+            i as u32,
+            format!("http://{}:{}", line, SERVER_PORT_NUMBER)
+                .parse()
+                .unwrap(),
+        );
+    }
 
     ABFTCliArgs {
         id,
@@ -559,6 +594,7 @@ fn parse_args() -> ABFTCliArgs {
         n_parties,
         crypto,
         server_endpoint,
+        hosts,
     }
 }
 
@@ -592,33 +628,18 @@ fn init_protocol(
 }
 
 fn init_logger() {
-    use env_logger::{Builder, Target};
-
-    let mut builder = Builder::from_default_env();
-    builder.target(Target::Stdout);
-
-    builder.init();
+    log4rs::init_file("log4rs.yaml", Default::default()).unwrap();
 }
 
-/// Check if env is set via K8s. If not, return localhost default.
-fn get_client_uri(index: usize) -> Uri {
-    if let Ok(host) = std::env::var(format!("ABFT_{}_SERVICE_SERVICE_HOST", index)) {
-        if let Ok(port) = std::env::var(format!("ABFT_{}_SERVICE_SERVICE_PORT", index)) {
-            return format!("http://{}:{}", host, port).parse().unwrap();
-        }
-    }
-
-    format!("http://[::1]:5000{}", index).parse().unwrap()
-}
-
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ABFTCliArgs {
     id: u32,
     index: u32,
     f_tolerance: u32,
     n_parties: u32,
     crypto: String,
-    server_endpoint: String,
+    server_endpoint: SocketAddr,
+    hosts: HashMap<u32, Uri>,
 }
 
 pub struct ABFTService {
