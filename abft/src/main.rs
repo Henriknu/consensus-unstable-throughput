@@ -1,6 +1,6 @@
 use bincode::deserialize;
 use clap::{App, Arg};
-use consensus_core::crypto::KeySet;
+use consensus_core::{crypto::KeySet, data::transaction::TransactionSet};
 use futures::future::join_all;
 use log::{error, info, warn};
 
@@ -28,7 +28,7 @@ use abft::{
         prbc::buffer::PRBCBufferCommand,
     },
     test_helpers::{ABFTBufferManager, ChannelSender},
-    ABFTError, Value, ABFT,
+    ABFTError, ABFT,
 };
 
 use std::sync::Arc;
@@ -37,6 +37,7 @@ use tokio::sync::mpsc::{self, Receiver, Sender};
 const RECV_TIMEOUT_SECS: u64 = 5;
 const CLIENT_RETRY_TIMEOUT_SECS: u64 = 1;
 const SERVER_PORT_NUMBER: u64 = 50000;
+const SEED_TRANSACTION_SET: u32 = 899923234;
 
 #[tokio::main]
 async fn main() {
@@ -136,9 +137,12 @@ async fn main() {
 
     // Invoke protocol
 
+    let value = TransactionSet::generate_transactions(SEED_TRANSACTION_SET, args.batch_size)
+        .random_selection((args.batch_size / args.n_parties as u64) as usize);
+
     info!("Invoking ABFT");
 
-    match protocol.invoke(Value::new(args.index * 1000)).await {
+    match protocol.invoke(value).await {
         Ok(value) => {
             info!(
                 "Party {} terminated ABFT with value: {:?}",
@@ -334,7 +338,13 @@ async fn wait_for_finish_and_exit(mut fin_rx: Receiver<u32>, args: &ABFTCliArgs)
         }
     }
 
-    info!("Party {} gracefully exit", args.index);
+    info!(
+        "Party {} gracefully exit, having received num finished messages: {}",
+        args.index,
+        finished.len()
+    );
+
+    info!("\n");
 }
 
 fn spawn_client_managers(args: &ABFTCliArgs) -> (Arc<ChannelSender>, Receiver<u32>) {
@@ -424,7 +434,7 @@ fn spawn_client_managers(args: &ABFTCliArgs) -> (Arc<ChannelSender>, Receiver<u3
 }
 
 fn spawn_buffer_manager(
-    protocol: Arc<ABFT<ChannelSender, ABFTBufferManager, Value>>,
+    protocol: Arc<ABFT<ChannelSender, ABFTBufferManager, TransactionSet>>,
     mut buff_cmd_recv: Receiver<ABFTBufferCommand>,
     own_index: u32,
 ) {
@@ -509,6 +519,13 @@ fn parse_args() -> ABFTCliArgs {
                 .takes_value(true),
         )
         .arg(
+            Arg::with_name("Batch size")
+                .short("b")
+                .value_name("INTEGER")
+                .help("Total number of transaction provided as input to protocol")
+                .takes_value(true),
+        )
+        .arg(
             Arg::with_name("Crypto")
                 .long("crypto")
                 .value_name("PATH")
@@ -555,6 +572,12 @@ fn parse_args() -> ABFTCliArgs {
         .parse::<u32>()
         .unwrap_or(n_parties / 4);
 
+    let batch_size = matches
+        .value_of("Batch size")
+        .unwrap()
+        .parse::<u64>()
+        .unwrap_or(n_parties as u64);
+
     let crypto = String::from(matches.value_of("Crypto").unwrap_or("abft/crypto"));
 
     let server_endpoint = String::from(matches.value_of("Endpoint").unwrap_or("[::1]"));
@@ -592,6 +615,7 @@ fn parse_args() -> ABFTCliArgs {
         index,
         f_tolerance,
         n_parties,
+        batch_size,
         crypto,
         server_endpoint,
         hosts,
@@ -606,7 +630,7 @@ fn init_protocol(
     crypto: String,
     send_handle: Arc<ChannelSender>,
     recv_handle: Arc<ABFTBufferManager>,
-) -> Arc<ABFT<ChannelSender, ABFTBufferManager, Value>> {
+) -> Arc<ABFT<ChannelSender, ABFTBufferManager, TransactionSet>> {
     let bytes = std::fs::read(format!("{}/key_material{}", crypto, index)).unwrap();
 
     let keyset: KeySet = deserialize(&bytes).unwrap();
@@ -637,6 +661,7 @@ pub struct ABFTCliArgs {
     index: u32,
     f_tolerance: u32,
     n_parties: u32,
+    batch_size: u64,
     crypto: String,
     server_endpoint: SocketAddr,
     hosts: HashMap<u32, Uri>,
@@ -644,7 +669,7 @@ pub struct ABFTCliArgs {
 
 pub struct ABFTService {
     index: u32,
-    protocol: Arc<ABFT<ChannelSender, ABFTBufferManager, Value>>,
+    protocol: Arc<ABFT<ChannelSender, ABFTBufferManager, TransactionSet>>,
     buff_send: Sender<ABFTBufferCommand>,
     setup_send: Sender<u32>,
     finished_send: Sender<u32>,

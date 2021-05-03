@@ -49,34 +49,28 @@ build {
     ]
   }
 
-  # Cargo + Rust toolchain
+  # AWS Cloud Watch Agent install
   provisioner "shell" {
     inline = [
-      "echo Installing rust toolchain and cargo",
-      "curl https://sh.rustup.rs -sSf | sh -s -- -y",
-      ". $HOME/.cargo/env",
-      "rustup toolchain add nightly-2021-04-25",
-      "rustup default nightly-2021-04-25",
-      "rustup component add --toolchain nightly-2021-04-25 rustfmt clippy",
-      "rustup update",
+      "echo Installing AWS Cloud Watch Agent",
+      "wget https://s3.amazonaws.com/amazoncloudwatch-agent/ubuntu/amd64/latest/amazon-cloudwatch-agent.deb",
+      "sudo dpkg -i -E ./amazon-cloudwatch-agent.deb",
+      "rm ./amazon-cloudwatch-agent.deb"
     ]
   }
 
-  # Install test binary
+   # Preparing folder structure
   provisioner "shell" {
     inline = [
-      "echo Installing abft binary",
-      "ssh-keyscan ssh.dev.azure.com >> ~/.ssh/known_hosts",
-      "git clone git@ssh.dev.azure.com:v3/henriknu/consensus-unstable-throughput/consensus-unstable-throughput",
-      "cd consensus-unstable-throughput",
-      ". $HOME/.cargo/env",
-      "cargo build --release",
-      "sudo chmod a+rx target/release/abft",
-      "sudo cp target/release/abft /usr/local/bin",
+      "echo Preparing folder structure",
+      "mkdir crypto",
+      "mkdir logs",
     ]
-
-
   }
+
+
+
+  
 
 
 }

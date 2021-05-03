@@ -6,3 +6,4 @@ experiments/ec2/.vscode
 experiments/.vscode/
 experiments/ec2/logs
 experiments/ec2/hosts
+experiments/ec2/hidden.py
