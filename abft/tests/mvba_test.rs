@@ -17,7 +17,7 @@ use tokio::sync::mpsc::{self, Sender};
 use log::error;
 
 const N_PARTIES: usize = THRESHOLD * 4;
-const THRESHOLD: usize = 10;
+const THRESHOLD: usize = 1;
 const BUFFER_CAPACITY: usize = THRESHOLD * 30;
 
 use abft::test_helpers::{ChannelSender, MVBABufferManager};
@@ -25,7 +25,12 @@ use abft::test_helpers::{ChannelSender, MVBABufferManager};
 // We use same signer for mvba and prbc. Ok as Value do not use it in MvbaValue::eval_mvba.
 #[tokio::test(flavor = "multi_thread")]
 async fn mvba_correctness() {
-    env_logger::init();
+    use env_logger::{Builder, Target};
+
+    let mut builder = Builder::from_default_env();
+    builder.target(Target::Stdout);
+
+    builder.init();
 
     let mut signers = Signer::generate_signers(N_PARTIES, N_PARTIES - THRESHOLD);
     let mut coins = Coin::generate_coins(N_PARTIES, THRESHOLD + 1);

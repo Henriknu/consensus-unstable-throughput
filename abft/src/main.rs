@@ -138,7 +138,12 @@ async fn main() {
     // Invoke protocol
 
     let value = TransactionSet::generate_transactions(SEED_TRANSACTION_SET, args.batch_size)
-        .random_selection((args.batch_size / args.n_parties as u64) as usize);
+        .random_selection(args.n_parties as usize);
+
+    info!(
+        "Proposing transaction set with {} transactions.",
+        value.len()
+    );
 
     info!("Invoking ABFT");
 

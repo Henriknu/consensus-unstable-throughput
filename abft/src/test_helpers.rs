@@ -121,6 +121,15 @@ impl MVBAReceiver for MVBABufferManager {
 
         Ok(())
     }
+
+    async fn drain_skip(
+        &self,
+        view: u32,
+    ) -> crate::protocols::mvba::proposal_promotion::PPResult<()> {
+        self.sender.send(MVBABufferCommand::Skip { view }).await?;
+
+        Ok(())
+    }
 }
 
 pub struct ACSBufferManager {
@@ -197,6 +206,23 @@ impl MVBAReceiver for ACSBufferManager {
             .sender
             .send(ACSBufferCommand::MVBA {
                 inner: MVBABufferCommand::ViewChange { view },
+            })
+            .await
+        {
+            error!("Got error when draining buffer: {}", e);
+        }
+
+        Ok(())
+    }
+
+    async fn drain_skip(
+        &self,
+        view: u32,
+    ) -> crate::protocols::mvba::proposal_promotion::PPResult<()> {
+        if let Err(e) = self
+            .sender
+            .send(ACSBufferCommand::MVBA {
+                inner: MVBABufferCommand::Skip { view },
             })
             .await
         {
@@ -290,6 +316,25 @@ impl MVBAReceiver for ABFTBufferManager {
             .send(ABFTBufferCommand::ACS {
                 inner: ACSBufferCommand::MVBA {
                     inner: MVBABufferCommand::ViewChange { view },
+                },
+            })
+            .await
+        {
+            error!("Got error when draining buffer: {}", e);
+        }
+
+        Ok(())
+    }
+
+    async fn drain_skip(
+        &self,
+        view: u32,
+    ) -> crate::protocols::mvba::proposal_promotion::PPResult<()> {
+        if let Err(e) = self
+            .sender
+            .send(ABFTBufferCommand::ACS {
+                inner: ACSBufferCommand::MVBA {
+                    inner: MVBABufferCommand::Skip { view },
                 },
             })
             .await

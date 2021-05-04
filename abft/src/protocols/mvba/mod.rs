@@ -9,7 +9,10 @@ use consensus_core::crypto::{commoncoin::*, SignatureIdentifier};
 use proposal_promotion::{PPProposal, PPReceiver, PPSender, PPStatus};
 use provable_broadcast::{PBKey, PBProof};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    sync::atomic::{AtomicU32, Ordering},
+};
 
 use log::{error, info, warn};
 use tokio::sync::RwLock;
@@ -45,15 +48,16 @@ pub struct MVBA<V: ABFTValue + MvbaValue> {
     index: u32,
     f_tolerance: u32,
     n_parties: u32,
+    view: AtomicU32,
     /// Internal state
     state: RwLock<MVBAState<V>>,
     notify_skip: Arc<Notify>,
 
     // Sub-protocol instances
-    pp_send: RwLock<Option<PPSender<V>>>,
-    pp_recvs: RwLock<Option<HashMap<u32, Arc<PPReceiver<V>>>>>,
-    elect: RwLock<Option<Elect>>,
-    view_change: RwLock<Option<ViewChange<V>>>,
+    pp_send: RwLock<HashMap<u32, Option<PPSender<V>>>>,
+    pp_recvs: RwLock<HashMap<u32, Option<HashMap<u32, Arc<PPReceiver<V>>>>>>,
+    elect: RwLock<HashMap<u32, Option<Elect>>>,
+    view_change: RwLock<HashMap<u32, Option<ViewChange<V>>>>,
 }
 
 impl<V: ABFTValue + MvbaValue> MVBA<V> {
@@ -63,12 +67,13 @@ impl<V: ABFTValue + MvbaValue> MVBA<V> {
             index,
             f_tolerance,
             n_parties,
+            view: AtomicU32::new(0),
             state: RwLock::new(MVBAState::new(value)),
-            notify_skip: Arc::new(Notify::new()),
-            pp_send: RwLock::new(None),
-            pp_recvs: RwLock::new(None),
-            elect: RwLock::new(None),
-            view_change: RwLock::new(None),
+            notify_skip: Default::default(),
+            pp_send: Default::default(),
+            pp_recvs: Default::default(),
+            elect: Default::default(),
+            view_change: Default::default(),
         }
     }
 
@@ -104,6 +109,8 @@ impl<V: ABFTValue + MvbaValue> MVBA<V> {
                 let read_lock = self.pp_recvs.read().await;
 
                 let pp_recvs = read_lock
+                    .get(&view)
+                    .ok_or_else(|| MVBAError::UninitState("pp_recvs".to_string()))?
                     .as_ref()
                     .ok_or_else(|| MVBAError::UninitState("pp_recvs".to_string()))?;
 
@@ -130,29 +137,28 @@ impl<V: ABFTValue + MvbaValue> MVBA<V> {
                 let lock = self.pp_send.read().await;
 
                 let pp_send = lock
+                    .get(&view)
+                    .ok_or_else(|| MVBAError::UninitState("pp_send".to_string()))?
                     .as_ref()
                     .ok_or_else(|| MVBAError::UninitState("pp_send".to_string()))?;
 
                 // wait for promotion to return. aka: 1. Succesfully promoted value or 2. self.skip[self.view]
-
-                let notify_skip = self.notify_skip.clone();
 
                 info!(
                     "Party {} started Promoting proposal with value: {:?}, view: {}",
                     index, value, view
                 );
 
+                recv_handle.drain_skip(view).await?;
+
                 let promotion_proof: Option<PBSig> = tokio::select! {
                     proof = pp_send.promote(value, key, signer, send_handle) => proof?,
-                    _ = notify_skip.notified() => {
+                    _ = self.wait_for_skip() => {
                         None
                     },
                 };
 
-                info!(
-                    "Party {} finished promoting proposal, returning with proof: {:?}",
-                    index, promotion_proof
-                );
+                info!("Party {} finished promoting proposal", index);
 
                 self.send_done_if_not_skip(promotion_proof, send_handle)
                     .await?;
@@ -166,7 +172,11 @@ impl<V: ABFTValue + MvbaValue> MVBA<V> {
 
             let lock = self.elect.read().await;
 
-            let elect = lock.as_ref().expect("Elect should be initialized");
+            let elect = lock
+                .get(&view)
+                .ok_or_else(|| MVBAError::UninitState("elect".to_string()))?
+                .as_ref()
+                .expect("Elect should be initialized");
 
             info!("Party {} started electing phase for view: {}", index, view);
 
@@ -201,7 +211,11 @@ impl<V: ABFTValue + MvbaValue> MVBA<V> {
 
             let lock = self.view_change.read().await;
 
-            let view_change = lock.as_ref().expect("ViewChange should be initialized");
+            let view_change = lock
+                .get(&view)
+                .ok_or_else(|| MVBAError::UninitState("view_change".to_string()))?
+                .as_ref()
+                .expect("ViewChange should be initialized");
 
             info!("Party {} started view change for view: {}", index, view);
 
@@ -251,6 +265,18 @@ impl<V: ABFTValue + MvbaValue> MVBA<V> {
             ProtocolMessageType::from_i32(message_type).unwrap()
         );
 
+        if view > self.view.load(Ordering::Relaxed) {
+            return Err(MVBAError::NotReadyForMessage(ProtocolMessage {
+                send_id,
+                recv_id,
+                prbc_index,
+                protocol_id,
+                view,
+                message_data,
+                message_type,
+            }));
+        }
+
         match ProtocolMessageType::from_i32(message_type).unwrap() {
             ProtocolMessageType::MvbaDone => {
                 let inner: MVBADoneMessage<V> = deserialize(&message_data)?;
@@ -272,7 +298,7 @@ impl<V: ABFTValue + MvbaValue> MVBA<V> {
             }
             ProtocolMessageType::PbSend => {
                 let pp_recvs = self.pp_recvs.read().await;
-                if let Some(pp_recvs) = &*pp_recvs {
+                if let Some(Some(pp_recvs)) = &pp_recvs.get(&view) {
                     if let Some(pp) = pp_recvs.get(&send_id) {
                         let inner: PBSendMessage<V> = deserialize(&message_data)?;
 
@@ -329,7 +355,7 @@ impl<V: ABFTValue + MvbaValue> MVBA<V> {
             ProtocolMessageType::PbShareAck => {
                 let pp_send = self.pp_send.read().await;
 
-                if let Some(pp_send) = &*pp_send {
+                if let Some(Some(pp_send)) = &pp_send.get(&view) {
                     let inner: PBShareAckMessage = deserialize(&message_data)?;
 
                     if let Err(PPError::NotReadyForShareAck) =
@@ -351,7 +377,7 @@ impl<V: ABFTValue + MvbaValue> MVBA<V> {
             ProtocolMessageType::ElectCoinShare => {
                 let elect = self.elect.read().await;
 
-                if let Some(elect) = &*elect {
+                if let Some(Some(elect)) = &elect.get(&view) {
                     let inner: ElectCoinShareMessage = deserialize(&message_data)?;
 
                     elect.on_coin_share_message(inner, coin)?;
@@ -370,7 +396,9 @@ impl<V: ABFTValue + MvbaValue> MVBA<V> {
             ProtocolMessageType::ViewChange => {
                 let view_change = self.view_change.read().await;
 
-                if let Some(view_change) = &*view_change {
+                info!("Getting view change for view: {}", view);
+
+                if let Some(Some(view_change)) = &view_change.get(&view) {
                     let inner: ViewChangeMessage<V> = deserialize(&message_data)?;
 
                     match view_change.on_view_change_message(&inner, signer_mvba) {
@@ -704,19 +732,41 @@ impl<V: ABFTValue + MvbaValue> MVBA<V> {
     }
 
     async fn get_leader_result(&self, leader: u32) -> MVBAResult<PPLeader<V>> {
+        let view = self.view.load(Ordering::Relaxed);
         if leader == self.index {
             let lock = self.pp_send.read().await;
             let pp_send = lock
+                .get(&view)
+                .ok_or_else(|| MVBAError::UninitState("pp_send".to_string()))?
                 .as_ref()
                 .ok_or_else(|| MVBAError::UninitState("pp_send".to_string()))?;
             Ok(pp_send.result().await)
         } else {
             let lock = self.pp_recvs.read().await;
             let pp_recvs = lock
+                .get(&view)
+                .ok_or_else(|| MVBAError::UninitState("pp_recvs".to_string()))?
                 .as_ref()
                 .ok_or_else(|| MVBAError::UninitState("pp_recvs".to_string()))?;
             let leader_recv = &pp_recvs[&leader];
             Ok(leader_recv.result().await)
+        }
+    }
+
+    async fn wait_for_skip(&self) {
+        let notify_skip = self.notify_skip.clone();
+
+        loop {
+            notify_skip.notified().await;
+
+            let state = self.state.read().await;
+            if let Ok(true) = state
+                .skip
+                .get(&state.view)
+                .ok_or_else(|| MVBAError::UninitState("skip".to_string()))
+            {
+                return;
+            }
         }
     }
 
@@ -765,9 +815,7 @@ impl<V: ABFTValue + MvbaValue> MVBA<V> {
 
             drop(state);
 
-            info!("Party {} waiting at send_done_skip", self.index);
             self.notify_skip.notified().await;
-            info!("Party {} done waiting at send_done_skip", self.index);
         }
 
         Ok(())
@@ -777,10 +825,14 @@ impl<V: ABFTValue + MvbaValue> MVBA<V> {
         let mut state = self.state.write().await;
 
         state.step(self.n_parties);
+
+        self.view.fetch_add(1, Ordering::Relaxed);
     }
 
     async fn init_pp(&self) {
         let state = self.state.read().await;
+
+        let view = state.view;
 
         let pp_id = PPID {
             inner: MVBAID {
@@ -797,7 +849,7 @@ impl<V: ABFTValue + MvbaValue> MVBA<V> {
 
             let mut lock = self.pp_send.write().await;
 
-            lock.replace(pp_send);
+            lock.entry(view).or_default().replace(pp_send);
         }
 
         {
@@ -822,7 +874,7 @@ impl<V: ABFTValue + MvbaValue> MVBA<V> {
 
             let mut lock = self.pp_recvs.write().await;
 
-            lock.replace(pp_recvs);
+            lock.entry(view).or_default().replace(pp_recvs);
         }
     }
 
@@ -831,11 +883,17 @@ impl<V: ABFTValue + MvbaValue> MVBA<V> {
 
         let mut lock = self.elect.write().await;
 
-        lock.replace(elect);
+        lock.entry(self.view.load(Ordering::Relaxed))
+            .or_default()
+            .replace(elect);
     }
 
     async fn init_view_change(&self, index: u32, id_leader: MVBAID, view: u32) {
         let state = self.state.read().await;
+        info!(
+            "Initing view change for index: {}, leader: {}, view: {}",
+            index, id_leader.index, view
+        );
         let view_change = ViewChange::init(
             id_leader,
             index,
@@ -848,13 +906,13 @@ impl<V: ABFTValue + MvbaValue> MVBA<V> {
         drop(state);
 
         let mut lock = self.view_change.write().await;
-        lock.replace(view_change);
+        lock.entry(view).or_default().replace(view_change);
     }
 
     async fn abandon_all_ongoing_proposals(&self) {
         let lock = self.pp_recvs.read().await;
 
-        if let Some(recvs) = &*lock {
+        if let Some(Some(recvs)) = lock.get(&self.view.load(Ordering::Relaxed)) {
             futures::future::join_all(recvs.values().map(|recv| recv.abandon())).await;
         }
     }
@@ -874,7 +932,6 @@ pub struct MVBAID {
 // Keep LOCK and KEY variable consistent with paper
 #[allow(non_snake_case)]
 struct MVBAState<V: ABFTValue> {
-    /// Number of parties taking part in protocol
     view: u32,
     LOCK: u32,
     KEY: Key<V>,
@@ -920,18 +977,17 @@ impl<V: ABFTValue> MVBAState<V> {
     fn step(&mut self, n_parties: u32) {
         self.view += 1;
 
-        let view = self.view;
-
-        self.leaders.insert(view, None);
-        self.pp_done.insert(view, 0);
-        self.has_sent_skip.insert(view, false);
-        self.skip.insert(view, false);
-        self.pp_skip.insert(view, HashMap::new());
+        self.leaders.insert(self.view, None);
+        self.pp_done.insert(self.view, 0);
+        self.has_sent_skip.insert(self.view, false);
+        self.has_sent_skip_share.insert(self.view, false);
+        self.skip.insert(self.view, false);
+        self.pp_skip.insert(self.view, HashMap::new());
 
         self.has_received_done
-            .insert(view, (0..n_parties).map(|i| (i, false)).collect());
+            .insert(self.view, (0..n_parties).map(|i| (i, false)).collect());
         self.has_received_skip_share
-            .insert(view, (0..n_parties).map(|i| (i, false)).collect());
+            .insert(self.view, (0..n_parties).map(|i| (i, false)).collect());
     }
 }
 

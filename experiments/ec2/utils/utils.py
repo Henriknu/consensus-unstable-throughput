@@ -2,9 +2,9 @@ import boto3
 
 N = 8
 F = N/4
-B = N
 I = 2
 WAN = True
+BATCH_SIZES = [100, 1000, 10000, 100_000, 1_000_000, 2_000_000] if WAN else [N]
 
 SERVER_AMI_ID = 'ami-042e8287309f5df03'  # Ubuntu 20.04 64 bit x86
 SERVER_INSTANCE_TYPE = 't2.micro'
@@ -62,6 +62,8 @@ def ip_all():
 def launch_LAN(number=N):
 
     ec2_resource = boto3.resource("ec2", region_name=regions[0])
+
+    print("Launching for", regions[0])
 
     instances = ec2_resource.create_instances(
         InstanceType=SERVER_INSTANCE_TYPE, MinCount=number, MaxCount=number, ImageId=SERVER_AMI_ID, KeyName=SSH_KEY_NAME, SecurityGroupIds=[SECURITY_GROUP_ID], TagSpecifications=[

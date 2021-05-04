@@ -24,9 +24,10 @@ use abft::test_helpers::{ABFTBufferManager, ChannelSender};
 use std::time::Instant;
 
 const N_PARTIES: usize = THRESHOLD * 4;
-const THRESHOLD: usize = 1;
-const BATCH_SIZE: u64 = N_PARTIES as u64;
+const THRESHOLD: usize = 2;
+const BATCH_SIZE: u64 = 100_000 as u64;
 const BUFFER_CAPACITY: usize = N_PARTIES * N_PARTIES * 50 + 1000;
+const SEED_TRANSACTION_SET: u32 = 899923234;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn abft_correctness() {
@@ -208,8 +209,15 @@ async fn abft_correctness() {
 
         // setup main thread
 
-        let transactions =
-            TransactionSet::generate_transactions(42, BATCH_SIZE).random_selection(N_PARTIES);
+        let transactions = TransactionSet::generate_transactions(SEED_TRANSACTION_SET, BATCH_SIZE)
+            .random_selection(N_PARTIES);
+
+        info!(
+            "Proposing transaction set with {} transactions.",
+            transactions.len()
+        );
+
+        info!("Invoking ABFT");
 
         let main_handle = tokio::spawn(async move {
             match abft.invoke(transactions).await {

@@ -1,6 +1,6 @@
 from subprocess import Popen
 from fabric import Connection, ThreadingGroup, task
-from utils.utils import ip_all, launch_WAN, launch_LAN, terminate_all, N, F, B, I, WAN
+from utils.utils import ip_all, launch_WAN, launch_LAN, terminate_all, N, F, BATCH_SIZES, I, WAN
 from datetime import datetime
 import time
 
@@ -45,6 +45,12 @@ def prepare_hosts(c, ips, group=None):
 
 
 @task
+def clear_logs(c, group=None):
+
+    group.sudo("rm logs/execution.log")
+
+
+@task
 def prepare_logs(c, group=None):
 
     group.run("mkdir -p logs")
@@ -61,17 +67,17 @@ def install_deps(c, group=None):
 
 
 @task
-def download_logs(c, group=None):
+def download_logs(c, b, group=None):
 
     connection: Connection
 
     for i, connection in enumerate(group):
         connection.get(
-            f"logs/execution.log", local=f'logs/{N}_{int(F)}_{B}_[{i+1}]-{datetime.now().strftime("%m-%d, %H:%M")}.log')
+            f"logs/execution.log", local=f'logs/{N}_{int(F)}_{b}_[{i+1}]-{"WAN" if WAN else "LAN"}-{datetime.now().strftime("%m-%d, %H:%M")}.log')
 
 
 @task
-def run_protocol(c, iteration, group=None):
+def run_protocol(c, iteration, b, group=None):
 
     promises = []
 
@@ -82,7 +88,7 @@ def run_protocol(c, iteration, group=None):
         print(f"Starting connection: {i}, Iteration: {iteration}")
 
         promise = connection.run(
-            f"RUST_LOG=info abft --id 0 -i {i} -n {N} -f {F} -b {B} -h hosts -e $(curl -s http://169.254.169.254/latest/meta-data/local-ipv4) --crypto crypto/", asynchronous=True)
+            f"RUST_LOG=info abft --id 0 -i {i} -n {N} -f {F} -b {b} -h hosts -e $(curl -s http://169.254.169.254/latest/meta-data/local-ipv4) --crypto crypto/", asynchronous=True)
 
         promises.append(promise)
 
@@ -113,7 +119,7 @@ def full(c):
     else:
         launch_LAN()
 
-    time.sleep(10)
+    time.sleep(20)
 
     ips = ip_all()
 
@@ -122,10 +128,14 @@ def full(c):
 
     prepare(c, ips, group=group)
 
-    for i in range(I):
+    for b in BATCH_SIZES:
 
-        run_protocol(c, i + 1, group=group)
+        for i in range(I):
 
-    download_logs(c, group=group)
+            run_protocol(c, i + 1, b, group=group)
+
+        download_logs(c, b, group=group)
+
+        clear_logs(c, group=group)
 
     terminate_all()

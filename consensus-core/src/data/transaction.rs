@@ -51,6 +51,10 @@ impl TransactionSet {
 
         TransactionSet { transactions }
     }
+
+    pub fn len(&self) -> usize {
+        self.transactions.len()
+    }
 }
 
 impl std::fmt::Debug for TransactionSet {

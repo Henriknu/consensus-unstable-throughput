@@ -80,10 +80,6 @@ impl PRBC {
         let lock = self.rbc.read().await;
         let rbc = lock.as_ref().expect("RBC should be initialized");
 
-        info!(
-            "Party {} draining rbc messages from buffer, for PRBC {}",
-            self.index, self.send_id
-        );
         recv_handle.drain_rbc(self.send_id).await?;
 
         let value = rbc.invoke(value, send_handle).await?;
@@ -91,11 +87,6 @@ impl PRBC {
         let identifier = SignatureIdentifier::new(0, self.send_id as usize);
 
         let share = signer.sign(&self.value_identifier, &identifier);
-
-        info!(
-            "Party {} draining prbc messages from buffer, for PRBC {}",
-            self.index, self.send_id
-        );
 
         recv_handle.drain_prbc_done(self.send_id).await?;
 
@@ -113,11 +104,6 @@ impl PRBC {
             .await;
 
         let notify_shares = self.notify_shares.clone();
-
-        info!(
-            "Party {} waiting on shares for PRBC {}",
-            self.index, self.send_id
-        );
 
         notify_shares.notified().await;
 

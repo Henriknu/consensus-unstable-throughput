@@ -23,7 +23,7 @@ pub struct Elect {
 
 impl Elect {
     pub fn init(id: u32, index: u32, view: u32, f_tolerance: u32, n_parties: u32) -> Elect {
-        let tag = format!("{}", id);
+        let tag = format!("{}-ELECT-COINTOSS-{}", id, view);
         Elect {
             id,
             index,

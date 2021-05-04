@@ -10,7 +10,7 @@ use consensus_core::crypto::{
     commoncoin::Coin,
     sign::{Signature, Signer},
 };
-use log::{error, info, warn};
+use log::{debug, error, info};
 use tokio::sync::{mpsc::Receiver, RwLock};
 
 use crate::{
@@ -101,12 +101,18 @@ impl<V: ABFTValue> ACS<V> {
                         .await
                     {
                         Ok(signature) => {
-                            info!("Sending signature for PRBC {}.", index_copy);
-                            sig_send_clone
+                            debug!("Sending signature for PRBC {}.", index_copy);
+                            let _ = sig_send_clone
                                 .send((prbc_clone.send_id, signature))
                                 .await
-                                .unwrap();
-                            info!("Sending signature for PRBC {} went through.", index_copy);
+                                .map_err(|e| {
+                                    error!(
+                                        "Could not send signature for PRBC {}, got error {}",
+                                        index_copy, e
+                                    );
+                                });
+
+                            debug!("Sending signature for PRBC {} went through.", index_copy);
                         }
                         Err(e) => {
                             error!(
@@ -130,14 +136,14 @@ impl<V: ABFTValue> ACS<V> {
             );
 
             if !signatures.contains_key(&index) {
-                info!(
+                debug!(
                     "Party {} had not received PRBC signatures for PRBC {} before",
                     self.index, index
                 );
                 signatures.insert(index, signature);
             }
 
-            info!(
+            debug!(
                 "Party {} has received {} PRBC signatures, need: {}",
                 self.index,
                 signatures.len(),
@@ -169,6 +175,11 @@ impl<V: ABFTValue> ACS<V> {
             mvba.invoke(recv_handle, &*send_handle, signer_mvba, coin)
                 .await?
         };
+
+        info!(
+            "Party {} completed MVBA, with the following signature vector: {:?}",
+            self.index, elected_vector
+        );
 
         // Wait to receive values from each and every party contained in the W vector.
 
@@ -348,6 +359,9 @@ pub enum ACSError {
     NotReadyForPRBCMessage(ProtocolMessage),
     #[error("Not ready to handle PRBC message")]
     NotReadyForMVBAMessage(ProtocolMessage),
+    #[error("Not able to send prbc signature to receiver")]
+    FailedSignatureSend,
+
     // Errors propogated from sub-protocol instances
     #[error(transparent)]
     MVBAError(#[from] MVBAError),
@@ -362,13 +376,8 @@ pub struct SignatureVector {
 
 impl MvbaValue for SignatureVector {
     fn eval_mvba(&self, id: u32, f_tolerance: u32, n_parties: u32, signer: &Signer) -> bool {
-        info!(
-            "Evaluating signature vector {:?}, f: {}, n: {}",
-            self, f_tolerance, n_parties
-        );
-
         if self.inner.len() < (n_parties - f_tolerance) as usize {
-            warn!("Not enough signatures");
+            error!("Not enough signatures");
             return false;
         }
 
@@ -378,7 +387,7 @@ impl MvbaValue for SignatureVector {
             byteorder::NativeEndian::write_u32_into(&[id, *index], &mut data);
 
             if !signer.verify_signature(&signature, &data) {
-                warn!("invalid signature");
+                error!("invalid signature");
                 return false;
             }
         }

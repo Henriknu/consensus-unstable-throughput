@@ -147,7 +147,7 @@ impl<V: ABFTValue> ViewChange<V> {
 
         let num_messages = self.num_messages.fetch_add(1, Ordering::Relaxed);
 
-        if num_messages >= (self.n_parties - self.f_tolerance) {
+        if num_messages >= (self.n_parties - self.f_tolerance - 1) {
             self.notify_messages.notify_one();
         }
 
@@ -258,7 +258,6 @@ fn try_unpack_value_and_sig<V: ABFTValue>(proposal: &Option<PPProposal<V>>) -> O
             return Some((value.clone(), sig.clone()));
         }
     }
-    warn!("Could not unpack value and proof from ViewChange Message");
     None
 }
 
