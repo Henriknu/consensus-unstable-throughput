@@ -1,7 +1,7 @@
-from os import read
 import numpy as np
 import glob
 import re
+from utils.utils import BATCH_SIZES
 from datetime import datetime
 from typing import List, Dict
 import time
@@ -43,25 +43,41 @@ def _process_latency(log_segments: List[str], n_parties: int, f_tolerance: int, 
     return sorted(endtime.values())[n_parties-f_tolerance-1] - min(starttime.values())
 
 
-def process_log_files(n_parties: int, f_tolerance: int, batch_size: int):
+def process_log_files(n_parties: int, f_tolerance: int, batch_size: int, WAN: bool):
 
     log_file_name_list = sorted(glob.glob(
-        f"logs/{n_parties}_{f_tolerance}_{batch_size}*"))
+        f"logs/{n_parties}_{f_tolerance}_{batch_size}_???-" + ('WAN' if WAN else "LAN") + "*"))
 
     contents = [open(file_name).read().strip().split("\n\n")
                 for file_name in log_file_name_list]
 
     results = []
 
-    for i in range(len(contents[0])):
-        log_segments = [content[i] for content in contents]
-        result = _process_latency(
-            log_segments, n_parties, f_tolerance, batch_size)
-        results.append(result)
+    if contents:
 
-    print(tuple(results))
-    print(f"Avg Latency:{sum(results) / len(results)} seconds,", f"Std:{np.std(results)},",
-          'Number of iterations:', len(results))
+        for i in range(len(contents[0])):
+            log_segments = [content[i] for content in contents]
+            result = _process_latency(
+                log_segments, n_parties, f_tolerance, batch_size)
+            results.append(result)
+
+        print(tuple(results))
+        print(f"Avg Latency:{sum(results) / len(results)} seconds,", f"Std:{np.std(results)},",
+              'Number of iterations:', len(results))
+
+        return sum(results) / len(results)
+
+
+def process_batch_N(n_parties: int, WAN: bool):
+
+    results = []
+
+    f_tolerance = n_parties // 4
+
+    results = [(batch_size / n_parties, process_log_files(
+        n_parties, f_tolerance, batch_size, WAN)) for batch_size in BATCH_SIZES]
+
+    print(results)
 
 
 if __name__ == '__main__':

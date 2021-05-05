@@ -1,7 +1,7 @@
 import boto3
 
 N = 8
-F = N/4
+F = int(N/4)
 I = 2
 WAN = True
 BATCH_SIZES = [100, 1000, 10000, 100_000, 1_000_000, 2_000_000] if WAN else [N]

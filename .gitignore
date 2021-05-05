@@ -7,3 +7,5 @@ experiments/.vscode/
 experiments/ec2/logs
 experiments/ec2/hosts
 experiments/ec2/hidden.py
+**/__pycache__
+log.log
