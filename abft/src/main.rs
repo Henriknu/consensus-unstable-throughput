@@ -1,8 +1,12 @@
 use bincode::deserialize;
 use clap::{App, Arg};
-use consensus_core::{crypto::KeySet, data::transaction::TransactionSet};
+use consensus_core::{
+    crypto::hash::hash_sha256, crypto::KeySet, data::transaction::TransactionSet,
+};
 use futures::future::join_all;
 use log::{error, info, warn};
+use rand::{prelude::SliceRandom, SeedableRng};
+use std::process::Command;
 
 use std::{
     collections::{HashMap, HashSet},
@@ -34,7 +38,7 @@ use abft::{
 use std::sync::Arc;
 use tokio::sync::mpsc::{self, Receiver, Sender};
 
-const RECV_TIMEOUT_SECS: u64 = 5;
+const RECV_TIMEOUT_SECS: u64 = 10;
 const CLIENT_RETRY_TIMEOUT_SECS: u64 = 1;
 const SERVER_PORT_NUMBER: u64 = 50000;
 const SEED_TRANSACTION_SET: u32 = 899923234;
@@ -48,6 +52,10 @@ async fn main() {
     info!("Booting up ...");
 
     let args = Arc::new(parse_args());
+
+    // If enabled, calculate which nodes are affected by unstable network and invoke NetEm.
+
+    let enabled_unstable = (args.m_parties != 0) && enable_unstable_network(&args);
 
     // client managers
 
@@ -162,6 +170,10 @@ async fn main() {
     send_finished(&*args).await;
 
     wait_for_finish_and_exit(fin_rx, &*args).await;
+
+    if enabled_unstable {
+        disable_unstable_network();
+    }
 }
 
 async fn wait_for_clients(mut client_ready_rx: Receiver<u32>, args: &ABFTCliArgs) {
@@ -491,6 +503,77 @@ fn spawn_buffer_manager(
     });
 }
 
+fn enable_unstable_network(args: &ABFTCliArgs) -> bool {
+    let ABFTCliArgs {
+        id,
+        index,
+        n_parties,
+        m_parties,
+        delay,
+        packet_loss,
+        ..
+    } = args;
+
+    // calculate which nodes are to be affected by unstable network
+
+    let seed = hash_sha256(format!("{}-{}-{}", id, n_parties, m_parties).as_bytes());
+
+    let mut rng = rand::rngs::StdRng::from_seed(seed);
+
+    let mut indexes: Vec<u32> = (0..*n_parties).collect();
+
+    indexes.shuffle(&mut rng);
+
+    let indexes: Vec<u32> = indexes.into_iter().take(*m_parties as usize).collect();
+
+    info!(
+        "Chose the following parties for unstable network {:?}",
+        indexes
+    );
+
+    if indexes.contains(index) {
+        info!("Invoking Netem with ");
+        let output = Command::new("sudo")
+            .args(&["tc", "qdisc", "add", "dev", "eth0", "root"])
+            .args(&[
+                "netem",
+                "delay",
+                format!("{}ms", delay).as_str(),
+                "loss",
+                format!("{}%", packet_loss).as_str(),
+            ])
+            .output()
+            .expect("Failed to execute command");
+
+        if !output.status.success() {
+            error!(
+                "Failed to invoke Netem with parameters: Delay : {}ms, Packet loss: {}%",
+                delay, packet_loss
+            );
+            panic!("Could not invoke Netem, when passing in non-zero value for m_parties");
+        }
+
+        return true;
+    }
+    false
+}
+
+fn disable_unstable_network() {
+    info!("Deleting rules invoked with Netem ");
+    let output = Command::new("sudo")
+        .args(&["tc", "qdisc", "del", "dev", "eth0", "root"])
+        .output()
+        .expect("Failed to execute command");
+
+    if !output.status.success() {
+        error!(
+            "Failed to delete rules invoked for Netem, with status: {}",
+            output.status
+        );
+        panic!("Could not invoke Netem, when passing in non-zero value for m_parties");
+    }
+}
+
 fn parse_args() -> ABFTCliArgs {
     let matches = App::new("ABFT")
         .version("1.0")
@@ -551,6 +634,27 @@ fn parse_args() -> ABFTCliArgs {
                 .help("Custom path to list of host ips")
                 .takes_value(true),
         )
+        .arg(
+            Arg::with_name("Number of parties affected by unstable network")
+                .short("m")
+                .value_name("INTEGER")
+                .help("Number of unique parties in the configuration which are affected by an unstable network (delay and packet loss). Less than n.")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("Packet delay for unstable network")
+                .short("d")
+                .value_name("INTEGER")
+                .help("Additional packet delay put on outgoing packets for nodes affected by unstable network. In ms.")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("Packet loss rate for unstable network")
+                .short("l")
+                .value_name("INTEGER")
+                .help("Additional packet loss rate put on outgoing packets for nodes affected by unstable network. In percentage, between 0 to 100.")
+                .takes_value(true),
+        )
         .get_matches();
 
     let id = matches
@@ -582,6 +686,24 @@ fn parse_args() -> ABFTCliArgs {
         .unwrap()
         .parse::<u64>()
         .unwrap_or(n_parties as u64);
+
+    let m_parties = matches
+        .value_of("Number of parties affected by unstable network")
+        .unwrap_or("0")
+        .parse::<u32>()
+        .unwrap();
+
+    let delay = matches
+        .value_of("Packet delay for unstable network")
+        .unwrap_or("0")
+        .parse::<u32>()
+        .unwrap();
+
+    let packet_loss = matches
+        .value_of("Packet loss rate for unstable network")
+        .unwrap_or("0")
+        .parse::<u32>()
+        .unwrap();
 
     let crypto = String::from(matches.value_of("Crypto").unwrap_or("abft/crypto"));
 
@@ -624,6 +746,9 @@ fn parse_args() -> ABFTCliArgs {
         crypto,
         server_endpoint,
         hosts,
+        m_parties,
+        delay,
+        packet_loss,
     }
 }
 
@@ -670,6 +795,11 @@ pub struct ABFTCliArgs {
     crypto: String,
     server_endpoint: SocketAddr,
     hosts: HashMap<u32, Uri>,
+
+    // Network unstability
+    m_parties: u32,
+    delay: u32,
+    packet_loss: u32,
 }
 
 pub struct ABFTService {

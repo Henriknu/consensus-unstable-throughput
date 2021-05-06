@@ -3,8 +3,12 @@ import boto3
 N = 8
 F = int(N/4)
 I = 2
-WAN = True
+WAN = False
 BATCH_SIZES = [100, 1000, 10000, 100_000, 1_000_000, 2_000_000] if WAN else [N]
+UNSTABLE_BATCH_SIZES = [1000, 10_000]
+PACKET_LOSS_RATES = [5, 10, 15]
+PACKET_DELAYS = [500, 2500, 5000]
+M = [int(F/2), F, 2*F, 3*F, N]
 
 SERVER_AMI_ID = 'ami-042e8287309f5df03'  # Ubuntu 20.04 64 bit x86
 SERVER_INSTANCE_TYPE = 't2.micro'

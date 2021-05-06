@@ -1,6 +1,6 @@
 from subprocess import Popen
 from fabric import Connection, ThreadingGroup, task
-from utils.utils import ip_all, launch_WAN, launch_LAN, terminate_all, N, F, BATCH_SIZES, I, WAN
+from utils.utils import ip_all, launch_WAN, launch_LAN, terminate_all, N, F, M, BATCH_SIZES, UNSTABLE_BATCH_SIZES, I, WAN, PACKET_LOSS_RATES, PACKET_DELAYS
 from datetime import datetime
 import time
 
@@ -77,6 +77,16 @@ def download_logs(c, b, group=None):
 
 
 @task
+def download_logs_unstable(c, b, m, delay, packet_loss, group=None):
+
+    connection: Connection
+
+    for i, connection in enumerate(group):
+        connection.get(
+            f"logs/execution.log", local=f'unstable_logs/{N}_{int(F)}_{b}_unstable_{m}_{delay}_{packet_loss}_[{i+1}]-{"WAN" if WAN else "LAN"}-{datetime.now().strftime("%m-%d, %H:%M")}.log')
+
+
+@task
 def run_protocol(c, iteration, b, group=None):
 
     promises = []
@@ -85,10 +95,32 @@ def run_protocol(c, iteration, b, group=None):
 
     for i, connection in enumerate(group):
 
-        print(f"Starting connection: {i}, Iteration: {iteration}")
+        print(
+            f"Starting connection: {i}, N: {N}, B: {b} Iteration: {iteration}")
 
         promise = connection.run(
-            f"RUST_LOG=info abft --id 0 -i {i} -n {N} -f {F} -b {b} -h hosts -e $(curl -s http://169.254.169.254/latest/meta-data/local-ipv4) --crypto crypto/", asynchronous=True)
+            f"RUST_LOG=info abft --id 0 -i {i} -n {N} -f {F} -b {b} -m 0 -d 0 -l 0 -h hosts -e $(curl -s http://169.254.169.254/latest/meta-data/local-ipv4) --crypto crypto/", asynchronous=True)
+
+        promises.append(promise)
+
+    for promise in promises:
+        promise.join()
+
+
+@task
+def run_protocol_unstable(c, iteration, b, m, delay, packet_loss, group=None):
+
+    promises = []
+
+    connection: Connection
+
+    for i, connection in enumerate(group):
+
+        print(
+            f"Starting connection: {i}, N: {N}, B: {b}, M: {m}, D: {delay}, L: {packet_loss} Iteration: {iteration}")
+
+        promise = connection.run(
+            f"RUST_LOG=info abft --id 0 -i {i} -n {N} -f {F} -b {b} -m {m} -d {delay} -l {packet_loss} -h hosts -e $(curl -s http://169.254.169.254/latest/meta-data/local-ipv4) --crypto crypto/", asynchronous=True)
 
         promises.append(promise)
 
@@ -108,7 +140,7 @@ def prepare(c, ips, group=None):
     upload_binary(c, group=group)
     prepare_hosts(c, ips, group=group)
     prepare_logs(c, group=group)
-    #prepare_awscw_agent(c, group=group)
+    # prepare_awscw_agent(c, group=group)
 
 
 @task
@@ -137,5 +169,49 @@ def full(c):
         download_logs(c, b, group=group)
 
         clear_logs(c, group=group)
+
+    terminate_all()
+
+
+@task
+def full_unstable(c):
+
+    if WAN:
+        launch_WAN()
+    else:
+        launch_LAN()
+
+    time.sleep(20)
+
+    ips = ip_all()
+
+    group = ThreadingGroup(*ips,
+                           user="ubuntu", forward_agent=True)
+
+    prepare(c, ips, group=group)
+
+    for b in UNSTABLE_BATCH_SIZES:
+
+        for m in M:
+
+            for d in PACKET_DELAYS:
+
+                for i in range(I):
+
+                    run_protocol_unstable(c, i + 1, b, m, d, 0, group=group)
+
+                download_logs_unstable(c, b, m, d, 0, group=group)
+
+                clear_logs(c, group=group)
+
+            for l in PACKET_LOSS_RATES:
+
+                for i in range(I):
+
+                    run_protocol_unstable(c, i + 1, b, m, 0, l, group=group)
+
+                download_logs_unstable(c, b, m, 0, l, group=group)
+
+                clear_logs(c, group=group)
 
     terminate_all()
