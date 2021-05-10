@@ -116,7 +116,7 @@ impl<V: ABFTValue> ACS<V> {
                         }
                         Err(e) => {
                             error!(
-                                "Party {} received error on invoking pp_recv: {}",
+                                "Party {} received error on invoking prbc: {}",
                                 index_copy, e
                             );
                         }

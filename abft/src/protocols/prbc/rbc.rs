@@ -159,7 +159,7 @@ impl RBC {
             n_echo_messages = lock.entry(root).or_default().len();
         }
 
-        if n_echo_messages >= (self.f_tolerance + 1) as usize {
+        if n_echo_messages >= (self.n_parties - 2* self.f_tolerance) as usize {
             info!(
                 "Party {} notifying echo on RBC instance {}",
                 self.index, self.send_id
@@ -167,7 +167,7 @@ impl RBC {
             self.notify_echo.notify_one();
         }
 
-        if n_echo_messages >= (self.f_tolerance * 2 + 1) as usize
+        if n_echo_messages >= (self.n_parties - self.f_tolerance) as usize
             && !self.has_sent_ready.load(Ordering::SeqCst)
         {
             info!(

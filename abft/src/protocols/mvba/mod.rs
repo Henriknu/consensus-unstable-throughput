@@ -328,7 +328,7 @@ impl<V: ABFTValue + MvbaValue> MVBA<V> {
                             Err(e) => return Err(MVBAError::PPError(e)),
                         }
                     } else {
-                        warn!("Did not find PPReceiver {} for Party {}!", send_id, recv_id);
+                        info!("Did not find PPReceiver {} for Party {}!", send_id, recv_id);
                         return Err(MVBAError::NotReadyForMessage(ProtocolMessage {
                             send_id,
                             recv_id,
@@ -340,7 +340,7 @@ impl<V: ABFTValue + MvbaValue> MVBA<V> {
                         }));
                     }
                 } else {
-                    warn!("pprecvs was not initialized for Party {}!", recv_id);
+                    info!("pprecvs was not initialized for Party {}!", recv_id);
                     return Err(MVBAError::NotReadyForMessage(ProtocolMessage {
                         send_id,
                         recv_id,
@@ -361,7 +361,7 @@ impl<V: ABFTValue + MvbaValue> MVBA<V> {
                     if let Err(PPError::NotReadyForShareAck) =
                         pp_send.on_share_ack(send_id, inner).await
                     {
-                        warn!("pp_send not ready for message at Party {}!", recv_id);
+                        info!("pp_send not ready for message at Party {}!", recv_id);
                         return Err(MVBAError::NotReadyForMessage(ProtocolMessage {
                             send_id,
                             recv_id,

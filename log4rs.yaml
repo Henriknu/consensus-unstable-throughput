@@ -8,7 +8,7 @@ appenders:
 
 # Set the default logging level to "warn" and attach the "stdout" appender to the root
 root:
-  level: info
+  level: warn
   appenders:
     - requests
 

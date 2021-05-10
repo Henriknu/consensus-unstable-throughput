@@ -38,7 +38,7 @@ use abft::{
 use std::sync::Arc;
 use tokio::sync::mpsc::{self, Receiver, Sender};
 
-const RECV_TIMEOUT_SECS: u64 = 10;
+const RECV_TIMEOUT_SECS: u64 = 20;
 const CLIENT_RETRY_TIMEOUT_SECS: u64 = 1;
 const SERVER_PORT_NUMBER: u64 = 50000;
 const SEED_TRANSACTION_SET: u32 = 899923234;
@@ -49,7 +49,7 @@ async fn main() {
 
     init_logger();
 
-    info!("Booting up ...");
+    warn!("Booting up ...");
 
     let args = Arc::new(parse_args());
 
@@ -148,16 +148,16 @@ async fn main() {
     let value = TransactionSet::generate_transactions(SEED_TRANSACTION_SET, args.batch_size)
         .random_selection(args.n_parties as usize);
 
-    info!(
+    warn!(
         "Proposing transaction set with {} transactions.",
         value.len()
     );
 
-    info!("Invoking ABFT");
+    warn!("Invoking ABFT");
 
     match protocol.invoke(value).await {
         Ok(value) => {
-            info!(
+            warn!(
                 "Party {} terminated ABFT with value: {:?}",
                 args.index, value
             );
@@ -195,7 +195,7 @@ async fn wait_for_clients(mut client_ready_rx: Receiver<u32>, args: &ABFTCliArgs
         }
     }
 
-    info!("Party {} all connected", args.index);
+    warn!("Party {} all connected", args.index);
 }
 
 async fn send_setup_ack(args: &ABFTCliArgs) {

@@ -46,7 +46,7 @@ def _process_latency(log_segments: List[str], n_parties: int, f_tolerance: int, 
 def process_log_files(n_parties: int, f_tolerance: int, batch_size: int, WAN: bool):
 
     log_file_name_list = sorted(glob.glob(
-        f"logs/{n_parties}_{f_tolerance}_{batch_size}_???-" + ('WAN' if WAN else "LAN") + "*"))
+        f"logs/{n_parties}_{f_tolerance}_{batch_size}_*-" + ('WAN' if WAN else "LAN") + "*"))
 
     contents = [open(file_name).read().strip().split("\n\n")
                 for file_name in log_file_name_list]

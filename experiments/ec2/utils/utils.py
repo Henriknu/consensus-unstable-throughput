@@ -1,11 +1,16 @@
+import datetime
 import boto3
 
-N = 8
+N = 64  # 8, 32, 64, 100 Stable. N = 64 unstable.
 F = int(N/4)
-I = 2
-WAN = False
-BATCH_SIZES = [100, 1000, 10000, 100_000, 1_000_000, 2_000_000] if WAN else [N]
-UNSTABLE_BATCH_SIZES = [1000, 10_000]
+I = 1
+WAN = True
+SHOULD_MONITOR = False
+BATCH_SIZES = [100, 1000, 10000, 100_000] if WAN else [
+    N]  # 100, 1000, 10000, 100_000 1_000_000, 2_000_000
+UNSTABLE_BATCH_SIZES = [1000, 100_000]
+SHOULD_PACKET_DELAY = True
+SHOULD_PACKET_LOSS = True
 PACKET_LOSS_RATES = [5, 10, 15]
 PACKET_DELAYS = [500, 2500, 5000]
 M = [int(F/2), F, 2*F, 3*F, N]
@@ -15,6 +20,9 @@ SERVER_INSTANCE_TYPE = 't2.micro'
 NAME_FILTER = 'ABFT'
 SECURITY_GROUP_ID = 'sg-0a6d95c8b0adda476'  # US East (N. Virginia)
 SSH_KEY_NAME = 'AWS Micro Testing'
+IAM_CWAGENT_ARN = "arn:aws:iam::150709297964:instance-profile/CloudWatchAgentServerRole"
+
+METRIC_PERIOD = 300
 
 
 secgroups = {
@@ -30,7 +38,7 @@ secgroups = {
 regions = list(secgroups)
 
 
-def get_ec2_instances_ips(region):
+def get_ec2_instances_dns(region):
 
     ec2_resource = boto3.resource("ec2", region_name=region)
 
@@ -40,6 +48,20 @@ def get_ec2_instances_ips(region):
     ips = [instance.public_dns_name for instance in running_instances]
 
     return ips
+
+
+def get_ec2_instances_private_hosts(region):
+
+    ec2_resource = boto3.resource("ec2", region_name=region)
+
+    running_instances = ec2_resource.instances.filter(
+        Filters=[{'Name': 'instance-state-name', 'Values': ['running']}])
+
+    ips = [instance.private_ip_address for instance in running_instances]
+
+    hosts = ["ip-" + ip.replace(".", "-") for ip in ips]
+
+    return hosts
 
 
 def get_ec2_instances_ids(region, FilterNames: str = None):
@@ -56,21 +78,106 @@ def get_ec2_instances_ids(region, FilterNames: str = None):
     return ids
 
 
+def get_metric_data(region):
+
+    # Create CloudWatch client
+    cloudwatch = boto3.client('cloudwatch', region_name=region)
+
+    ips = get_ec2_instances_private_hosts(region)
+
+    cpu_metrics = [{"Id": "cpu_metrics", "Label": f"Cpu Metrics for Party {i}", "MetricStat": {
+
+        "Metric": {
+
+            "Namespace": "CWAgent",
+
+            "MetricName": "cpu_time_active",
+
+            "Dimensions": [{"Name": "host", "Value": ip}]
+        },
+
+        "Period": METRIC_PERIOD,
+        "Stat": "Maximum",
+
+
+    }} for i, ip in enumerate(ips)]
+
+    mem_metrics = [{"Id": "mem_metrics", "Label": f"Memory Metrics for Party {i}", "MetricStat": {
+
+        "Metric": {
+
+            "Namespace": "CWAgent",
+
+            "MetricName": "mem_used",
+
+            "Dimensions": [{"Name": "host", "Value": ip}]
+        },
+
+        "Period": METRIC_PERIOD,
+        "Stat": "Maximum",
+        "Unit": "Bytes"
+
+    }} for i, ip in enumerate(ips)]
+
+    net_metrics = [{"Id": "net_metrics", "Label": f"Network Metrics for Party {i}", "MetricStat": {
+
+        "Metric": {
+
+            "Namespace": "CWAgent",
+
+            "MetricName": "net_bytes_sent",
+
+            "Dimensions": [
+                {
+                    "Name": "host",
+                    "Value": ip
+                },
+                {
+                    "Name": "interface",
+                    "Value": "eth0"
+                }
+            ]
+        },
+
+        "Period": METRIC_PERIOD,
+        "Stat": "Maximum",
+        "Unit": "Bytes"
+
+    }} for i, ip in enumerate(ips)]
+
+    response = cloudwatch.get_metric_data(
+        MetricDataQueries=[*cpu_metrics, *net_metrics, *mem_metrics], StartTime=datetime.datetime.now() -
+        datetime.timedelta(days=1),
+        EndTime=datetime.datetime.now() + datetime.timedelta(days=1))
+
+    print(response)
+
+
 def ip_all():
     result = []
     for region in regions:
-        result += get_ec2_instances_ips(region)
+        result += get_ec2_instances_dns(region)
     return result
 
 
 def launch_LAN(number=N):
 
-    ec2_resource = boto3.resource("ec2", region_name=regions[0])
+    region = regions[0]
 
-    print("Launching for", regions[0])
+    ec2_resource = boto3.resource("ec2", region_name=region)
+
+    print(f"Launching for region {region}")
+
+    remaining = number - \
+        _get_num_unterminated_instances_for_region(ec2_resource)
+
+    print(f"Remaining instances to launch: {remaining}")
+
+    if remaining < 1:
+        return
 
     instances = ec2_resource.create_instances(
-        InstanceType=SERVER_INSTANCE_TYPE, MinCount=number, MaxCount=number, ImageId=SERVER_AMI_ID, KeyName=SSH_KEY_NAME, SecurityGroupIds=[SECURITY_GROUP_ID], TagSpecifications=[
+        InstanceType=SERVER_INSTANCE_TYPE, IamInstanceProfile={"Arn": IAM_CWAGENT_ARN}, MinCount=remaining, MaxCount=remaining, ImageId=SERVER_AMI_ID, KeyName=SSH_KEY_NAME, SecurityGroupIds=[SECURITY_GROUP_ID], TagSpecifications=[
             {
                 'ResourceType': 'instance',
                 'Tags': [
@@ -86,6 +193,8 @@ def launch_LAN(number=N):
     for instance in instances:
         instance.wait_until_running()
 
+    instances[0].load()
+
     print(instances[0].public_dns_name)
 
 
@@ -93,13 +202,15 @@ def launch_WAN(number=N):
 
     per_region: int = number // len(regions)
 
-    remaining = number % len(regions)
+    remainder = number % len(regions)
+
+    print(remainder)
 
     instances = []
 
     for region in regions:
 
-        print("Launching for", region)
+        print(f"Launching for region {region}")
 
         ec2_client = boto3.client('ec2', region_name=region)
 
@@ -110,11 +221,21 @@ def launch_WAN(number=N):
 
         count = per_region
 
-        if region == region[-1]:
-            count + remaining
+        if region == regions[-1]:
+            count += remainder
+
+        print(f"Need {count} instances")
+
+        remaining = count - \
+            _get_num_unterminated_instances_for_region(ec2_resource)
+
+        print(f"Remaining instances to launch: {remaining}")
+
+        if remaining < 1:
+            continue
 
         pending_instances = ec2_resource.create_instances(
-            InstanceType=SERVER_INSTANCE_TYPE, MinCount=per_region, MaxCount=per_region, ImageId=img_id, KeyName=SSH_KEY_NAME, SecurityGroupIds=[secgroups[region]], TagSpecifications=[
+            InstanceType=SERVER_INSTANCE_TYPE, IamInstanceProfile={"Arn": IAM_CWAGENT_ARN}, MinCount=remaining, MaxCount=remaining, ImageId=img_id, KeyName=SSH_KEY_NAME, SecurityGroupIds=[secgroups[region]], TagSpecifications=[
                 {
                     'ResourceType': 'instance',
                     'Tags': [
@@ -127,12 +248,26 @@ def launch_WAN(number=N):
                 },
             ],)
 
-        instances.append(*pending_instances)
+        instances.extend(pending_instances)
 
-    for instance in instances:
-        instance.wait_until_running()
+    if len(instances):
 
-    print(instances[0].public_dns_name)
+        for instance in instances:
+            instance.wait_until_running()
+
+        instances[0].load()
+
+        print(instances[0].public_dns_name)
+
+
+def _get_num_unterminated_instances_for_region(ec2_resource):
+    terminated = ec2_resource.instances.filter(
+        Filters=[{'Name': 'instance-state-name', 'Values': ['terminated']}])
+
+    instances = [
+        instance for instance in ec2_resource.instances.all() if instance not in terminated]
+
+    return len(instances)
 
 
 def terminate_all():
@@ -149,27 +284,83 @@ def terminate_all():
                 InstanceIds=instances)
 
 
-def monitor_all():
-
-    for region in regions:
-        ec2_client = boto3.client('ec2', region_name=region)
-        ec2_resource = boto3.resource("ec2")
-
-    pass
-
-
 def stop_all():
+    stopped_instances = []
     for region in regions:
+        print("Stopping instances in region:", region)
         ec2_client = boto3.client('ec2', region_name=region)
-        ec2_client.stop_instances(
-            InstanceIds=get_ec2_instances_ids(region, FilterNames=['running']))
+        instances = get_ec2_instances_ids(
+            region, FilterNames=['running', "pending"])
+        stopped_instances.append(instances)
+        if len(instances):
+            ec2_client.stop_instances(
+                InstanceIds=instances)
+
+    for i, region in enumerate(regions):
+        print(f"Waiting for instances in region {region} to stop")
+        ec2_client = boto3.client('ec2', region_name=region)
+        waiter = ec2_client.get_waiter("instance_stopped")
+
+        if len(stopped_instances[i]):
+            waiter.wait(InstanceIds=stopped_instances[i])
 
 
-def start_all():
+def start_N_WAN(number=N):
+    per_region: int = number // len(regions)
+
+    remainder = number % len(regions)
+
+    started_instances = []
+
     for region in regions:
+
         ec2_client = boto3.client('ec2', region_name=region)
+        instances = get_ec2_instances_ids(region, FilterNames=['stopped'])
+
+        count = per_region
+
+        if region == regions[-1]:
+            count += remainder
+
+        print(f"Starting {count} instances in region:", region)
+
+        instances = instances[0:count]
+
+        started_instances.append(instances)
+
+        if len(instances):
+            ec2_client.start_instances(
+                InstanceIds=instances)
+
+    for i, region in enumerate(regions):
+        print(f"Waiting for instances in region {region} to run")
+        ec2_client = boto3.client('ec2', region_name=region)
+        waiter = ec2_client.get_waiter("instance_running")
+
+        if len(started_instances[i]):
+            waiter.wait(InstanceIds=started_instances[i])
+
+
+def start_N_LAN(number=N):
+
+    region = regions[0]
+
+    ec2_client = boto3.client('ec2', region_name=region)
+    instances = get_ec2_instances_ids(
+        region, FilterNames=['stopped'])
+
+    instances = instances[0:number]
+
+    print(f"Starting {number} instances in region:", region)
+
+    if len(instances):
+        print(f"Waiting for instances in region {region} to run")
         ec2_client.start_instances(
-            InstanceIds=get_ec2_instances_ids(region, FilterNames=['stopped']))
+            InstanceIds=instances)
+
+        waiter = ec2_client.get_waiter("instance_running")
+
+        waiter.wait(InstanceIds=instances)
 
 
 if __name__ == '__main__':

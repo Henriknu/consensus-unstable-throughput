@@ -195,7 +195,7 @@ impl PRBC {
 
                     rbc.on_echo_message(inner, send_handle).await?;
                 } else {
-                    warn!("Did not find RBC for Party {}!", recv_id);
+                    info!("Did not find RBC for Party {}!", recv_id);
                     return Err(PRBCError::NotReadyForMessage(ProtocolMessage {
                         send_id,
                         recv_id,
@@ -215,7 +215,7 @@ impl PRBC {
 
                     rbc.on_value_message(inner, send_handle).await?;
                 } else {
-                    warn!("Did not find RBC for Party {}!", recv_id);
+                    info!("Did not find RBC for Party {}!", recv_id);
                     return Err(PRBCError::NotReadyForMessage(ProtocolMessage {
                         send_id,
                         recv_id,
@@ -235,7 +235,7 @@ impl PRBC {
 
                     rbc.on_ready_message(send_id, inner, send_handle).await?;
                 } else {
-                    warn!("Did not find RBC for Party {}!", recv_id);
+                    info!("Did not find RBC for Party {}!", recv_id);
                     return Err(PRBCError::NotReadyForMessage(ProtocolMessage {
                         send_id,
                         recv_id,
