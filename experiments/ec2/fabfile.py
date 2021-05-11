@@ -237,8 +237,10 @@ def full(c):
     group = ThreadingGroup(*ips,
                            user="ubuntu", forward_agent=True)
 
-    prepare_hosts(c, ips, group=group)
+    #upload_crypto(c, group=group)
     #upload_binary(c, group=group)
+    prepare_hosts(c, ips, group=group)
+    #prepare_logs(c, group=group)
 
     if SHOULD_MONITOR and WAN:
         prepare_awscw_agent(c, group=group)
@@ -273,7 +275,10 @@ def full_unstable(c):
     group = ThreadingGroup(*ips,
                            user="ubuntu", forward_agent=True)
 
+    upload_crypto(c, group=group)
+    upload_binary(c, group=group)
     prepare_hosts(c, ips, group=group)
+    prepare_logs(c, group=group)
 
     if SHOULD_MONITOR and WAN:
         prepare_awscw_agent(c, group=group)

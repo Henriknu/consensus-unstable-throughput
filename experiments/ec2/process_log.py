@@ -1,7 +1,7 @@
 import numpy as np
 import glob
 import re
-from utils.utils import BATCH_SIZES
+from utils.utils import BATCH_SIZES, M, PACKET_DELAYS, PACKET_LOSS_RATES
 from datetime import datetime
 from typing import List, Dict
 import time
@@ -43,7 +43,7 @@ def _process_latency(log_segments: List[str], n_parties: int, f_tolerance: int, 
     return sorted(endtime.values())[n_parties-f_tolerance-1] - min(starttime.values())
 
 
-def process_log_files(n_parties: int, f_tolerance: int, batch_size: int, WAN: bool):
+def process_log_files_stable(n_parties: int, f_tolerance: int, batch_size: int, WAN: bool):
 
     log_file_name_list = sorted(glob.glob(
         f"logs/{n_parties}_{f_tolerance}_{batch_size}_*-" + ('WAN' if WAN else "LAN") + "*"))
@@ -68,16 +68,78 @@ def process_log_files(n_parties: int, f_tolerance: int, batch_size: int, WAN: bo
         return sum(results) / len(results)
 
 
-def process_batch_N(n_parties: int, WAN: bool):
+def process_log_files_unstable(n_parties: int, f_tolerance: int, batch_size: int, m_parties: int, delay: int, loss: int):
+
+    log_file_name_list = sorted(glob.glob(
+        f"unstable_logs/{n_parties}_{f_tolerance}_{batch_size}_unstable_{m_parties}_{delay}_{loss}*"))
+
+    contents = [open(file_name).read().strip().split("\n\n")
+                for file_name in log_file_name_list]
+
+    results = []
+
+    if contents:
+
+        for i in range(len(contents[0])):
+            log_segments = [content[i] for content in contents]
+            result = _process_latency(
+                log_segments, n_parties, f_tolerance, batch_size)
+            results.append(result)
+
+        print(tuple(results))
+        print(f"Avg Latency:{sum(results) / len(results)} seconds,", f"Std:{np.std(results)},",
+              'Number of iterations:', len(results))
+
+        return sum(results) / len(results)
+
+
+def ps(n_parties: int, WAN: bool):
 
     results = []
 
     f_tolerance = n_parties // 4
 
-    results = [(batch_size / n_parties, process_log_files(
+    results = [(batch_size / n_parties, process_log_files_stable(
         n_parties, f_tolerance, batch_size, WAN)) for batch_size in BATCH_SIZES]
 
-    print(results)
+    print((n_parties, f_tolerance, results))
+
+
+def pu(n_parties: int):
+
+    batches = {8: 1000, 64: 1_000_000}
+
+    results_delay = []
+    results_loss = []
+
+    batch_size = batches[n_parties]
+
+    f_tolerance = n_parties // 4
+
+    for m_parties in M:
+
+        partial_delay = []
+        partial_loss = []
+
+        for delay in PACKET_DELAYS:
+
+            latency = process_log_files_unstable(
+                n_parties, f_tolerance, batch_size, m_parties, delay, 0)
+            if latency:
+                partial_delay.append((delay, latency))
+
+        for loss in PACKET_LOSS_RATES:
+            latency = process_log_files_unstable(
+                n_parties, f_tolerance, batch_size, m_parties, 0, loss)
+            if latency:
+                partial_loss.append((loss, latency))
+
+        results_delay.append(
+            (n_parties, f_tolerance, m_parties, partial_delay))
+        results_loss.append((n_parties, f_tolerance, m_parties, partial_loss))
+
+    print(results_delay)
+    print(results_loss)
 
 
 if __name__ == '__main__':

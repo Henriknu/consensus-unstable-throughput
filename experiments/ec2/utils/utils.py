@@ -1,7 +1,7 @@
 import datetime
 import boto3
 
-N = 64  # 8, 32, 64, 100 Stable. N = 64 unstable.
+N = 8  # 8, 32, 64, 100 Stable. N = 64 unstable.
 F = int(N/4)
 I = 1
 WAN = True
