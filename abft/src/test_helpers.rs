@@ -1,12 +1,18 @@
+use crate::proto::{
+    abft_client::AbftClient,
+    abft_server::{Abft, AbftServer},
+    FinishedMessage, FinishedResponse, ProtocolMessage, ProtocolResponse, SetupAck,
+    SetupAckResponse,
+};
 use async_trait::async_trait;
 use log::error;
 use std::collections::HashMap;
 use tokio::sync::mpsc::Sender;
+use tonic::transport::Channel;
 
 use crate::{
     buffer::{ABFTBufferCommand, ABFTReceiver},
     messaging::{ProtocolMessageSender, ToProtocolMessage},
-    proto::ProtocolMessage,
     protocols::{
         acs::buffer::ACSBufferCommand,
         mvba::buffer::{MVBABufferCommand, MVBAReceiver},
@@ -16,6 +22,84 @@ use crate::{
         },
     },
 };
+
+#[derive(Clone)]
+pub struct RPCSender {
+    pub clients: HashMap<u32, AbftClient<Channel>>,
+}
+
+impl RPCSender {
+    pub async fn setup(&self, recv_id: u32, message: SetupAck) {
+        if !self.clients.contains_key(&recv_id) {
+            return;
+        }
+
+        let mut client = self.clients[&recv_id].clone();
+        if let Err(e) = client.setup_ack(message).await {
+            error!("Got error when sending message: {}", e);
+        }
+    }
+
+    pub async fn finish(&self, recv_id: u32, message: FinishedMessage) {
+        if !self.clients.contains_key(&recv_id) {
+            return;
+        }
+
+        let mut client = self.clients[&recv_id].clone();
+        if let Err(e) = client.finished(message).await {
+            error!("Got error when sending message: {}", e);
+        }
+    }
+}
+
+#[async_trait]
+impl ProtocolMessageSender for RPCSender {
+    async fn send<M: ToProtocolMessage + Send + Sync>(
+        &self,
+        id: u32,
+        send_id: u32,
+        recv_id: u32,
+        view: u32,
+        prbc_index: u32,
+        message: M,
+    ) {
+        if !self.clients.contains_key(&recv_id) {
+            return;
+        }
+
+        let mut client = self.clients[&recv_id].clone();
+        if let Err(e) = client
+            .protocol_exchange(message.to_protocol_message(id, send_id, recv_id, view, prbc_index))
+            .await
+        {
+            error!("Got error when sending message: {}", e);
+        }
+    }
+
+    async fn broadcast<M: ToProtocolMessage + Send + Sync>(
+        &self,
+        id: u32,
+        send_id: u32,
+        n_parties: u32,
+        view: u32,
+        prbc_index: u32,
+        message: M,
+    ) {
+        let message = message.to_protocol_message(id, send_id, 0, view, prbc_index);
+
+        for i in 0..n_parties {
+            if !self.clients.contains_key(&i) {
+                continue;
+            }
+            let mut inner = message.clone();
+            inner.recv_id = i;
+            let mut client = self.clients[&i].clone();
+            if let Err(e) = client.protocol_exchange(inner).await {
+                error!("Got error when sending message: {}", e);
+            }
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct ChannelSender {

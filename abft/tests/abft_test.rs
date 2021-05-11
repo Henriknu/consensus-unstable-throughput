@@ -24,7 +24,7 @@ use abft::test_helpers::{ABFTBufferManager, ChannelSender};
 use std::time::Instant;
 
 const N_PARTIES: usize = THRESHOLD * 4;
-const THRESHOLD: usize = 2;
+const THRESHOLD: usize = 1;
 const BATCH_SIZE: u64 = 10_000 as u64;
 const BUFFER_CAPACITY: usize = N_PARTIES * N_PARTIES * 50 + 1000;
 const SEED_TRANSACTION_SET: u32 = 899923234;
@@ -94,8 +94,6 @@ async fn abft_correctness() {
             i as u32,
             THRESHOLD as u32,
             N_PARTIES as u32,
-            f,
-            r,
             signer_prbc,
             signer_mvba,
             coin,
@@ -106,6 +104,7 @@ async fn abft_correctness() {
 
         let mut buffer = ABFTBuffer::new();
         let buffer_abft = abft.clone();
+        let buffer_f = f.clone();
 
         let _ = tokio::spawn(async move {
             while let Some(command) = buff_cmd_recv.recv().await {
@@ -114,7 +113,10 @@ async fn abft_correctness() {
                 info!("Buffer {} retrieved {} messages", i, messages.len());
 
                 for message in messages {
-                    match buffer_abft.handle_protocol_message(message).await {
+                    match buffer_abft
+                        .handle_protocol_message(message, &*buffer_f)
+                        .await
+                    {
                         Ok(_) => {}
                         Err(ABFTError::NotReadyForPRBCMessage(early_message)) => {
                             let index = early_message.prbc_index;
@@ -157,11 +159,12 @@ async fn abft_correctness() {
         let msg_buff_send = buff_cmd_send.clone();
 
         let msg_abft = abft.clone();
+        let msg_f = f.clone();
 
         let _ = tokio::spawn(async move {
             while let Some(message) = recv.recv().await {
                 debug!("Received message at {}", i);
-                match msg_abft.handle_protocol_message(message).await {
+                match msg_abft.handle_protocol_message(message, &*msg_f).await {
                     Ok(_) => {}
                     Err(ABFTError::NotReadyForPRBCMessage(early_message)) => {
                         let index = early_message.prbc_index;
@@ -220,7 +223,7 @@ async fn abft_correctness() {
         info!("Invoking ABFT");
 
         let main_handle = tokio::spawn(async move {
-            match abft.invoke(transactions).await {
+            match abft.invoke(f, r, transactions).await {
                 Ok(value) => return Ok(value),
                 Err(e) => {
                     error!("Party {} got error when invoking abft: {}", i, e);
