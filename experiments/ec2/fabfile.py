@@ -37,14 +37,14 @@ def start_awscw_agent(c, group=None):
 @task
 def upload_crypto(c, group=None):
 
-    print("Uploading crypto")
-
     if not group:
         group = get_group()
 
     p = Popen(["./generate.sh",  f"{N}",  f"{int(F)}"])
 
     p.wait()
+
+    print("Uploading crypto")
 
     group.run("mkdir -p crypto")
 
@@ -221,6 +221,20 @@ def setup(c, ips, group=None):
     prepare_hosts(c, ips, group=group)
     prepare_logs(c, group=group)
 
+    stop_all()
+
+
+@task
+def prepare(c, ips, group=None):
+
+    if not group:
+        group = get_group()
+
+    upload_crypto(c, group=group)
+    upload_binary(c, group=group)
+    prepare_hosts(c, ips, group=group)
+    prepare_logs(c, group=group)
+
 
 @task
 def full(c):
@@ -237,10 +251,7 @@ def full(c):
     group = ThreadingGroup(*ips,
                            user="ubuntu", forward_agent=True)
 
-    #upload_crypto(c, group=group)
-    #upload_binary(c, group=group)
-    prepare_hosts(c, ips, group=group)
-    #prepare_logs(c, group=group)
+    prepare(c, ips, group=group)
 
     if SHOULD_MONITOR and WAN:
         prepare_awscw_agent(c, group=group)
@@ -275,42 +286,39 @@ def full_unstable(c):
     group = ThreadingGroup(*ips,
                            user="ubuntu", forward_agent=True)
 
-    upload_crypto(c, group=group)
-    upload_binary(c, group=group)
-    prepare_hosts(c, ips, group=group)
-    prepare_logs(c, group=group)
+    prepare(c, ips, group=group)
 
     if SHOULD_MONITOR and WAN:
         prepare_awscw_agent(c, group=group)
 
-    for b in UNSTABLE_BATCH_SIZES:
+    b = UNSTABLE_BATCH_SIZES[N]
 
-        for m in M:
+    for m in M:
 
-            if SHOULD_PACKET_DELAY:
+        if SHOULD_PACKET_DELAY:
 
-                for d in PACKET_DELAYS:
+            for d in PACKET_DELAYS:
 
-                    for i in range(I):
+                for i in range(I):
 
-                        run_protocol_unstable(
-                            c, i + 1, b, m, d, 0, group=group)
+                    run_protocol_unstable(
+                        c, i + 1, b, m, d, 0, group=group)
 
-                    download_logs_unstable(c, b, m, d, 0, group=group)
+                download_logs_unstable(c, b, m, d, 0, group=group)
 
-                    clear_logs(c, group=group)
+                clear_logs(c, group=group)
 
-            if SHOULD_PACKET_LOSS:
+        if SHOULD_PACKET_LOSS:
 
-                for l in PACKET_LOSS_RATES:
+            for l in PACKET_LOSS_RATES:
 
-                    for i in range(I):
+                for i in range(I):
 
-                        run_protocol_unstable(
-                            c, i + 1, b, m, 0, l, group=group)
+                    run_protocol_unstable(
+                        c, i + 1, b, m, 0, l, group=group)
 
-                    download_logs_unstable(c, b, m, 0, l, group=group)
+                download_logs_unstable(c, b, m, 0, l, group=group)
 
-                    clear_logs(c, group=group)
+                clear_logs(c, group=group)
 
     stop_all()

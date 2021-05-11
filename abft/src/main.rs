@@ -36,6 +36,7 @@ use abft::{
 };
 
 use std::sync::Arc;
+use tokio::sync::broadcast;
 use tokio::sync::mpsc::{self, Receiver, Sender};
 
 const RECV_TIMEOUT_SECS: u64 = 20;
@@ -57,86 +58,98 @@ async fn main() {
 
     let enabled_unstable = (args.m_parties != 0) && enable_unstable_network(&args);
 
-    for i in 1..args.iterations {
-        warn!("Running iteration {}", i);
-        // client managers
+    // broadcast channel for cleanup
 
-        let (client_manager_sender, client_ready_rx) = spawn_client_managers(&args);
+    let (kill_tx, kill_rx) = broadcast::channel::<()>(10);
 
-        // Buffer manager
+    // client managers
 
-        let (buff_cmd_send, buff_cmd_recv) = mpsc::channel::<ABFTBufferCommand>(
-            (args.n_parties * args.n_parties * 50 + 100) as usize,
-        );
+    let (client_manager_sender, client_ready_rx) = spawn_client_managers(&args);
 
-        let buffer_handle = Arc::new(ABFTBufferManager {
-            sender: buff_cmd_send.clone(),
-        });
+    // Buffer manager
 
-        // Setup manager - handle "setup" messages from peers, ensure that all clients are setup when invoking ABFT, for precise timing.
+    let (buff_cmd_send, buff_cmd_recv) =
+        mpsc::channel::<ABFTBufferCommand>((args.n_parties * args.n_parties * 50 + 100) as usize);
 
-        let (setup_tx, setup_rx) = mpsc::channel::<u32>(args.n_parties as usize);
+    let buffer_handle = Arc::new(ABFTBufferManager {
+        sender: buff_cmd_send.clone(),
+    });
 
-        // Finished manager - handle "finished" messages from peers, know when one can gracefully exit without stalling others.
+    // Setup manager - handle "setup" messages from peers, ensure that all clients are setup when invoking ABFT, for precise timing.
 
-        let (fin_tx, fin_rx) = mpsc::channel::<u32>(args.n_parties as usize);
+    let (setup_tx, setup_rx) = mpsc::channel::<u32>(args.n_parties as usize);
 
-        // ABFT protocol instance
+    // Finished manager - handle "finished" messages from peers, know when one can gracefully exit without stalling others.
 
-        let protocol = init_protocol(
-            args.id,
-            args.index,
-            args.f_tolerance,
-            args.n_parties,
-            args.crypto.clone(),
-            client_manager_sender,
-            buffer_handle,
-        );
+    let (fin_tx, fin_rx) = mpsc::channel::<u32>(args.n_parties as usize);
 
-        // Buffer
+    // ABFT protocol instance
 
-        let buffer_protocol = protocol.clone();
+    let protocol = init_protocol(
+        args.id,
+        args.index,
+        args.f_tolerance,
+        args.n_parties,
+        args.crypto.clone(),
+        client_manager_sender,
+        buffer_handle,
+    );
 
-        spawn_buffer_manager(buffer_protocol, buff_cmd_recv, args.index);
+    // Buffer
 
-        // server
+    let buffer_protocol = protocol.clone();
 
-        let server_args = args.clone();
+    spawn_buffer_manager(buffer_protocol, buff_cmd_recv, args.index);
 
-        let server_protocol = protocol.clone();
+    // server
 
-        let server_buff_send = buff_cmd_send.clone();
+    let server_args = args.clone();
 
-        let server_setup_send = setup_tx.clone();
+    let server_protocol = protocol.clone();
 
-        let server_finished_send = fin_tx.clone();
+    let server_buff_send = buff_cmd_send.clone();
 
-        tokio::spawn(async move {
-            let service = ABFTService {
-                index: server_args.index,
-                protocol: server_protocol,
-                buff_send: server_buff_send,
-                setup_send: server_setup_send,
-                finished_send: server_finished_send,
-            };
+    let server_setup_send = setup_tx.clone();
 
-            let server = AbftServer::new(service);
+    let server_finished_send = fin_tx.clone();
 
-            let addr: SocketAddr = server_args.server_endpoint;
+    tokio::spawn(async move {
+        let service = ABFTService {
+            index: server_args.index,
+            protocol: server_protocol,
+            buff_send: server_buff_send,
+            setup_send: server_setup_send,
+            finished_send: server_finished_send,
+        };
 
-            warn!("Server Addr: {}", addr);
+        let server = AbftServer::new(service);
 
-            match tonic::transport::Server::builder()
-                .add_service(server)
-                .serve(addr)
-                .await
-            {
-                Ok(_) => {}
-                Err(e) => {
-                    error!("Got error at abft rpc server: {} ", e);
-                }
+        let addr: SocketAddr = server_args.server_endpoint;
+
+        info!("Server Addr: {}", addr);
+
+        match tonic::transport::Server::builder()
+            .add_service(server)
+            .serve(addr)
+            .await
+        {
+            Ok(_) => {}
+            Err(e) => {
+                error!("Got error at abft rpc server: {} ", e);
             }
-        });
+        }
+    });
+
+    for _ in 0..args.iterations {
+        let private_host_name = args
+            .server_endpoint
+            .to_string()
+            .split(":")
+            .next()
+            .unwrap()
+            .replace(".", "-");
+
+        warn!("private_host_name:{}", format!("ip-{}", private_host_name));
 
         // wait for setup to complete
 
@@ -173,6 +186,8 @@ async fn main() {
         send_finished(&*args).await;
 
         wait_for_finish_and_exit(fin_rx, &*args).await;
+
+        kill_tx.send(()).unwrap();
     }
 
     if enabled_unstable {
@@ -226,7 +241,7 @@ async fn send_setup_ack(args: &ABFTCliArgs) {
                             break;
                         }
                         Err(e) => {
-                            warn!(
+                            info!(
                                 "Party {} could not setup with Party {}, with error: {}",
                                 index, i, e
                             );
@@ -251,7 +266,7 @@ async fn send_setup_ack(args: &ABFTCliArgs) {
                             break;
                         }
                         Err(e) => {
-                            warn!(
+                            info!(
                                 "Party {} got non-ok status code when sending setup_ack to {}: {}",
                                 index, i, e
                             );
@@ -312,7 +327,7 @@ async fn send_finished(args: &ABFTCliArgs) {
                             break;
                         }
                         Err(e) => {
-                            warn!(
+                            info!(
                                 "Party {} could not finish with Party {}, with error: {}",
                                 index, i, e
                             );
@@ -337,7 +352,7 @@ async fn send_finished(args: &ABFTCliArgs) {
                             break;
                         }
                         Err(e) => {
-                            warn!(
+                            info!(
                                 "Party {} got non-ok status code when sending finish to {}: {}",
                                 index, i, e
                             );
@@ -367,11 +382,7 @@ async fn wait_for_finish_and_exit(mut fin_rx: Receiver<u32>, args: &ABFTCliArgs)
         }
     }
 
-    info!(
-        "Party {} gracefully exit, having received num finished messages: {}",
-        args.index,
-        finished.len()
-    );
+    warn!("Party {} gracefully exit", args.index,);
 
     info!("\n");
 }
@@ -414,7 +425,7 @@ fn spawn_client_managers(args: &ABFTCliArgs) -> (Arc<ChannelSender>, Receiver<u3
                             break;
                         }
                         Err(e) => {
-                            warn!(
+                            info!(
                                 "Party {} could not connect with Party {}, with error: {}",
                                 own_index, i, e
                             );
@@ -439,7 +450,7 @@ fn spawn_client_managers(args: &ABFTCliArgs) -> (Arc<ChannelSender>, Receiver<u3
                     match client.protocol_exchange(message).await {
                         Ok(_) => {}
                         Err(e) => {
-                            warn!("Got non-ok status code when sending message: {}", e);
+                            info!("Got non-ok status code when sending message: {}", e);
                         }
                     }
                 }
@@ -544,7 +555,7 @@ fn enable_unstable_network(args: &ABFTCliArgs) -> bool {
     );
 
     if indexes.contains(index) {
-        info!("Invoking Netem with ");
+        warn!("Invoking Netem");
         let output = Command::new("sudo")
             .args(&["tc", "qdisc", "add", "dev", "eth0", "root"])
             .args(&[
