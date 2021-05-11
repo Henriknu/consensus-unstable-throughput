@@ -1,14 +1,15 @@
 import datetime
+import glob
 import boto3
 
-N = 64  # 8, 32, 64, 100 Stable. N = 64 unstable.
+N = 8  # 8, 32, 64, 100 Stable. N = 8, 64 unstable.
 F = int(N/4)
 I = 1
 WAN = True
 SHOULD_MONITOR = False
-BATCH_SIZES = [100, 1000, 10000, 100_000] if WAN else [
+BATCH_SIZES = [100, 1000, 10000, 100_000, 1_000_000, 2_000_000] if WAN else [
     N]  # 100, 1000, 10000, 100_000 1_000_000, 2_000_000
-UNSTABLE_BATCH_SIZES = [1000, 100_000]
+UNSTABLE_BATCH_SIZES = {8: 10_000, 64: 1_000_000}
 SHOULD_PACKET_DELAY = True
 SHOULD_PACKET_LOSS = True
 PACKET_LOSS_RATES = [5, 10, 15]
@@ -16,7 +17,7 @@ PACKET_DELAYS = [500, 2500, 5000]
 M = [int(F/2), F, 2*F, 3*F, N]
 
 SERVER_AMI_ID = 'ami-042e8287309f5df03'  # Ubuntu 20.04 64 bit x86
-SERVER_INSTANCE_TYPE = 't2.micro'
+SERVER_INSTANCE_TYPE = 't2.medium'
 NAME_FILTER = 'ABFT'
 SECURITY_GROUP_ID = 'sg-0a6d95c8b0adda476'  # US East (N. Virginia)
 SSH_KEY_NAME = 'AWS Micro Testing'
@@ -54,10 +55,7 @@ def get_ec2_instances_private_hosts(region):
 
     ec2_resource = boto3.resource("ec2", region_name=region)
 
-    running_instances = ec2_resource.instances.filter(
-        Filters=[{'Name': 'instance-state-name', 'Values': ['running']}])
-
-    ips = [instance.private_ip_address for instance in running_instances]
+    ips = [instance.private_ip_address for instance in ec2_resource.instances.all()]
 
     hosts = ["ip-" + ip.replace(".", "-") for ip in ips]
 
@@ -85,7 +83,7 @@ def get_metric_data(region):
 
     ips = get_ec2_instances_private_hosts(region)
 
-    cpu_metrics = [{"Id": "cpu_metrics", "Label": f"Cpu Metrics for Party {i}", "MetricStat": {
+    cpu_metrics = [{"Id": f"cpu_metrics{i}", "Label": f"Cpu Metrics for Party {i}", "MetricStat": {
 
         "Metric": {
 
@@ -102,7 +100,7 @@ def get_metric_data(region):
 
     }} for i, ip in enumerate(ips)]
 
-    mem_metrics = [{"Id": "mem_metrics", "Label": f"Memory Metrics for Party {i}", "MetricStat": {
+    mem_metrics = [{"Id": f"mem_metrics{i}", "Label": f"Memory Metrics for Party {i}", "MetricStat": {
 
         "Metric": {
 
@@ -119,7 +117,7 @@ def get_metric_data(region):
 
     }} for i, ip in enumerate(ips)]
 
-    net_metrics = [{"Id": "net_metrics", "Label": f"Network Metrics for Party {i}", "MetricStat": {
+    net_metrics = [{"Id": f"net_metrics{i}", "Label": f"Network Metrics for Party {i}", "MetricStat": {
 
         "Metric": {
 
@@ -140,7 +138,7 @@ def get_metric_data(region):
         },
 
         "Period": METRIC_PERIOD,
-        "Stat": "Maximum",
+        "Stat": "Sum",
         "Unit": "Bytes"
 
     }} for i, ip in enumerate(ips)]
@@ -151,6 +149,77 @@ def get_metric_data(region):
         EndTime=datetime.datetime.now() + datetime.timedelta(days=1))
 
     print(response)
+
+
+def get_metric_data2(private_host_name: str, starttime: datetime.datetime, endtime: datetime.datetime):
+
+   # Create CloudWatch client
+    cloudwatch = boto3.client('cloudwatch')
+
+    cpu_metric = {"Id": "cpu_metrics", "Label": "Cpu Metrics for Party", "MetricStat": {
+
+        "Metric": {
+
+            "Namespace": "CWAgent",
+
+            "MetricName": "cpu_time_active",
+
+            "Dimensions": [{"Name": "host", "Value": private_host_name}]
+        },
+
+        "Period": METRIC_PERIOD,
+        "Stat": "Maximum",
+    }}
+
+    mem_metric = {"Id": "mem_used", "Label": "Mem Metrics for Party", "MetricStat": {
+
+        "Metric": {
+
+            "Namespace": "CWAgent",
+
+            "MetricName": "mem_used",
+
+            "Dimensions": [{"Name": "host", "Value": private_host_name}]
+        },
+
+        "Period": METRIC_PERIOD,
+        "Stat": "Maximum",
+    }}
+
+    net_metric = {"Id": "net_metrics", "Label": "Net Metrics for Party", "MetricStat": {
+
+        "Metric": {
+
+            "Namespace": "CWAgent",
+
+            "MetricName": "net_bytes_sent",
+
+            "Dimensions": [
+                {
+                    "Name": "host",
+                    "Value": private_host_name
+                },
+                {
+                    "Name": "interface",
+                    "Value": "eth0"
+                }
+            ]
+        },
+
+        "Period": METRIC_PERIOD,
+        "Stat": "Maximum",
+    }}
+
+    results = cloudwatch.get_metric_data(
+        MetricDataQueries=[cpu_metric, net_metric,
+                           mem_metric], StartTime=starttime,
+        EndTime=endtime)["MetricDataResults"]
+
+    print(results)
+
+    cpu_data, mem_data, net_data = None
+
+    return cpu_data, mem_data, net_data
 
 
 def ip_all():

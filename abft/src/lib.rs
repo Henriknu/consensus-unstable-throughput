@@ -31,11 +31,7 @@ pub mod test_helpers;
 
 pub type ABFTResult<T> = Result<T, ABFTError>;
 
-pub struct ABFT<
-    F: ProtocolMessageSender + Sync + Send + 'static,
-    R: PRBCReceiver + MVBAReceiver + Send + Sync + 'static,
-    V: ABFTValue,
-> {
+pub struct ABFT<V: ABFTValue> {
     id: u32,
     index: u32,
     f_tolerance: u32,
@@ -49,28 +45,18 @@ pub struct ABFT<
     // sub-protocol
     acs: RwLock<Option<ACS<EncodedEncryptedValue>>>,
 
-    // infrastructure
-    send_handle: Arc<F>,
-    recv_handle: Arc<R>,
     signer_prbc: Arc<Signer>,
     signer_mvba: Signer,
     coin: Coin,
     encrypter: Encrypter,
 }
 
-impl<
-        F: ProtocolMessageSender + Sync + Send + 'static,
-        R: PRBCReceiver + MVBAReceiver + ABFTReceiver + Send + Sync + 'static,
-        V: ABFTValue,
-    > ABFT<F, R, V>
-{
+impl<V: ABFTValue> ABFT<V> {
     pub fn init(
         id: u32,
         index: u32,
         f_tolerance: u32,
         n_parties: u32,
-        send_handle: Arc<F>,
-        recv_handle: Arc<R>,
         signer_prbc: Arc<Signer>,
         signer_mvba: Signer,
         coin: Coin,
@@ -89,8 +75,6 @@ impl<
 
             acs: RwLock::const_new(None),
 
-            send_handle,
-            recv_handle,
             signer_prbc,
             signer_mvba,
             coin,
@@ -98,7 +82,15 @@ impl<
         }
     }
 
-    pub async fn invoke(&self, value: V) -> ABFTResult<BTreeMap<u32, V>> {
+    pub async fn invoke<
+        F: ProtocolMessageSender + Sync + Send + 'static,
+        R: PRBCReceiver + MVBAReceiver + ABFTReceiver + Send + Sync + 'static,
+    >(
+        &self,
+        send_handle: Arc<F>,
+        recv_handle: Arc<R>,
+        value: V,
+    ) -> ABFTResult<BTreeMap<u32, V>> {
         // choose value and encrypt it
         // TODO: Figure out label
 
@@ -128,8 +120,8 @@ impl<
             let acs = acs_lock.as_ref().expect("ACS should be init");
 
             acs.invoke(
-                self.recv_handle.clone(),
-                self.send_handle.clone(),
+                recv_handle.clone(),
+                send_handle.clone(),
                 self.signer_prbc.clone(),
                 &self.signer_mvba,
                 &self.coin,
@@ -169,13 +161,13 @@ impl<
                 self.on_decryption_share(decrypt_message.clone(), self.index)
                     .await?;
 
-                self.send_handle
+                send_handle
                     .broadcast(self.id, self.index, self.n_parties, 0, 0, decrypt_message)
                     .await;
             }
         }
 
-        self.recv_handle.drain_decryption_shares().await?;
+        recv_handle.drain_decryption_shares().await?;
 
         // wait for f + 1 decryption shares for each transaction set, decrypt and return
 
@@ -192,7 +184,11 @@ impl<
         Ok(decrypted)
     }
 
-    pub async fn handle_protocol_message(&self, message: ProtocolMessage) -> ABFTResult<()> {
+    pub async fn handle_protocol_message<F: ProtocolMessageSender + Sync + Send + 'static>(
+        &self,
+        message: ProtocolMessage, // infrastructure
+        send_handle: &F,
+    ) -> ABFTResult<()> {
         // assume valid existing header and valid message_type
 
         match message.message_type() {
@@ -207,7 +203,7 @@ impl<
                     match acs
                         .handle_protocol_message(
                             message,
-                            &*self.send_handle,
+                            send_handle,
                             &*self.signer_prbc,
                             &self.signer_mvba,
                             &self.coin,
@@ -241,7 +237,7 @@ impl<
                     match acs
                         .handle_protocol_message(
                             message,
-                            &*self.send_handle,
+                            send_handle,
                             &*self.signer_prbc,
                             &self.signer_mvba,
                             &self.coin,

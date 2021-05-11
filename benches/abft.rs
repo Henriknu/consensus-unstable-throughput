@@ -29,7 +29,10 @@ use std::{collections::HashMap, sync::Arc};
 
 use futures::future::join_all;
 
-use consensus_core::crypto::{commoncoin::Coin, encrypt::Encrypter, sign::Signer};
+use consensus_core::{
+    crypto::{commoncoin::Coin, encrypt::Encrypter, sign::Signer},
+    data::transaction::TransactionSet,
+};
 
 use tokio::sync::mpsc::{self, Sender};
 
@@ -37,9 +40,11 @@ use log::{debug, error, info};
 
 use abft::test_helpers::{ABFTBufferManager, ChannelSender};
 
-const N_PARTIES: usize = THRESHOLD * 3 + 1;
-const THRESHOLD: usize = 1;
+const N_PARTIES: usize = THRESHOLD * 4;
+const THRESHOLD: usize = 2;
+const BATCH_SIZE: u64 = 10_000 as u64;
 const BUFFER_CAPACITY: usize = N_PARTIES * N_PARTIES * 50 + 1000;
+const SEED_TRANSACTION_SET: u32 = 899923234;
 
 async fn abft_correctness() {
     let mut mvba_signers = Signer::generate_signers(N_PARTIES, N_PARTIES - THRESHOLD - 1);
@@ -98,8 +103,6 @@ async fn abft_correctness() {
             i as u32,
             THRESHOLD as u32,
             N_PARTIES as u32,
-            f,
-            r,
             signer_prbc,
             signer_mvba,
             coin,
@@ -110,6 +113,7 @@ async fn abft_correctness() {
 
         let mut buffer = ABFTBuffer::new();
         let buffer_abft = abft.clone();
+        let buffer_f = f.clone();
 
         let _ = tokio::spawn(async move {
             while let Some(command) = buff_cmd_recv.recv().await {
@@ -118,7 +122,10 @@ async fn abft_correctness() {
                 info!("Buffer {} retrieved {} messages", i, messages.len());
 
                 for message in messages {
-                    match buffer_abft.handle_protocol_message(message).await {
+                    match buffer_abft
+                        .handle_protocol_message(message, &*buffer_f)
+                        .await
+                    {
                         Ok(_) => {}
                         Err(ABFTError::NotReadyForPRBCMessage(early_message)) => {
                             let index = early_message.prbc_index;
@@ -161,11 +168,12 @@ async fn abft_correctness() {
         let msg_buff_send = buff_cmd_send.clone();
 
         let msg_abft = abft.clone();
+        let msg_f = f.clone();
 
         let _ = tokio::spawn(async move {
             while let Some(message) = recv.recv().await {
                 debug!("Received message at {}", i);
-                match msg_abft.handle_protocol_message(message).await {
+                match msg_abft.handle_protocol_message(message, &*msg_f).await {
                     Ok(_) => {}
                     Err(ABFTError::NotReadyForPRBCMessage(early_message)) => {
                         let index = early_message.prbc_index;
@@ -213,8 +221,18 @@ async fn abft_correctness() {
 
         // setup main thread
 
+        let transactions = TransactionSet::generate_transactions(SEED_TRANSACTION_SET, BATCH_SIZE)
+            .random_selection(N_PARTIES);
+
+        info!(
+            "Proposing transaction set with {} transactions.",
+            transactions.len()
+        );
+
+        info!("Invoking ABFT");
+
         let main_handle = tokio::spawn(async move {
-            match abft.invoke(Value::new(i as u32 * 1000)).await {
+            match abft.invoke(f, r, transactions).await {
                 Ok(value) => return Ok(value),
                 Err(e) => {
                     error!("Party {} got error when invoking abft: {}", i, e);

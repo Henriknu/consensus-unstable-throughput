@@ -21,6 +21,7 @@ use tonic::{
 
 use abft::{
     buffer::{ABFTBuffer, ABFTBufferCommand},
+    messaging::ProtocolMessageSender,
     proto::{
         abft_client::AbftClient,
         abft_server::{Abft, AbftServer},
@@ -31,11 +32,12 @@ use abft::{
         acs::buffer::ACSBufferCommand, mvba::buffer::MVBABufferCommand,
         prbc::buffer::PRBCBufferCommand,
     },
-    test_helpers::{ABFTBufferManager, ChannelSender},
+    test_helpers::{ABFTBufferManager, ChannelSender, RPCSender},
     ABFTError, ABFT,
 };
 
 use std::sync::Arc;
+use tokio::sync::broadcast;
 use tokio::sync::mpsc::{self, Receiver, Sender};
 
 const RECV_TIMEOUT_SECS: u64 = 20;
@@ -57,9 +59,13 @@ async fn main() {
 
     let enabled_unstable = (args.m_parties != 0) && enable_unstable_network(&args);
 
+    // broadcast channel for cleanup
+
+    let (kill_tx, kill_rx) = broadcast::channel::<()>(10);
+
     // client managers
 
-    let (client_manager_sender, client_ready_rx) = spawn_client_managers(&args);
+    //let (client_manager_sender, client_ready_rx) = spawn_client_managers(&args);
 
     // Buffer manager
 
@@ -70,13 +76,18 @@ async fn main() {
         sender: buff_cmd_send.clone(),
     });
 
+    // Message manager
+
+    let (msg_tx, msg_rx) =
+        mpsc::channel::<ProtocolMessage>((args.n_parties * args.n_parties * 50 + 100) as usize);
+
     // Setup manager - handle "setup" messages from peers, ensure that all clients are setup when invoking ABFT, for precise timing.
 
-    let (setup_tx, setup_rx) = mpsc::channel::<u32>(args.n_parties as usize);
+    let (setup_tx, mut setup_rx) = mpsc::channel::<u32>(args.n_parties as usize);
 
     // Finished manager - handle "finished" messages from peers, know when one can gracefully exit without stalling others.
 
-    let (fin_tx, fin_rx) = mpsc::channel::<u32>(args.n_parties as usize);
+    let (fin_tx, mut fin_rx) = mpsc::channel::<u32>(args.n_parties as usize);
 
     // ABFT protocol instance
 
@@ -86,15 +97,7 @@ async fn main() {
         args.f_tolerance,
         args.n_parties,
         args.crypto.clone(),
-        client_manager_sender,
-        buffer_handle,
     );
-
-    // Buffer
-
-    let buffer_protocol = protocol.clone();
-
-    spawn_buffer_manager(buffer_protocol, buff_cmd_recv, args.index);
 
     // server
 
@@ -102,17 +105,17 @@ async fn main() {
 
     let server_protocol = protocol.clone();
 
-    let server_buff_send = buff_cmd_send.clone();
-
     let server_setup_send = setup_tx.clone();
 
     let server_finished_send = fin_tx.clone();
 
+    let server_msg_send = msg_tx.clone();
+
     tokio::spawn(async move {
         let service = ABFTService {
+            msg_send: server_msg_send,
             index: server_args.index,
             protocol: server_protocol,
-            buff_send: server_buff_send,
             setup_send: server_setup_send,
             finished_send: server_finished_send,
         };
@@ -121,7 +124,7 @@ async fn main() {
 
         let addr: SocketAddr = server_args.server_endpoint;
 
-        println!("Server Addr: {}", addr);
+        info!("Server Addr: {}", addr);
 
         match tonic::transport::Server::builder()
             .add_service(server)
@@ -135,45 +138,86 @@ async fn main() {
         }
     });
 
-    // wait for setup to complete
+    let rpc_sender = Arc::new(init_rpc_sender(&args).await);
 
-    wait_for_clients(client_ready_rx, &*args).await;
+    // msg handler
 
-    send_setup_ack(&*args).await;
+    let msg_rpc_sender = rpc_sender.clone();
 
-    wait_for_setup_ack(setup_rx, &*args).await;
+    let msg_protocol = protocol.clone();
 
-    // Invoke protocol
+    let msg_buff_send = buff_cmd_send.clone();
 
-    let value = TransactionSet::generate_transactions(SEED_TRANSACTION_SET, args.batch_size)
-        .random_selection(args.n_parties as usize);
+    let index = args.index;
 
-    warn!(
-        "Proposing transaction set with {} transactions.",
-        value.len()
-    );
+    spawn_msg_handler(msg_protocol, msg_rpc_sender, msg_buff_send, msg_rx, index).await;
 
-    warn!("Invoking ABFT");
+    // Buffer
 
-    match protocol.invoke(value).await {
-        Ok(value) => {
-            warn!(
-                "Party {} terminated ABFT with value: {:?}",
-                args.index, value
-            );
+    let buffer_msg_tx = msg_tx.clone();
+
+    let buff_manager_handle = spawn_buffer_manager(buff_cmd_recv, buffer_msg_tx, args.index);
+
+    for _ in 0..args.iterations {
+        let private_host_name = args
+            .server_endpoint
+            .to_string()
+            .split(":")
+            .next()
+            .unwrap()
+            .replace(".", "-");
+
+        warn!("private_host_name:{}", format!("ip-{}", private_host_name));
+
+        // wait for setup to complete
+
+        send_setup_ack(&*args, &rpc_sender).await;
+
+        wait_for_setup_ack(&mut setup_rx, &*args).await;
+
+        // Invoke protocol
+
+        let value = TransactionSet::generate_transactions(SEED_TRANSACTION_SET, args.batch_size)
+            .random_selection(args.n_parties as usize);
+
+        warn!(
+            "Proposing transaction set with {} transactions.",
+            value.len()
+        );
+
+        warn!("Invoking ABFT");
+
+        match protocol
+            .invoke(rpc_sender.clone(), buffer_handle.clone(), value)
+            .await
+        {
+            Ok(value) => {
+                warn!(
+                    "Party {} terminated ABFT with value: {:?}",
+                    args.index, value
+                );
+            }
+            Err(e) => {
+                error!("Party {} got error when invoking abft: {}", args.index, e);
+            }
         }
-        Err(e) => {
-            error!("Party {} got error when invoking abft: {}", args.index, e);
-        }
+
+        send_finished(&*args, &rpc_sender).await;
+
+        wait_for_finish_and_exit(&mut fin_rx, &*args).await;
+
+        //clean_up_round(&mut setup_rx, &mut fin_rx).await;
     }
-
-    send_finished(&*args).await;
-
-    wait_for_finish_and_exit(fin_rx, &*args).await;
 
     if enabled_unstable {
         disable_unstable_network();
     }
+}
+
+async fn clean_up_round(setup_rx: &mut Receiver<u32>, fin_rx: &mut Receiver<u32>) {
+    //while setup_rx.
+
+    while let Some(msg) = setup_rx.recv().await {}
 }
 
 async fn wait_for_clients(mut client_ready_rx: Receiver<u32>, args: &ABFTCliArgs) {
@@ -198,58 +242,26 @@ async fn wait_for_clients(mut client_ready_rx: Receiver<u32>, args: &ABFTCliArgs
     warn!("Party {} all connected", args.index);
 }
 
-async fn send_setup_ack(args: &ABFTCliArgs) {
-    let mut handles = Vec::with_capacity((args.n_parties - 1) as usize);
-    let id = args.id;
-    let index = args.index;
+async fn send_setup_ack(args: &ABFTCliArgs, rpc_sender: &Arc<RPCSender>) {
+    let protocol_id = args.id;
+    let send_id = args.index;
+
+    let mut handles = Vec::with_capacity(args.n_parties as usize);
 
     for i in 0..(args.n_parties as usize) {
-        let uri = args.hosts[&(i as u32)].to_string().parse::<Uri>().unwrap();
+        let local_rpc = rpc_sender.clone();
         if i != args.index as usize {
             handles.push(tokio::spawn(async move {
-                // Attempt to establish a channel, sleeping a couple of seconds until we succesfully are able to connect.
-                let channel: Channel;
-
-                loop {
-                    match Channel::builder(uri.clone())
-                        .timeout(Duration::from_secs(RECV_TIMEOUT_SECS))
-                        .connect()
-                        .await
-                    {
-                        Ok(c) => {
-                            info!("Party {} connected with Party {}", index, i);
-                            channel = c;
-                            break;
-                        }
-                        Err(e) => {
-                            info!(
-                                "Party {} could not connect with Party {}, with error: {}",
-                                index, i, e
-                            );
-                            tokio::time::sleep(Duration::from_secs(CLIENT_RETRY_TIMEOUT_SECS))
-                                .await;
-                        }
-                    }
-                }
-
-                let mut client = AbftClient::new(channel);
-
-                match client
-                    .setup_ack(SetupAck {
-                        protocol_id: id,
-                        send_id: index,
-                        recv_id: i as u32,
-                    })
-                    .await
-                {
-                    Ok(_) => {}
-                    Err(e) => {
-                        warn!(
-                            "Party {} got non-ok status code when sending setup_ack to {}: {}",
-                            index, i, e
-                        );
-                    }
-                }
+                local_rpc
+                    .setup(
+                        i as u32,
+                        SetupAck {
+                            protocol_id,
+                            send_id,
+                            recv_id: i as u32,
+                        },
+                    )
+                    .await;
             }));
         }
     }
@@ -257,7 +269,7 @@ async fn send_setup_ack(args: &ABFTCliArgs) {
     join_all(handles).await;
 }
 
-async fn wait_for_setup_ack(mut setup_rx: Receiver<u32>, args: &ABFTCliArgs) {
+async fn wait_for_setup_ack(setup_rx: &mut Receiver<u32>, args: &ABFTCliArgs) {
     let mut setup_acked = HashSet::<u32>::with_capacity(args.n_parties as usize);
 
     info!(
@@ -279,59 +291,26 @@ async fn wait_for_setup_ack(mut setup_rx: Receiver<u32>, args: &ABFTCliArgs) {
     info!("Party {} finished setup", args.index);
 }
 
-async fn send_finished(args: &ABFTCliArgs) {
-    let mut handles = Vec::with_capacity((args.n_parties - 1) as usize);
-    let id = args.id;
-    let index = args.index;
+async fn send_finished(args: &ABFTCliArgs, rpc_sender: &Arc<RPCSender>) {
+    let protocol_id = args.id;
+    let send_id = args.index;
+
+    let mut handles = Vec::with_capacity(args.n_parties as usize);
 
     for i in 0..(args.n_parties as usize) {
-        let uri = args.hosts[&(i as u32)].clone();
-
+        let local_rpc = rpc_sender.clone();
         if i != args.index as usize {
             handles.push(tokio::spawn(async move {
-                // Attempt to establish a channel, sleeping a couple of seconds until we succesfully are able to connect.
-                let channel: Channel;
-
-                loop {
-                    match Channel::builder(uri.clone())
-                        .timeout(Duration::from_secs(RECV_TIMEOUT_SECS))
-                        .connect()
-                        .await
-                    {
-                        Ok(c) => {
-                            info!("Party {} connected with Party {}", index, i);
-                            channel = c;
-                            break;
-                        }
-                        Err(e) => {
-                            info!(
-                                "Party {} could not connect with Party {}, with error: {}",
-                                index, i, e
-                            );
-                            tokio::time::sleep(Duration::from_secs(CLIENT_RETRY_TIMEOUT_SECS))
-                                .await;
-                        }
-                    }
-                }
-
-                let mut client = AbftClient::new(channel);
-
-                match client
-                    .finished(FinishedMessage {
-                        protocol_id: id,
-                        send_id: index,
-                        recv_id: i as u32,
-                    })
-                    .await
-                {
-                    Ok(_) => {}
-                    Err(e) => {
-                        warn!(
-                            "Party {} got non-ok status code when sending finish to {}: {}",
-                            index, i, e
-                        );
-                    }
-                }
+                local_rpc
+                    .finish(
+                        i as u32,
+                        FinishedMessage {
+                            protocol_id,
+                            send_id,
+                            recv_id: i as u32,
+                        },
+                    )
+                    .await;
             }));
         }
     }
@@ -339,7 +318,7 @@ async fn send_finished(args: &ABFTCliArgs) {
     join_all(handles).await;
 }
 
-async fn wait_for_finish_and_exit(mut fin_rx: Receiver<u32>, args: &ABFTCliArgs) {
+async fn wait_for_finish_and_exit(fin_rx: &mut Receiver<u32>, args: &ABFTCliArgs) {
     let mut finished = HashSet::<u32>::with_capacity(args.n_parties as usize);
 
     info!("Party {} waiting to gracefully exit", args.index);
@@ -355,13 +334,74 @@ async fn wait_for_finish_and_exit(mut fin_rx: Receiver<u32>, args: &ABFTCliArgs)
         }
     }
 
-    info!(
-        "Party {} gracefully exit, having received num finished messages: {}",
-        args.index,
-        finished.len()
-    );
+    warn!("Party {} gracefully exit", args.index,);
 
     info!("\n");
+}
+
+async fn spawn_msg_handler(
+    msg_protocol: Arc<ABFT<TransactionSet>>,
+    msg_rpc_sender: Arc<RPCSender>,
+    msg_buff_send: Sender<ABFTBufferCommand>,
+    mut msg_rx: Receiver<ProtocolMessage>,
+    index: u32,
+) {
+    tokio::spawn(async move {
+        while let Some(message) = msg_rx.recv().await {
+            let local_protocol = msg_protocol.clone();
+            let local_buff_send = msg_buff_send.clone();
+            let local_rpc_sender = msg_rpc_sender.clone();
+
+            tokio::spawn(async move {
+                match local_protocol
+                    .handle_protocol_message(message, &*local_rpc_sender)
+                    .await
+                {
+                    Ok(_) => {}
+                    Err(ABFTError::NotReadyForPRBCMessage(early_message)) => {
+                        let index = early_message.prbc_index;
+                        local_buff_send
+                            .send(ABFTBufferCommand::ACS {
+                                inner: ACSBufferCommand::PRBC {
+                                    inner: PRBCBufferCommand::Store {
+                                        message: early_message,
+                                    },
+                                    send_id: index,
+                                },
+                            })
+                            .await
+                            .unwrap();
+                    }
+                    Err(ABFTError::NotReadyForMVBAMessage(early_message)) => {
+                        local_buff_send
+                            .send(ABFTBufferCommand::ACS {
+                                inner: ACSBufferCommand::MVBA {
+                                    inner: MVBABufferCommand::Store {
+                                        message: early_message,
+                                    },
+                                },
+                            })
+                            .await
+                            .unwrap();
+                    }
+
+                    Err(ABFTError::NotReadyForABFTDecryptionShareMessage(early_message)) => {
+                        local_buff_send
+                            .send(ABFTBufferCommand::Store {
+                                message: early_message,
+                            })
+                            .await
+                            .unwrap();
+                    }
+
+                    Err(e) => error!(
+                        "Party {} got error when handling protocol message: {}",
+                        index, e
+                    ),
+                }
+            });
+        }
+    });
 }
 
 fn spawn_client_managers(args: &ABFTCliArgs) -> (Arc<ChannelSender>, Receiver<u32>) {
@@ -427,7 +467,7 @@ fn spawn_client_managers(args: &ABFTCliArgs) -> (Arc<ChannelSender>, Receiver<u3
                     match client.protocol_exchange(message).await {
                         Ok(_) => {}
                         Err(e) => {
-                            warn!("Got non-ok status code when sending message: {}", e);
+                            info!("Got non-ok status code when sending message: {}", e);
                         }
                     }
                 }
@@ -450,11 +490,61 @@ fn spawn_client_managers(args: &ABFTCliArgs) -> (Arc<ChannelSender>, Receiver<u3
     (Arc::new(ChannelSender { senders }), client_ready_receive)
 }
 
+async fn init_rpc_sender(args: &ABFTCliArgs) -> RPCSender {
+    let mut handles = Vec::with_capacity(args.n_parties as usize);
+
+    let own_index = args.index;
+
+    for i in 0..(args.n_parties as usize) {
+        let uri = args.hosts[&(i as u32)].clone();
+
+        if i != own_index as usize {
+            handles.push(tokio::spawn(async move {
+                // Attempt to establish a channel, sleeping a couple of seconds until we succesfully are able to connect.
+                let channel: Channel;
+
+                loop {
+                    match Channel::builder(uri.clone())
+                        .timeout(Duration::from_secs(RECV_TIMEOUT_SECS))
+                        .connect()
+                        .await
+                    {
+                        Ok(c) => {
+                            info!("Party {} connected with Party {}", own_index, i);
+                            channel = c;
+                            break;
+                        }
+                        Err(e) => {
+                            info!(
+                                "Party {} could not connect with Party {}, with error: {}",
+                                own_index, i, e
+                            );
+                            tokio::time::sleep(Duration::from_secs(CLIENT_RETRY_TIMEOUT_SECS))
+                                .await;
+                        }
+                    }
+                }
+
+                (i, AbftClient::new(channel))
+            }));
+        }
+    }
+
+    let mut clients = HashMap::with_capacity(args.n_parties as usize);
+
+    for handle in handles {
+        let (index, client) = handle.await.unwrap();
+        clients.insert(index as u32, client);
+    }
+
+    RPCSender { clients }
+}
+
 fn spawn_buffer_manager(
-    protocol: Arc<ABFT<ChannelSender, ABFTBufferManager, TransactionSet>>,
     mut buff_cmd_recv: Receiver<ABFTBufferCommand>,
+    buff_msg_tx: Sender<ProtocolMessage>,
     own_index: u32,
-) {
+) -> tokio::task::JoinHandle<()> {
     let mut buffer = ABFTBuffer::new();
 
     tokio::spawn(async move {
@@ -464,43 +554,15 @@ fn spawn_buffer_manager(
             info!("Buffer {} retrieved {} messages", own_index, messages.len());
 
             for message in messages {
-                match protocol.handle_protocol_message(message).await {
-                    Ok(_) => {}
-                    Err(ABFTError::NotReadyForPRBCMessage(early_message)) => {
-                        let index = early_message.prbc_index;
-                        buffer.execute(ABFTBufferCommand::ACS {
-                            inner: ACSBufferCommand::PRBC {
-                                inner: PRBCBufferCommand::Store {
-                                    message: early_message,
-                                },
-                                send_id: index,
-                            },
-                        });
-                    }
-                    Err(ABFTError::NotReadyForMVBAMessage(early_message)) => {
-                        buffer.execute(ABFTBufferCommand::ACS {
-                            inner: ACSBufferCommand::MVBA {
-                                inner: MVBABufferCommand::Store {
-                                    message: early_message,
-                                },
-                            },
-                        });
-                    }
-
-                    Err(ABFTError::NotReadyForABFTDecryptionShareMessage(early_message)) => {
-                        buffer.execute(ABFTBufferCommand::Store {
-                            message: early_message,
-                        });
-                    }
-
-                    Err(e) => error!(
-                        "Party {} got error when handling protocol message: {}",
-                        own_index, e
-                    ),
+                if let Err(e) = buff_msg_tx.send(message).await {
+                    error!(
+                            "Got error when joining task sending protocol message from buffer to msg_handler: {}",
+                            e
+                        );
                 }
             }
         }
-    });
+    })
 }
 
 fn enable_unstable_network(args: &ABFTCliArgs) -> bool {
@@ -532,7 +594,7 @@ fn enable_unstable_network(args: &ABFTCliArgs) -> bool {
     );
 
     if indexes.contains(index) {
-        info!("Invoking Netem with ");
+        warn!("Invoking Netem");
         let output = Command::new("sudo")
             .args(&["tc", "qdisc", "add", "dev", "eth0", "root"])
             .args(&[
@@ -614,6 +676,13 @@ fn parse_args() -> ABFTCliArgs {
                 .takes_value(true),
         )
         .arg(
+            Arg::with_name("Iterations")
+                .long("iterations")
+                .value_name("INTEGER")
+                .help("Total number of rounds the protocol should run")
+                .takes_value(true),
+        )
+        .arg(
             Arg::with_name("Crypto")
                 .long("crypto")
                 .value_name("PATH")
@@ -687,6 +756,12 @@ fn parse_args() -> ABFTCliArgs {
         .parse::<u64>()
         .unwrap_or(n_parties as u64);
 
+    let iterations = matches
+        .value_of("Iterations")
+        .unwrap_or("1")
+        .parse::<usize>()
+        .unwrap();
+
     let m_parties = matches
         .value_of("Number of parties affected by unstable network")
         .unwrap_or("0")
@@ -743,6 +818,7 @@ fn parse_args() -> ABFTCliArgs {
         f_tolerance,
         n_parties,
         batch_size,
+        iterations,
         crypto,
         server_endpoint,
         hosts,
@@ -758,9 +834,7 @@ fn init_protocol(
     f_tolerance: u32,
     n_parties: u32,
     crypto: String,
-    send_handle: Arc<ChannelSender>,
-    recv_handle: Arc<ABFTBufferManager>,
-) -> Arc<ABFT<ChannelSender, ABFTBufferManager, TransactionSet>> {
+) -> Arc<ABFT<TransactionSet>> {
     let bytes = std::fs::read(format!("{}/key_material{}", crypto, index)).unwrap();
 
     let keyset: KeySet = deserialize(&bytes).unwrap();
@@ -770,8 +844,6 @@ fn init_protocol(
         index,
         f_tolerance,
         n_parties,
-        send_handle,
-        recv_handle,
         Arc::new(keyset.signer_prbc.into()),
         keyset.signer_mvba.into(),
         keyset.coin.into(),
@@ -792,6 +864,7 @@ pub struct ABFTCliArgs {
     f_tolerance: u32,
     n_parties: u32,
     batch_size: u64,
+    iterations: usize,
     crypto: String,
     server_endpoint: SocketAddr,
     hosts: HashMap<u32, Uri>,
@@ -804,8 +877,8 @@ pub struct ABFTCliArgs {
 
 pub struct ABFTService {
     index: u32,
-    protocol: Arc<ABFT<ChannelSender, ABFTBufferManager, TransactionSet>>,
-    buff_send: Sender<ABFTBufferCommand>,
+    msg_send: Sender<ProtocolMessage>,
+    protocol: Arc<ABFT<TransactionSet>>,
     setup_send: Sender<u32>,
     finished_send: Sender<u32>,
 }
@@ -816,50 +889,8 @@ impl Abft for ABFTService {
         &self,
         request: Request<abft::proto::ProtocolMessage>,
     ) -> Result<Response<abft::proto::ProtocolResponse>, tonic::Status> {
-        let message = request.into_inner();
-
-        match self.protocol.handle_protocol_message(message).await {
-            Ok(_) => {}
-            Err(ABFTError::NotReadyForPRBCMessage(early_message)) => {
-                let index = early_message.prbc_index;
-                self.buff_send
-                    .send(ABFTBufferCommand::ACS {
-                        inner: ACSBufferCommand::PRBC {
-                            inner: PRBCBufferCommand::Store {
-                                message: early_message,
-                            },
-                            send_id: index,
-                        },
-                    })
-                    .await
-                    .unwrap();
-            }
-            Err(ABFTError::NotReadyForMVBAMessage(early_message)) => {
-                self.buff_send
-                    .send(ABFTBufferCommand::ACS {
-                        inner: ACSBufferCommand::MVBA {
-                            inner: MVBABufferCommand::Store {
-                                message: early_message,
-                            },
-                        },
-                    })
-                    .await
-                    .unwrap();
-            }
-
-            Err(ABFTError::NotReadyForABFTDecryptionShareMessage(early_message)) => {
-                self.buff_send
-                    .send(ABFTBufferCommand::Store {
-                        message: early_message,
-                    })
-                    .await
-                    .unwrap();
-            }
-
-            Err(e) => error!(
-                "Party {} got error when handling protocol message: {}",
-                self.index, e
-            ),
+        if let Err(e) = self.msg_send.send(request.into_inner()).await {
+            error!("Got error when sending message: {}", e);
         }
 
         Ok(Response::new(ProtocolResponse {}))
