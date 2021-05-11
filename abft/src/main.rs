@@ -78,7 +78,7 @@ async fn main() {
 
     // Message manager
 
-    let (msg_tx, mut msg_rx) =
+    let (msg_tx, msg_rx) =
         mpsc::channel::<ProtocolMessage>((args.n_parties * args.n_parties * 50 + 100) as usize);
 
     // Setup manager - handle "setup" messages from peers, ensure that all clients are setup when invoking ABFT, for precise timing.
@@ -150,67 +150,13 @@ async fn main() {
 
     let index = args.index;
 
-    tokio::spawn(async move {
-        while let Some(message) = msg_rx.recv().await {
-            match msg_protocol
-                .handle_protocol_message(message, &*msg_rpc_sender)
-                .await
-            {
-                Ok(_) => {}
-                Err(ABFTError::NotReadyForPRBCMessage(early_message)) => {
-                    let index = early_message.prbc_index;
-                    msg_buff_send
-                        .send(ABFTBufferCommand::ACS {
-                            inner: ACSBufferCommand::PRBC {
-                                inner: PRBCBufferCommand::Store {
-                                    message: early_message,
-                                },
-                                send_id: index,
-                            },
-                        })
-                        .await
-                        .unwrap();
-                }
-                Err(ABFTError::NotReadyForMVBAMessage(early_message)) => {
-                    msg_buff_send
-                        .send(ABFTBufferCommand::ACS {
-                            inner: ACSBufferCommand::MVBA {
-                                inner: MVBABufferCommand::Store {
-                                    message: early_message,
-                                },
-                            },
-                        })
-                        .await
-                        .unwrap();
-                }
-
-                Err(ABFTError::NotReadyForABFTDecryptionShareMessage(early_message)) => {
-                    msg_buff_send
-                        .send(ABFTBufferCommand::Store {
-                            message: early_message,
-                        })
-                        .await
-                        .unwrap();
-                }
-
-                Err(e) => error!(
-                    "Party {} got error when handling protocol message: {}",
-                    index, e
-                ),
-            }
-        }
-    });
+    spawn_msg_handler(msg_protocol, msg_rpc_sender, msg_buff_send, msg_rx, index).await;
 
     // Buffer
 
-    let buffer_protocol = protocol.clone();
+    let buffer_msg_tx = msg_tx.clone();
 
-    let buff_manager_handle = spawn_buffer_manager(
-        buffer_protocol,
-        buff_cmd_recv,
-        args.index,
-        rpc_sender.clone(),
-    );
+    let buff_manager_handle = spawn_buffer_manager(buff_cmd_recv, buffer_msg_tx, args.index);
 
     for _ in 0..args.iterations {
         let private_host_name = args
@@ -393,6 +339,71 @@ async fn wait_for_finish_and_exit(fin_rx: &mut Receiver<u32>, args: &ABFTCliArgs
     info!("\n");
 }
 
+async fn spawn_msg_handler(
+    msg_protocol: Arc<ABFT<TransactionSet>>,
+    msg_rpc_sender: Arc<RPCSender>,
+    msg_buff_send: Sender<ABFTBufferCommand>,
+    mut msg_rx: Receiver<ProtocolMessage>,
+    index: u32,
+) {
+    tokio::spawn(async move {
+        while let Some(message) = msg_rx.recv().await {
+            let local_protocol = msg_protocol.clone();
+            let local_buff_send = msg_buff_send.clone();
+            let local_rpc_sender = msg_rpc_sender.clone();
+
+            tokio::spawn(async move {
+                match local_protocol
+                    .handle_protocol_message(message, &*local_rpc_sender)
+                    .await
+                {
+                    Ok(_) => {}
+                    Err(ABFTError::NotReadyForPRBCMessage(early_message)) => {
+                        let index = early_message.prbc_index;
+                        local_buff_send
+                            .send(ABFTBufferCommand::ACS {
+                                inner: ACSBufferCommand::PRBC {
+                                    inner: PRBCBufferCommand::Store {
+                                        message: early_message,
+                                    },
+                                    send_id: index,
+                                },
+                            })
+                            .await
+                            .unwrap();
+                    }
+                    Err(ABFTError::NotReadyForMVBAMessage(early_message)) => {
+                        local_buff_send
+                            .send(ABFTBufferCommand::ACS {
+                                inner: ACSBufferCommand::MVBA {
+                                    inner: MVBABufferCommand::Store {
+                                        message: early_message,
+                                    },
+                                },
+                            })
+                            .await
+                            .unwrap();
+                    }
+
+                    Err(ABFTError::NotReadyForABFTDecryptionShareMessage(early_message)) => {
+                        local_buff_send
+                            .send(ABFTBufferCommand::Store {
+                                message: early_message,
+                            })
+                            .await
+                            .unwrap();
+                    }
+
+                    Err(e) => error!(
+                        "Party {} got error when handling protocol message: {}",
+                        index, e
+                    ),
+                }
+            });
+        }
+    });
+}
+
 fn spawn_client_managers(args: &ABFTCliArgs) -> (Arc<ChannelSender>, Receiver<u32>) {
     let (client_ready_send, client_ready_receive) = mpsc::channel(args.n_parties as usize);
 
@@ -529,11 +540,10 @@ async fn init_rpc_sender(args: &ABFTCliArgs) -> RPCSender {
     RPCSender { clients }
 }
 
-fn spawn_buffer_manager<F: ProtocolMessageSender + Sync + Send + 'static>(
-    protocol: Arc<ABFT<TransactionSet>>,
+fn spawn_buffer_manager(
     mut buff_cmd_recv: Receiver<ABFTBufferCommand>,
+    buff_msg_tx: Sender<ProtocolMessage>,
     own_index: u32,
-    send_handle: Arc<F>,
 ) -> tokio::task::JoinHandle<()> {
     let mut buffer = ABFTBuffer::new();
 
@@ -544,42 +554,11 @@ fn spawn_buffer_manager<F: ProtocolMessageSender + Sync + Send + 'static>(
             info!("Buffer {} retrieved {} messages", own_index, messages.len());
 
             for message in messages {
-                match protocol
-                    .handle_protocol_message(message, &*send_handle)
-                    .await
-                {
-                    Ok(_) => {}
-                    Err(ABFTError::NotReadyForPRBCMessage(early_message)) => {
-                        let index = early_message.prbc_index;
-                        buffer.execute(ABFTBufferCommand::ACS {
-                            inner: ACSBufferCommand::PRBC {
-                                inner: PRBCBufferCommand::Store {
-                                    message: early_message,
-                                },
-                                send_id: index,
-                            },
-                        });
-                    }
-                    Err(ABFTError::NotReadyForMVBAMessage(early_message)) => {
-                        buffer.execute(ABFTBufferCommand::ACS {
-                            inner: ACSBufferCommand::MVBA {
-                                inner: MVBABufferCommand::Store {
-                                    message: early_message,
-                                },
-                            },
-                        });
-                    }
-
-                    Err(ABFTError::NotReadyForABFTDecryptionShareMessage(early_message)) => {
-                        buffer.execute(ABFTBufferCommand::Store {
-                            message: early_message,
-                        });
-                    }
-
-                    Err(e) => error!(
-                        "Party {} got error when handling protocol message: {}",
-                        own_index, e
-                    ),
+                if let Err(e) = buff_msg_tx.send(message).await {
+                    error!(
+                            "Got error when joining task sending protocol message from buffer to msg_handler: {}",
+                            e
+                        );
                 }
             }
         }

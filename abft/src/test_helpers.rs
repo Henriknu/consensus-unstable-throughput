@@ -5,7 +5,7 @@ use crate::proto::{
     SetupAckResponse,
 };
 use async_trait::async_trait;
-use log::error;
+use log::{error, info};
 use std::collections::HashMap;
 use tokio::sync::mpsc::Sender;
 use tonic::transport::Channel;
@@ -63,11 +63,13 @@ impl ProtocolMessageSender for RPCSender {
         prbc_index: u32,
         message: M,
     ) {
+        info!("Party {} sending message to {}", send_id, recv_id);
         if !self.clients.contains_key(&recv_id) {
             return;
         }
 
         let mut client = self.clients[&recv_id].clone();
+        info!("Client cloned");
         if let Err(e) = client
             .protocol_exchange(message.to_protocol_message(id, send_id, recv_id, view, prbc_index))
             .await
@@ -86,6 +88,9 @@ impl ProtocolMessageSender for RPCSender {
         message: M,
     ) {
         let message = message.to_protocol_message(id, send_id, 0, view, prbc_index);
+        info!("Party {} broadcasting message", send_id);
+
+        let mut tasks = Vec::with_capacity(n_parties as usize);
 
         for i in 0..n_parties {
             if !self.clients.contains_key(&i) {
@@ -94,7 +99,14 @@ impl ProtocolMessageSender for RPCSender {
             let mut inner = message.clone();
             inner.recv_id = i;
             let mut client = self.clients[&i].clone();
-            if let Err(e) = client.protocol_exchange(inner).await {
+            info!("Client cloned");
+            tasks.push(tokio::spawn(async move {
+                client.protocol_exchange(inner).await
+            }));
+        }
+
+        for task in tasks {
+            if let Err(e) = task.await {
                 error!("Got error when sending message: {}", e);
             }
         }
@@ -147,6 +159,7 @@ impl ProtocolMessageSender for ChannelSender {
             }
             let mut inner = message.clone();
             inner.recv_id = i;
+
             let sender = &self.senders[&i];
             if let Err(e) = sender.send(inner).await {
                 error!("Got error when sending message: {}", e);

@@ -100,7 +100,9 @@ def store_metrics_unstable():
 def process_log_files_stable(n_parties: int, f_tolerance: int, batch_size: int, WAN: bool):
 
     log_file_name_list = sorted(glob.glob(
-        f"logs/{n_parties}_{f_tolerance}_{batch_size}_*-" + ('WAN' if WAN else "LAN") + "*"))
+        f"logs/{n_parties}_{f_tolerance}_{batch_size}_*-" + ('WAN' if WAN else "LAN") + "*, 22:[2-3]*"))
+
+    print(log_file_name_list)
 
     contents = [open(file_name).read().strip().split("\n\n")
                 for file_name in log_file_name_list]
