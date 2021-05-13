@@ -6,10 +6,8 @@
   "metrics": {
     "metrics_collected": {
       "cpu": {
-        "resources": ["*"],
-        "measurement": ["cpu_time_active"],
-        "metrics_collection_interval": 1,
-        "totalcpu": false
+        "measurement": ["cpu_usage_active"],
+        "metrics_collection_interval": 1
       },
       "mem": {
         "measurement": ["mem_used"],

@@ -1,7 +1,7 @@
 import os
 from subprocess import Popen
 from fabric import Connection, ThreadingGroup, task
-from utils.utils import ip_all, start_N_LAN, start_N_WAN, start_compiler, stop_all, N, F, M, BATCH_SIZES, UNSTABLE_BATCH_SIZES, I, WAN, PACKET_LOSS_RATES, PACKET_DELAYS, SHOULD_MONITOR, SHOULD_PACKET_DELAY, SHOULD_PACKET_LOSS
+from utils.utils import ip_all, store_metric_data_pickle, store_metric_data_pickle_unstable, start_N_LAN, start_N_WAN, start_compiler, stop_all, N, F, M, BATCH_SIZES, UNSTABLE_BATCH_SIZES, I, WAN, PACKET_LOSS_RATES, PACKET_DELAYS, SHOULD_MONITOR, SHOULD_PACKET_DELAY, SHOULD_PACKET_LOSS
 from datetime import datetime
 import time
 
@@ -99,7 +99,7 @@ def start_awscw_agent(c, group=None):
         group = get_group()
 
     group.sudo(
-        "/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -s -c file:amazon-cloudwatch-agent.json", hide=True)
+        "/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -s -c file:amazon-cloudwatch-agent.json")
 
 
 @task
@@ -331,6 +331,7 @@ def full(c):
 
     if SHOULD_MONITOR and WAN:
         prepare_awscw_agent(c, group=group)
+        start_awscw_agent(c, group=group)
 
     for b in BATCH_SIZES:
 
@@ -341,6 +342,9 @@ def full(c):
             run_protocol(c, i + 1, b, group=group)
 
         download_logs(c, b, group=group)
+
+        if SHOULD_MONITOR and WAN:
+            store_metric_data_pickle(b)
 
         clear_logs(c, group=group)
 
@@ -366,6 +370,7 @@ def full_unstable(c):
 
     if SHOULD_MONITOR and WAN:
         prepare_awscw_agent(c, group=group)
+        start_awscw_agent(c, group=group)
 
     b = UNSTABLE_BATCH_SIZES[N]
 
@@ -382,6 +387,9 @@ def full_unstable(c):
 
                 download_logs_unstable(c, b, m, d, 0, group=group)
 
+                if SHOULD_MONITOR and WAN:
+                    store_metric_data_pickle_unstable(b, m, d, 0)
+
                 clear_logs(c, group=group)
 
         if SHOULD_PACKET_LOSS:
@@ -394,6 +402,9 @@ def full_unstable(c):
                         c, i + 1, b, m, 0, l, group=group)
 
                 download_logs_unstable(c, b, m, 0, l, group=group)
+
+                if SHOULD_MONITOR and WAN:
+                    store_metric_data_pickle_unstable(b, m, 0, l)
 
                 clear_logs(c, group=group)
 

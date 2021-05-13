@@ -1,10 +1,15 @@
+import re
+import time
+from typing import List, Dict
+from datetime import datetime
 import datetime
 import glob
 import boto3
+import pickle
 
 N = 8  # 8, 32, 64, 100 Stable. N = 8, 64 unstable.
 F = int(N/4)
-I = 10
+I = 1
 WAN = True
 SHOULD_MONITOR = False
 BATCH_SIZES = [100, 1000, 10000, 100_000, 1_000_000, 2_000_000] if WAN else [
@@ -23,7 +28,7 @@ SECURITY_GROUP_ID = 'sg-0a6d95c8b0adda476'  # US East (N. Virginia)
 SSH_KEY_NAME = 'AWS Micro Testing'
 IAM_CWAGENT_ARN = "arn:aws:iam::150709297964:instance-profile/CloudWatchAgentServerRole"
 
-METRIC_PERIOD = 300
+METRIC_PERIOD = 1
 
 
 secgroups = {
@@ -76,150 +81,171 @@ def get_ec2_instances_ids(region, FilterNames: str = None):
     return ids
 
 
-def get_metric_data(region):
+def get_metric_data(private_host_names, starttime, endtime):
 
-    # Create CloudWatch client
-    cloudwatch = boto3.client('cloudwatch', region_name=region)
+    metrics = []
 
-    ips = get_ec2_instances_private_hosts(region)
+    private_host_names = list(private_host_names.values())
+    starttime = datetime.datetime.fromtimestamp(starttime)
+    endtime = datetime.datetime.fromtimestamp(endtime)
 
-    cpu_metrics = [{"Id": f"cpu_metrics{i}", "Label": f"Cpu Metrics for Party {i}", "MetricStat": {
+    print(private_host_names)
+    print(starttime)
+    print(endtime)
 
-        "Metric": {
+    per_region: int = N // len(regions)
 
-            "Namespace": "CWAgent",
+    remainder = N % len(regions)
 
-            "MetricName": "cpu_time_active",
+    offset = 0
 
-            "Dimensions": [{"Name": "host", "Value": ip}]
-        },
+    prev_offset = 0
 
-        "Period": METRIC_PERIOD,
-        "Stat": "Maximum",
+    for region in regions:
 
+        offset += per_region
 
-    }} for i, ip in enumerate(ips)]
+        if region == regions[-1]:
+            offset += remainder
 
-    mem_metrics = [{"Id": f"mem_metrics{i}", "Label": f"Memory Metrics for Party {i}", "MetricStat": {
+        # Create CloudWatch client
+        cloudwatch = boto3.client('cloudwatch', region_name=region)
 
-        "Metric": {
+        cpu_metrics = [{"Id": f"cpu_metrics_{prev_offset + i}", "Label": f"Cpu Metrics for Party {prev_offset + i} of {region}, ip: {ip}", "MetricStat": {
 
-            "Namespace": "CWAgent",
+            "Metric": {
 
-            "MetricName": "mem_used",
+                "Namespace": "CWAgent",
 
-            "Dimensions": [{"Name": "host", "Value": ip}]
-        },
+                "MetricName": "cpu_usage_active",
 
-        "Period": METRIC_PERIOD,
-        "Stat": "Maximum",
-        "Unit": "Bytes"
+                "Dimensions": [{"Name": "host", "Value": ip}]
+            },
 
-    }} for i, ip in enumerate(ips)]
-
-    net_metrics = [{"Id": f"net_metrics{i}", "Label": f"Network Metrics for Party {i}", "MetricStat": {
-
-        "Metric": {
-
-            "Namespace": "CWAgent",
-
-            "MetricName": "net_bytes_sent",
-
-            "Dimensions": [
-                {
-                    "Name": "host",
-                    "Value": ip
-                },
-                {
-                    "Name": "interface",
-                    "Value": "eth0"
-                }
-            ]
-        },
-
-        "Period": METRIC_PERIOD,
-        "Stat": "Sum",
-        "Unit": "Bytes"
-
-    }} for i, ip in enumerate(ips)]
-
-    response = cloudwatch.get_metric_data(
-        MetricDataQueries=[*cpu_metrics, *net_metrics, *mem_metrics], StartTime=datetime.datetime.now() -
-        datetime.timedelta(days=1),
-        EndTime=datetime.datetime.now() + datetime.timedelta(days=1))
-
-    print(response)
+            "Period": METRIC_PERIOD,
+            "Stat": "Average",
 
 
-def get_metric_data2(private_host_name: str, starttime: datetime.datetime, endtime: datetime.datetime):
+        }} for i, ip in enumerate(private_host_names[prev_offset:offset])]
 
-   # Create CloudWatch client
-    cloudwatch = boto3.client('cloudwatch')
+        mem_metrics = [{"Id": f"mem_metrics_{prev_offset + i}", "Label": f"Memory Metrics for Party {prev_offset + i} of {region}, ip: {ip}", "MetricStat": {
 
-    cpu_metric = {"Id": "cpu_metrics", "Label": "Cpu Metrics for Party", "MetricStat": {
+            "Metric": {
 
-        "Metric": {
+                "Namespace": "CWAgent",
 
-            "Namespace": "CWAgent",
+                "MetricName": "mem_used",
 
-            "MetricName": "cpu_time_active",
+                "Dimensions": [{"Name": "host", "Value": ip}]
+            },
 
-            "Dimensions": [{"Name": "host", "Value": private_host_name}]
-        },
+            "Period": METRIC_PERIOD,
+            "Stat": "Average",
+            "Unit": "Bytes"
 
-        "Period": METRIC_PERIOD,
-        "Stat": "Maximum",
-    }}
+        }} for i, ip in enumerate(private_host_names[prev_offset:offset])]
 
-    mem_metric = {"Id": "mem_used", "Label": "Mem Metrics for Party", "MetricStat": {
+        net_metrics = [{"Id": f"net_metrics_{prev_offset + i}", "Label": f"Network Metrics for Party {prev_offset + i} of {region}, ip: {ip}", "MetricStat": {
 
-        "Metric": {
+            "Metric": {
 
-            "Namespace": "CWAgent",
+                "Namespace": "CWAgent",
 
-            "MetricName": "mem_used",
+                "MetricName": "net_bytes_sent",
 
-            "Dimensions": [{"Name": "host", "Value": private_host_name}]
-        },
+                "Dimensions": [
+                    {
+                        "Name": "host",
+                        "Value": ip
+                    },
+                    {
+                        "Name": "interface",
+                        "Value": "eth0"
+                    }
+                ]
+            },
 
-        "Period": METRIC_PERIOD,
-        "Stat": "Maximum",
-    }}
+            "Period": METRIC_PERIOD,
+            "Stat": "Sum",
+            "Unit": "Bytes"
 
-    net_metric = {"Id": "net_metrics", "Label": "Net Metrics for Party", "MetricStat": {
+        }} for i, ip in enumerate(private_host_names[prev_offset:offset])]
 
-        "Metric": {
+        metric_data = cloudwatch.get_metric_data(
+            MetricDataQueries=[*cpu_metrics, *net_metrics, *mem_metrics], StartTime=starttime,
+            EndTime=endtime)["MetricDataResults"]
 
-            "Namespace": "CWAgent",
+        if not len(metric_data):
+            print("received empty metric_data")
 
-            "MetricName": "net_bytes_sent",
+        print(metric_data)
 
-            "Dimensions": [
-                {
-                    "Name": "host",
-                    "Value": private_host_name
-                },
-                {
-                    "Name": "interface",
-                    "Value": "eth0"
-                }
-            ]
-        },
+        metrics.append(metric_data)
 
-        "Period": METRIC_PERIOD,
-        "Stat": "Maximum",
-    }}
+        prev_offset = offset
 
-    results = cloudwatch.get_metric_data(
-        MetricDataQueries=[cpu_metric, net_metric,
-                           mem_metric], StartTime=starttime,
-        EndTime=endtime)["MetricDataResults"]
+    return metrics
 
-    print(results)
 
-    cpu_data, mem_data, net_data = None
+def store_metric_data_pickle(batch_size: int):
 
-    return cpu_data, mem_data, net_data
+    metrics = {}
+
+    log_file_name_list = sorted(glob.glob(
+        f"logs/{N}_{F}_{batch_size}_*-" + ('WAN' if WAN else "LAN") + "*"))
+
+    contents = [open(file_name).read().strip().split("\n\n")
+                for file_name in log_file_name_list]
+
+    for i in range(I):
+
+        log_segments = [content[i] for content in contents]
+
+        # Want private hostnames, starttimes and endtimes. We could get the earliest startime and latest of the logs,
+
+        private_host_names, starttime, endtime = _get_metric_info_from_logs(
+            log_segments)
+
+        metrics[i] = get_metric_data(private_host_names, starttime, endtime)
+
+    with open(f'metrics/{N}_{int(F)}_{batch_size}.pickle', 'wb') as handle:
+
+        pickle.dump(metrics, handle, protocol=pickle.HIGHEST_PROTOCOL)
+
+
+def store_metric_data_pickle_unstable(batch_size: int, m_parties: int, delay: int, loss: int):
+
+    metrics = {}
+
+    log_file_name_list = sorted(glob.glob(
+        f"unstable_logs/{N}_{F}_{batch_size}_unstable_{m_parties}_{delay}_{loss}*"))
+
+    contents = [open(file_name).read().strip().split("\n\n")
+                for file_name in log_file_name_list]
+
+    for i in range(I):
+
+        log_segments = [content[i] for content in contents]
+
+        # Want private hostnames, starttimes and endtimes. We could get the earliest startime and latest of the logs,
+
+        private_host_names, starttime, endtime = _get_metric_info_from_logs(
+            log_segments)
+
+        metrics[i] = get_metric_data(private_host_names, starttime, endtime)
+
+    with open(f'unstable_metrics/{N}_{int(F)}_{batch_size}_{m_parties}_{delay}_{loss}.pickle', 'wb') as handle:
+
+        pickle.dump(metrics, handle, protocol=pickle.HIGHEST_PROTOCOL)
+
+
+def _get_metric_info_from_logs(log_segments):
+    private_host_names, starttimes, endtimes = get_host_start_end(log_segments)
+
+    starttime = min(starttimes.values())
+    endtime = max(endtimes.values())
+
+    return private_host_names, starttime, endtime
 
 
 def ip_all():
@@ -447,6 +473,35 @@ def start_compiler():
         waiter = ec2_client.get_waiter("instance_running")
 
         waiter.wait(InstanceIds=[instance])
+
+
+r_private = re.compile(".*private_host_name:.*")
+r_start = re.compile(".*Invoking ABFT.*")
+r_end = re.compile(".*terminated ABFT with value:.*")
+
+
+def get_host_start_end(log_segments: List[str]):
+
+    private_host_names: Dict[int, str] = dict()
+    starttime: Dict[int, datetime] = dict()
+    endtime: Dict[int, datetime] = dict()
+
+    for i, log in enumerate(log_segments):
+        for line in log.split("\n"):
+            if r_start.match(line):
+                starttime[i] = to_unix(
+                    datetime.datetime.fromisoformat(line.split(" - ")[0]))
+            elif r_end.match(line):
+                endtime[i] = to_unix(
+                    datetime.datetime.fromisoformat(line.split(" - ")[0]))
+            elif r_private.match(line):
+                private_host_names[i] = line.split(":")[4]
+
+    return private_host_names, starttime, endtime
+
+
+def to_unix(d: datetime.datetime): return time.mktime(
+    d.timetuple()) + d.microsecond / 1e6
 
 
 if __name__ == '__main__':
