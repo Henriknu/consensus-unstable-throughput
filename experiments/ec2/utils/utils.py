@@ -4,7 +4,7 @@ import boto3
 
 N = 8  # 8, 32, 64, 100 Stable. N = 8, 64 unstable.
 F = int(N/4)
-I = 1
+I = 10
 WAN = True
 SHOULD_MONITOR = False
 BATCH_SIZES = [100, 1000, 10000, 100_000, 1_000_000, 2_000_000] if WAN else [
@@ -430,6 +430,23 @@ def start_N_LAN(number=N):
         waiter = ec2_client.get_waiter("instance_running")
 
         waiter.wait(InstanceIds=instances)
+
+
+def start_compiler():
+    region = regions[0]
+
+    ec2_client = boto3.client('ec2', region_name=region)
+    instance = get_ec2_instances_ids(
+        region, FilterNames=['stopped'])[0]
+
+    if instance:
+        print(f"Waiting for instances in region {region} to run")
+        ec2_client.start_instances(
+            InstanceIds=[instance])
+
+        waiter = ec2_client.get_waiter("instance_running")
+
+        waiter.wait(InstanceIds=[instance])
 
 
 if __name__ == '__main__':

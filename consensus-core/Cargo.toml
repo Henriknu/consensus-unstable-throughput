@@ -31,7 +31,3 @@ commoncoin-p256 = []
 commoncoin-dalek-precomputed = []
 
 sign-ecdsa = []
-
-
-[build]
-rustflags = ["target-cpu=native", "target-feature=+aes,+sse2,+sse4.1,+ssse3,+avx512ifma"]        # custom flags to pass to all compiler invocations

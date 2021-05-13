@@ -8,5 +8,7 @@ experiments/ec2/logs
 experiments/ec2/unstable_logs
 experiments/ec2/hosts
 experiments/ec2/hidden.py
+experiments/ec2/crypto
+experiments/ec2/abft
 **/__pycache__
 log.log

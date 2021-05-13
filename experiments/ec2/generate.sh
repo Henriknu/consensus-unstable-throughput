@@ -1,5 +1,5 @@
 #!/bin/bash
 
 # Generate crypto
-( cd ../.. ; cargo r --bin generate_crypto -- $1 $2)
+( cd ../.. ; cargo r --release --bin generate_crypto -- $1 $2)
 

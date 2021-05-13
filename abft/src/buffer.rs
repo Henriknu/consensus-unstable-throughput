@@ -37,6 +37,12 @@ impl ABFTBuffer {
                 self.decryption.epochs.entry(0).or_default().push(message);
                 vec![]
             }
+
+            ABFTBufferCommand::Clear => {
+                self.acs = ACSBuffer::new();
+                self.decryption = Default::default();
+                vec![]
+            }
         }
     }
 }
@@ -46,6 +52,7 @@ pub enum ABFTBufferCommand {
     ACS { inner: ACSBufferCommand },
     ABFTDecryptionShare,
     Store { message: ProtocolMessage },
+    Clear,
 }
 
 #[async_trait]

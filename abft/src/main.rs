@@ -61,8 +61,6 @@ async fn main() {
 
     // broadcast channel for cleanup
 
-    let (kill_tx, kill_rx) = broadcast::channel::<()>(10);
-
     // client managers
 
     //let (client_manager_sender, client_ready_rx) = spawn_client_managers(&args);
@@ -156,68 +154,62 @@ async fn main() {
 
     let buffer_msg_tx = msg_tx.clone();
 
-    let buff_manager_handle = spawn_buffer_manager(buff_cmd_recv, buffer_msg_tx, args.index);
+    spawn_buffer_manager(buff_cmd_recv, buffer_msg_tx, args.index);
 
-    for _ in 0..args.iterations {
-        let private_host_name = args
-            .server_endpoint
-            .to_string()
-            .split(":")
-            .next()
-            .unwrap()
-            .replace(".", "-");
+    let private_host_name = args
+        .server_endpoint
+        .to_string()
+        .split(":")
+        .next()
+        .unwrap()
+        .replace(".", "-");
 
-        warn!("private_host_name:{}", format!("ip-{}", private_host_name));
+    warn!("private_host_name:{}", format!("ip-{}", private_host_name));
 
-        // wait for setup to complete
+    // wait for setup to complete
 
-        send_setup_ack(&*args, &rpc_sender).await;
+    send_setup_ack(&*args, &rpc_sender).await;
 
-        wait_for_setup_ack(&mut setup_rx, &*args).await;
+    wait_for_setup_ack(&mut setup_rx, &*args).await;
 
-        // Invoke protocol
+    // Invoke protocol
 
-        let value = TransactionSet::generate_transactions(SEED_TRANSACTION_SET, args.batch_size)
-            .random_selection(args.n_parties as usize);
+    let value = TransactionSet::generate_transactions(SEED_TRANSACTION_SET, args.batch_size)
+        .random_selection(args.n_parties as usize);
 
-        warn!(
-            "Proposing transaction set with {} transactions.",
-            value.len()
-        );
+    warn!(
+        "Proposing transaction set with {} transactions.",
+        value.len()
+    );
 
-        warn!("Invoking ABFT");
+    warn!("Invoking ABFT");
 
-        match protocol
-            .invoke(rpc_sender.clone(), buffer_handle.clone(), value)
-            .await
-        {
-            Ok(value) => {
-                warn!(
-                    "Party {} terminated ABFT with value: {:?}",
-                    args.index, value
-                );
-            }
-            Err(e) => {
-                error!("Party {} got error when invoking abft: {}", args.index, e);
-            }
+    match protocol
+        .invoke(rpc_sender.clone(), buffer_handle.clone(), value)
+        .await
+    {
+        Ok(value) => {
+            warn!(
+                "Party {} terminated ABFT with value: {:?}",
+                args.index, value
+            );
         }
+        Err(e) => {
+            error!("Party {} got error when invoking abft: {}", args.index, e);
+        }
+    }
 
-        send_finished(&*args, &rpc_sender).await;
+    send_finished(&*args, &rpc_sender).await;
 
-        wait_for_finish_and_exit(&mut fin_rx, &*args).await;
+    wait_for_finish_and_exit(&mut fin_rx, &*args).await;
 
-        //clean_up_round(&mut setup_rx, &mut fin_rx).await;
+    if let Err(e) = buff_cmd_send.send(ABFTBufferCommand::Clear).await {
+        error!("Got error when clearing buffer after iteration: {}", e);
     }
 
     if enabled_unstable {
         disable_unstable_network();
     }
-}
-
-async fn clean_up_round(setup_rx: &mut Receiver<u32>, fin_rx: &mut Receiver<u32>) {
-    //while setup_rx.
-
-    while let Some(msg) = setup_rx.recv().await {}
 }
 
 async fn wait_for_clients(mut client_ready_rx: Receiver<u32>, args: &ABFTCliArgs) {
@@ -336,7 +328,7 @@ async fn wait_for_finish_and_exit(fin_rx: &mut Receiver<u32>, args: &ABFTCliArgs
 
     warn!("Party {} gracefully exit", args.index,);
 
-    info!("\n");
+    warn!("\n");
 }
 
 async fn spawn_msg_handler(
