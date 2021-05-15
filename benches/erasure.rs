@@ -4,11 +4,11 @@ use consensus_core::{data::transaction::TransactionSet, erasure::*};
 
 use bincode::serialize;
 
-const N: usize = 32; // 8, 32, 64, 100
+const N: usize = 100; // 8, 32, 64, 100
 const F: usize = N / 4;
 const WORD_SIZES: [usize; 1] = [8]; //4, 8, 16, 32
-const PACKET_SIZES: [usize; 1] = [8]; //1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536
-const BATCH_SIZE: u32 = 1000;
+const PACKET_SIZES: [usize; 1] = [16384]; //1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536
+const BATCH_SIZE: u32 = 2_000_000;
 const SEED_TRANSACTION_SET: u32 = 899923234;
 
 fn criterion_benchmark(c: &mut Criterion) {

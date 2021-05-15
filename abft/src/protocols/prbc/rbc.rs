@@ -50,6 +50,11 @@ impl RBC {
         let (word_size, packet_size) =
             get_word_and_packet_size(n_parties as usize, batch_size as usize);
 
+        warn!(
+            "For N: {}, B:{}, choose word size: {} and packet size: {} for erasure coding",
+            n_parties, batch_size, word_size, packet_size
+        );
+
         Ok(Self {
             id,
             index,
@@ -344,42 +349,57 @@ impl RBC {
 fn get_word_and_packet_size(n_parties: usize, batch_size: usize) -> (usize, usize) {
     match n_parties {
         n_parties if n_parties == 8 => match batch_size {
-            batch_size if batch_size == 100 => (8, 128),
-            batch_size if batch_size == 1000 => (8, 1024),
-            batch_size if batch_size == 10_000 => (8, 2048),
-            batch_size if batch_size == 100_000 => (8, 4096),
-            batch_size if batch_size == 1_000_000 => (8, 4096),
-            batch_size if batch_size == 2_000_000 => (8, 4096),
-            _ => panic!("Invalid N or B provided"),
+            batch_size if batch_size == 100 => (DEFAULT_WORD_SIZE, 128),
+            batch_size if batch_size == 1000 => (DEFAULT_WORD_SIZE, 1024),
+            batch_size if batch_size == 10_000 => (DEFAULT_WORD_SIZE, 2048),
+            batch_size if batch_size == 100_000 => (DEFAULT_WORD_SIZE, 4096),
+            batch_size if batch_size == 1_000_000 => (DEFAULT_WORD_SIZE, 4096),
+            batch_size if batch_size == 2_000_000 => (DEFAULT_WORD_SIZE, 4096),
+            _ => {
+                warn!("Non-precalced N or B provided");
+                (DEFAULT_WORD_SIZE, DEFAULT_PACKET_SIZE)
+            }
         },
         n_parties if n_parties == 32 => match batch_size {
-            batch_size if batch_size == 100 => (8, 8),
-            batch_size if batch_size == 1000 => (DEFAULT_WORD_SIZE, DEFAULT_PACKET_SIZE),
-            batch_size if batch_size == 10_000 => (DEFAULT_WORD_SIZE, DEFAULT_PACKET_SIZE),
-            batch_size if batch_size == 100_000 => (DEFAULT_WORD_SIZE, DEFAULT_PACKET_SIZE),
-            batch_size if batch_size == 1_000_000 => (DEFAULT_WORD_SIZE, DEFAULT_PACKET_SIZE),
-            batch_size if batch_size == 2_000_000 => (DEFAULT_WORD_SIZE, DEFAULT_PACKET_SIZE),
-            _ => panic!("Invalid N or B provided"),
+            batch_size if batch_size == 100 => (DEFAULT_WORD_SIZE, 8),
+            batch_size if batch_size == 1000 => (DEFAULT_WORD_SIZE, 64),
+            batch_size if batch_size == 10_000 => (DEFAULT_WORD_SIZE, 512),
+            batch_size if batch_size == 100_000 => (DEFAULT_WORD_SIZE, 2048),
+            batch_size if batch_size == 1_000_000 => (DEFAULT_WORD_SIZE, 4096),
+            batch_size if batch_size == 2_000_000 => (DEFAULT_WORD_SIZE, 8192),
+            _ => {
+                warn!("Non-precalced N or B provided");
+                (DEFAULT_WORD_SIZE, DEFAULT_PACKET_SIZE)
+            }
         },
         n_parties if n_parties == 64 => match batch_size {
-            batch_size if batch_size == 100 => (DEFAULT_WORD_SIZE, DEFAULT_PACKET_SIZE),
-            batch_size if batch_size == 1000 => (DEFAULT_WORD_SIZE, DEFAULT_PACKET_SIZE),
-            batch_size if batch_size == 10_000 => (DEFAULT_WORD_SIZE, DEFAULT_PACKET_SIZE),
-            batch_size if batch_size == 100_000 => (DEFAULT_WORD_SIZE, DEFAULT_PACKET_SIZE),
-            batch_size if batch_size == 1_000_000 => (DEFAULT_WORD_SIZE, DEFAULT_PACKET_SIZE),
-            batch_size if batch_size == 2_000_000 => (DEFAULT_WORD_SIZE, DEFAULT_PACKET_SIZE),
-            _ => panic!("Invalid N or B provided"),
+            batch_size if batch_size == 100 => (DEFAULT_WORD_SIZE, 2),
+            batch_size if batch_size == 1000 => (DEFAULT_WORD_SIZE, 8),
+            batch_size if batch_size == 10_000 => (DEFAULT_WORD_SIZE, 256),
+            batch_size if batch_size == 100_000 => (DEFAULT_WORD_SIZE, 2048),
+            batch_size if batch_size == 1_000_000 => (DEFAULT_WORD_SIZE, 8192),
+            batch_size if batch_size == 2_000_000 => (DEFAULT_WORD_SIZE, 8192),
+            _ => {
+                warn!("Non-precalced N or B provided");
+                (DEFAULT_WORD_SIZE, DEFAULT_PACKET_SIZE)
+            }
         },
         n_parties if n_parties == 100 => match batch_size {
-            batch_size if batch_size == 100 => (DEFAULT_WORD_SIZE, DEFAULT_PACKET_SIZE),
-            batch_size if batch_size == 1000 => (DEFAULT_WORD_SIZE, DEFAULT_PACKET_SIZE),
-            batch_size if batch_size == 10_000 => (DEFAULT_WORD_SIZE, DEFAULT_PACKET_SIZE),
-            batch_size if batch_size == 100_000 => (DEFAULT_WORD_SIZE, DEFAULT_PACKET_SIZE),
-            batch_size if batch_size == 1_000_000 => (DEFAULT_WORD_SIZE, DEFAULT_PACKET_SIZE),
-            batch_size if batch_size == 2_000_000 => (DEFAULT_WORD_SIZE, DEFAULT_PACKET_SIZE),
-            _ => panic!("Invalid N or B provided"),
+            batch_size if batch_size == 100 => (DEFAULT_WORD_SIZE, 1),
+            batch_size if batch_size == 1000 => (DEFAULT_WORD_SIZE, 8),
+            batch_size if batch_size == 10_000 => (DEFAULT_WORD_SIZE, 64),
+            batch_size if batch_size == 100_000 => (DEFAULT_WORD_SIZE, 1024),
+            batch_size if batch_size == 1_000_000 => (DEFAULT_WORD_SIZE, 8192),
+            batch_size if batch_size == 2_000_000 => (DEFAULT_WORD_SIZE, 8192),
+            _ => {
+                warn!("Non-precalced N or B provided");
+                (DEFAULT_WORD_SIZE, DEFAULT_PACKET_SIZE)
+            }
         },
-        _ => panic!("Invalid N or B provided"),
+        _ => {
+            warn!("Non-precalced N or B provided");
+            (DEFAULT_WORD_SIZE, DEFAULT_PACKET_SIZE)
+        }
     }
 }
 
