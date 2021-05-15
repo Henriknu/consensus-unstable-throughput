@@ -83,6 +83,7 @@ async fn prbc_correctness() {
             i as u32,
             THRESHOLD as u32,
             N_PARTIES as u32,
+            100,
             0,
         ));
 

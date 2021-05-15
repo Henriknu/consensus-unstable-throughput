@@ -105,7 +105,7 @@ impl<V: ABFTValue> ViewChange<V> {
 
     pub fn on_view_change_message(
         &self,
-        message: &ViewChangeMessage<V>,
+        message: ViewChangeMessage<V>,
         signer: &Signer,
     ) -> ViewChangeResult<()> {
         // Check if result already taken
@@ -115,26 +115,27 @@ impl<V: ABFTValue> ViewChange<V> {
 
         let mut new_result = Changes::default();
 
-        if self.has_valid_commit(&message, signer) {
-            new_result.value.replace(
-                message
-                    .leader_commit
-                    .as_ref()
-                    .expect("Asserted that message had valid commit")
-                    .value
-                    .clone(),
-            );
+        let ViewChangeMessage {
+            view,
+            leader_key,
+            leader_lock,
+            leader_commit,
+            ..
+        } = message;
+
+        if let Some(committed_value) = self.get_valid_commit(leader_commit, signer) {
+            new_result.value.replace(committed_value);
             self.update(new_result)?;
             self.notify_messages.notify_one();
             return Ok(());
         }
 
-        if message.view > self.current_lock && self.has_valid_lock(&message, signer) {
-            new_result.lock.replace(message.view);
+        if message.view > self.current_lock && self.has_valid_lock(leader_lock, signer) {
+            new_result.lock.replace(view);
         }
 
         if message.view > self.current_key_view {
-            if let Some((value, sig)) = self.get_valid_key(&message, signer) {
+            if let Some((value, sig)) = self.get_valid_key(leader_key, signer) {
                 new_result.key.replace(Key {
                     view: message.view,
                     value,
@@ -176,8 +177,8 @@ impl<V: ABFTValue> ViewChange<V> {
         Ok(())
     }
 
-    fn has_valid_commit(&self, message: &ViewChangeMessage<V>, signer: &Signer) -> bool {
-        if let Some((value, sig)) = try_unpack_value_and_sig(&message.leader_commit) {
+    fn get_valid_commit(&self, leader_commit: Option<PPProposal<V>>, signer: &Signer) -> Option<V> {
+        if let Some((value, sig)) = try_unpack_value_and_sig(leader_commit) {
             let response = PBResponse {
                 id: PBID {
                     id: PPID { inner: self.id },
@@ -190,18 +191,19 @@ impl<V: ABFTValue> ViewChange<V> {
                 &serialize(&response)
                     .expect("Could not serialize reconstructed PB response on_view_change_message"),
             ) {
-                return true;
+                let PBResponse { value, .. } = response;
+                return Some(value);
             }
             warn!(
                 "Party {} received ViewChange message with invalid signature for commit",
                 self.index
             );
         }
-        false
+        None
     }
 
-    fn has_valid_lock(&self, message: &ViewChangeMessage<V>, signer: &Signer) -> bool {
-        if let Some((value, sig)) = try_unpack_value_and_sig(&message.leader_lock) {
+    fn has_valid_lock(&self, leader_lock: Option<PPProposal<V>>, signer: &Signer) -> bool {
+        if let Some((value, sig)) = try_unpack_value_and_sig(leader_lock) {
             let response = PBResponse {
                 id: PBID {
                     id: PPID { inner: self.id },
@@ -225,14 +227,18 @@ impl<V: ABFTValue> ViewChange<V> {
         false
     }
 
-    fn get_valid_key(&self, message: &ViewChangeMessage<V>, signer: &Signer) -> Option<(V, PBSig)> {
-        if let Some((value, sig)) = try_unpack_value_and_sig(&message.leader_key) {
+    fn get_valid_key(
+        &self,
+        leader_key: Option<PPProposal<V>>,
+        signer: &Signer,
+    ) -> Option<(V, PBSig)> {
+        if let Some((value, sig)) = try_unpack_value_and_sig(leader_key) {
             let response = PBResponse {
                 id: PBID {
                     id: PPID { inner: self.id },
                     step: PPStatus::Step1,
                 },
-                value: value.clone(),
+                value,
             };
 
             if signer.verify_signature(
@@ -240,6 +246,8 @@ impl<V: ABFTValue> ViewChange<V> {
                 &serialize(&response)
                     .expect("Could not serialize reconstructed PB response on_view_change_message"),
             ) {
+                let PBResponse { value, .. } = response;
+
                 return Some((value, sig));
             }
             warn!(
@@ -252,10 +260,10 @@ impl<V: ABFTValue> ViewChange<V> {
 }
 
 /// Utility function to unpack value and view_key_proof from proposal, if proposal and proofs are Some.
-fn try_unpack_value_and_sig<V: ABFTValue>(proposal: &Option<PPProposal<V>>) -> Option<(V, PBSig)> {
+fn try_unpack_value_and_sig<V: ABFTValue>(proposal: Option<PPProposal<V>>) -> Option<(V, PBSig)> {
     if let Some(PPProposal { value, proof }) = proposal {
-        if let Some(sig) = &proof.proof_prev {
-            return Some((value.clone(), sig.clone()));
+        if let Some(sig) = proof.proof_prev {
+            return Some((value, sig));
         }
     }
     None

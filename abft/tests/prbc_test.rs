@@ -16,7 +16,7 @@ use tokio::sync::mpsc::{self, Sender};
 use log::{debug, error, info};
 
 const N_PARTIES: usize = THRESHOLD * 4;
-const THRESHOLD: usize = 10;
+const THRESHOLD: usize = 8;
 const BUFFER_CAPACITY: usize = THRESHOLD * 30;
 
 use abft::test_helpers::{ChannelSender, PRBCBufferManager};
@@ -69,6 +69,7 @@ async fn prbc_correctness() {
             i as u32,
             THRESHOLD as u32,
             N_PARTIES as u32,
+            100,
             0,
         ));
 

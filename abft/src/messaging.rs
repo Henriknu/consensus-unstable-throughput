@@ -9,7 +9,7 @@ use crate::proto::{ProtocolMessage, ProtocolMessageType};
 
 #[async_trait]
 pub trait ProtocolMessageSender {
-    async fn send<M: ToProtocolMessage + Send + Sync>(
+    async fn send<M: ToProtocolMessage + Send + Sync + 'static>(
         &self,
         id: u32,
         send_id: u32,
@@ -18,7 +18,7 @@ pub trait ProtocolMessageSender {
         prbc_index: u32,
         message: M,
     );
-    async fn broadcast<M: ToProtocolMessage + Send + Sync>(
+    async fn broadcast<M: ToProtocolMessage + Send + Sync + 'static>(
         &self,
         id: u32,
         send_id: u32,

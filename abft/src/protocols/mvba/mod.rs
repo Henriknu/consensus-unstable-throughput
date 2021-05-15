@@ -14,7 +14,7 @@ use std::{
     sync::atomic::{AtomicU32, Ordering},
 };
 
-use log::{error, info, warn};
+use log::{error, warn};
 use tokio::sync::RwLock;
 
 use std::sync::Arc;
@@ -98,11 +98,6 @@ impl<V: ABFTValue + MvbaValue> MVBA<V> {
 
             let (key, value, view) = self.get_key_value_view().await;
 
-            info!(
-                "Started invoke for id: {}, index: {}, view: {}",
-                id, index, view
-            );
-
             // Invoke pp_recvs
 
             {
@@ -144,11 +139,6 @@ impl<V: ABFTValue + MvbaValue> MVBA<V> {
 
                 // wait for promotion to return. aka: 1. Succesfully promoted value or 2. self.skip[self.view]
 
-                info!(
-                    "Party {} started Promoting proposal with value: {:?}, view: {}",
-                    index, value, view
-                );
-
                 recv_handle.drain_skip(view).await?;
 
                 let promotion_proof: Option<PBSig> = tokio::select! {
@@ -157,8 +147,6 @@ impl<V: ABFTValue + MvbaValue> MVBA<V> {
                         None
                     },
                 };
-
-                info!("Party {} finished promoting proposal", index);
 
                 self.send_done_if_not_skip(promotion_proof, send_handle)
                     .await?;
@@ -178,16 +166,9 @@ impl<V: ABFTValue + MvbaValue> MVBA<V> {
                 .as_ref()
                 .expect("Elect should be initialized");
 
-            info!("Party {} started electing phase for view: {}", index, view);
-
             recv_handle.drain_elect(view).await?;
 
             let leader = elect.invoke(coin, send_handle).await?;
-
-            info!(
-                "Party {} finished electing phase for view: {}, electing the leader: {} ",
-                index, view, leader
-            );
 
             {
                 let mut state = self.state.write().await;
@@ -217,13 +198,9 @@ impl<V: ABFTValue + MvbaValue> MVBA<V> {
                 .as_ref()
                 .expect("ViewChange should be initialized");
 
-            info!("Party {} started view change for view: {}", index, view);
-
             let changes = view_change
                 .invoke(result.key, result.lock, result.commit, send_handle)
                 .await?;
-
-            info!("Party {} succesfully completed view change in view: {}. Leader: {}, with result: {:?}", index, view, leader, changes);
 
             if let Some(value) = changes.value {
                 return Ok(value);
@@ -257,13 +234,6 @@ impl<V: ABFTValue + MvbaValue> MVBA<V> {
             message_data,
             message_type,
         } = message;
-
-        info!(
-            "Handling message from {} to {} with message_type {:?}",
-            send_id,
-            recv_id,
-            ProtocolMessageType::from_i32(message_type).unwrap()
-        );
 
         if view > self.view.load(Ordering::Relaxed) {
             return Err(MVBAError::NotReadyForMessage(ProtocolMessage {
@@ -328,7 +298,6 @@ impl<V: ABFTValue + MvbaValue> MVBA<V> {
                             Err(e) => return Err(MVBAError::PPError(e)),
                         }
                     } else {
-                        info!("Did not find PPReceiver {} for Party {}!", send_id, recv_id);
                         return Err(MVBAError::NotReadyForMessage(ProtocolMessage {
                             send_id,
                             recv_id,
@@ -340,7 +309,6 @@ impl<V: ABFTValue + MvbaValue> MVBA<V> {
                         }));
                     }
                 } else {
-                    info!("pprecvs was not initialized for Party {}!", recv_id);
                     return Err(MVBAError::NotReadyForMessage(ProtocolMessage {
                         send_id,
                         recv_id,
@@ -361,7 +329,6 @@ impl<V: ABFTValue + MvbaValue> MVBA<V> {
                     if let Err(PPError::NotReadyForShareAck) =
                         pp_send.on_share_ack(send_id, inner).await
                     {
-                        info!("pp_send not ready for message at Party {}!", recv_id);
                         return Err(MVBAError::NotReadyForMessage(ProtocolMessage {
                             send_id,
                             recv_id,
@@ -396,12 +363,10 @@ impl<V: ABFTValue + MvbaValue> MVBA<V> {
             ProtocolMessageType::ViewChange => {
                 let view_change = self.view_change.read().await;
 
-                info!("Getting view change for view: {}", view);
-
                 if let Some(Some(view_change)) = &view_change.get(&view) {
                     let inner: ViewChangeMessage<V> = deserialize(&message_data)?;
 
-                    match view_change.on_view_change_message(&inner, signer_mvba) {
+                    match view_change.on_view_change_message(inner, signer_mvba) {
                         Ok(_) => return Ok(()),
                         Err(ViewChangeError::ResultAlreadyTaken) => {
                             // If ViewChangeResult was taken, this should only happen if the result was returned
@@ -890,10 +855,7 @@ impl<V: ABFTValue + MvbaValue> MVBA<V> {
 
     async fn init_view_change(&self, index: u32, id_leader: MVBAID, view: u32) {
         let state = self.state.read().await;
-        info!(
-            "Initing view change for index: {}, leader: {}, view: {}",
-            index, id_leader.index, view
-        );
+
         let view_change = ViewChange::init(
             id_leader,
             index,
@@ -913,7 +875,9 @@ impl<V: ABFTValue + MvbaValue> MVBA<V> {
         let lock = self.pp_recvs.read().await;
 
         if let Some(Some(recvs)) = lock.get(&self.view.load(Ordering::Relaxed)) {
-            futures::future::join_all(recvs.values().map(|recv| recv.abandon())).await;
+            for (_, recv) in recvs {
+                recv.abandon();
+            }
         }
     }
 

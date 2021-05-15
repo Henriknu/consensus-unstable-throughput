@@ -11,8 +11,10 @@ use consensus_core::crypto::{
     hash::{Hashable, H256},
     merkle::{get_branch, verify_branch, MerkleTree},
 };
-use consensus_core::erasure::{ErasureCoder, ErasureCoderError, NonZeroUsize};
-use log::{info, warn};
+use consensus_core::erasure::{
+    ErasureCoder, ErasureCoderError, NonZeroUsize, DEFAULT_PACKET_SIZE, DEFAULT_WORD_SIZE,
+};
+use log::warn;
 use thiserror::Error;
 use tokio::sync::{Notify, RwLock};
 
@@ -42,8 +44,12 @@ impl RBC {
         index: u32,
         f_tolerance: u32,
         n_parties: u32,
+        batch_size: u32,
         send_id: u32,
     ) -> RBCResult<Self> {
+        let (word_size, packet_size) =
+            get_word_and_packet_size(n_parties as usize, batch_size as usize);
+
         Ok(Self {
             id,
             index,
@@ -54,6 +60,8 @@ impl RBC {
                 NonZeroUsize::new((n_parties - 2 * f_tolerance) as usize)
                     .ok_or_else(|| RBCError::ZeroUsize)?,
                 NonZeroUsize::new((2 * f_tolerance) as usize).ok_or_else(|| RBCError::ZeroUsize)?,
+                NonZeroUsize::new(packet_size).ok_or_else(|| RBCError::ZeroUsize)?,
+                NonZeroUsize::new(word_size).ok_or_else(|| RBCError::ZeroUsize)?,
             )?,
             echo_messages: Default::default(),
             ready_messages: Default::default(),
@@ -70,30 +78,15 @@ impl RBC {
     ) -> RBCResult<V> {
         if let Some(value) = value {
             self.broadcast_value(value, send_handle).await?;
-        } else {
-            info!(
-                "Party {} started receiving on RBC instance {}. ",
-                self.index, self.send_id
-            );
         }
 
         let notify_ready = self.notify_ready.clone();
 
         notify_ready.notified().await;
 
-        info!(
-            "Party {} done waiting on receiving ready messages in RBC instance {}. ",
-            self.index, self.send_id
-        );
-
         let notify_echo = self.notify_echo.clone();
 
         notify_echo.notified().await;
-
-        info!(
-            "Party {} done waiting on receiving echo messages in RBC instance {}. ",
-            self.index, self.send_id
-        );
 
         let value = self.decode_value().await?;
 
@@ -159,21 +152,16 @@ impl RBC {
             n_echo_messages = lock.entry(root).or_default().len();
         }
 
-        if n_echo_messages >= (self.n_parties - 2* self.f_tolerance) as usize {
-            info!(
-                "Party {} notifying echo on RBC instance {}",
-                self.index, self.send_id
-            );
+        if n_echo_messages >= (self.n_parties - 2 * self.f_tolerance) as usize {
             self.notify_echo.notify_one();
         }
 
         if n_echo_messages >= (self.n_parties - self.f_tolerance) as usize
-            && !self.has_sent_ready.load(Ordering::SeqCst)
+            && self
+                .has_sent_ready
+                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
         {
-            info!(
-                "Party {} reconstructing echo on RBC instance {}",
-                self.index, self.send_id
-            );
             let blocks = self.reconstruct_blocks_with_root(root).await?;
 
             let merkle2 = MerkleTree::new(&blocks);
@@ -196,8 +184,6 @@ impl RBC {
                     ready_message,
                 )
                 .await;
-
-            self.has_sent_ready.store(true, Ordering::SeqCst);
         }
 
         Ok(())
@@ -223,7 +209,10 @@ impl RBC {
         }
 
         if n_ready_messages >= (self.f_tolerance + 1) as usize
-            && !self.has_sent_ready.load(Ordering::SeqCst)
+            && self
+                .has_sent_ready
+                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
         {
             let ready_message = RBCReadyMessage::new(root);
 
@@ -237,8 +226,6 @@ impl RBC {
                     ready_message,
                 )
                 .await;
-
-            self.has_sent_ready.store(true, Ordering::SeqCst);
         }
 
         if n_ready_messages >= (self.f_tolerance * 2 + 1) as usize {
@@ -260,12 +247,6 @@ impl RBC {
         let merkle = MerkleTree::new(&fragments);
 
         let mut fragments = fragments.into_iter();
-
-        info!(
-            "Party {} broadcasts in PRBC with root: {}",
-            self.index,
-            merkle.root()
-        );
 
         for j in 0..self.n_parties {
             let fragment = fragments
@@ -357,6 +338,48 @@ impl RBC {
         warn!("Party {} could not find a ready root ", self.index);
 
         Err(RBCError::NoReadyRootFound)
+    }
+}
+
+fn get_word_and_packet_size(n_parties: usize, batch_size: usize) -> (usize, usize) {
+    match n_parties {
+        n_parties if n_parties == 8 => match batch_size {
+            batch_size if batch_size == 100 => (8, 128),
+            batch_size if batch_size == 1000 => (8, 1024),
+            batch_size if batch_size == 10_000 => (8, 2048),
+            batch_size if batch_size == 100_000 => (8, 4096),
+            batch_size if batch_size == 1_000_000 => (8, 4096),
+            batch_size if batch_size == 2_000_000 => (8, 4096),
+            _ => panic!("Invalid N or B provided"),
+        },
+        n_parties if n_parties == 32 => match batch_size {
+            batch_size if batch_size == 100 => (8, 8),
+            batch_size if batch_size == 1000 => (DEFAULT_WORD_SIZE, DEFAULT_PACKET_SIZE),
+            batch_size if batch_size == 10_000 => (DEFAULT_WORD_SIZE, DEFAULT_PACKET_SIZE),
+            batch_size if batch_size == 100_000 => (DEFAULT_WORD_SIZE, DEFAULT_PACKET_SIZE),
+            batch_size if batch_size == 1_000_000 => (DEFAULT_WORD_SIZE, DEFAULT_PACKET_SIZE),
+            batch_size if batch_size == 2_000_000 => (DEFAULT_WORD_SIZE, DEFAULT_PACKET_SIZE),
+            _ => panic!("Invalid N or B provided"),
+        },
+        n_parties if n_parties == 64 => match batch_size {
+            batch_size if batch_size == 100 => (DEFAULT_WORD_SIZE, DEFAULT_PACKET_SIZE),
+            batch_size if batch_size == 1000 => (DEFAULT_WORD_SIZE, DEFAULT_PACKET_SIZE),
+            batch_size if batch_size == 10_000 => (DEFAULT_WORD_SIZE, DEFAULT_PACKET_SIZE),
+            batch_size if batch_size == 100_000 => (DEFAULT_WORD_SIZE, DEFAULT_PACKET_SIZE),
+            batch_size if batch_size == 1_000_000 => (DEFAULT_WORD_SIZE, DEFAULT_PACKET_SIZE),
+            batch_size if batch_size == 2_000_000 => (DEFAULT_WORD_SIZE, DEFAULT_PACKET_SIZE),
+            _ => panic!("Invalid N or B provided"),
+        },
+        n_parties if n_parties == 100 => match batch_size {
+            batch_size if batch_size == 100 => (DEFAULT_WORD_SIZE, DEFAULT_PACKET_SIZE),
+            batch_size if batch_size == 1000 => (DEFAULT_WORD_SIZE, DEFAULT_PACKET_SIZE),
+            batch_size if batch_size == 10_000 => (DEFAULT_WORD_SIZE, DEFAULT_PACKET_SIZE),
+            batch_size if batch_size == 100_000 => (DEFAULT_WORD_SIZE, DEFAULT_PACKET_SIZE),
+            batch_size if batch_size == 1_000_000 => (DEFAULT_WORD_SIZE, DEFAULT_PACKET_SIZE),
+            batch_size if batch_size == 2_000_000 => (DEFAULT_WORD_SIZE, DEFAULT_PACKET_SIZE),
+            _ => panic!("Invalid N or B provided"),
+        },
+        _ => panic!("Invalid N or B provided"),
     }
 }
 

@@ -36,6 +36,7 @@ pub struct ABFT<V: ABFTValue> {
     index: u32,
     f_tolerance: u32,
     n_parties: u32,
+    batch_size: u32,
 
     encrypted_values: RwLock<Option<BTreeMap<u32, EncryptedValue>>>,
     notify_decrypt: Arc<Notify>,
@@ -43,7 +44,7 @@ pub struct ABFT<V: ABFTValue> {
     decrypted: RwLock<BTreeMap<u32, V>>,
 
     // sub-protocol
-    acs: RwLock<Option<ACS<EncodedEncryptedValue>>>,
+    acs: RwLock<Option<ACS>>,
 
     signer_prbc: Arc<Signer>,
     signer_mvba: Signer,
@@ -57,6 +58,7 @@ impl<V: ABFTValue> ABFT<V> {
         index: u32,
         f_tolerance: u32,
         n_parties: u32,
+        batch_size: u32,
         signer_prbc: Arc<Signer>,
         signer_mvba: Signer,
         coin: Coin,
@@ -67,6 +69,7 @@ impl<V: ABFTValue> ABFT<V> {
             index,
             f_tolerance,
             n_parties,
+            batch_size,
 
             encrypted_values: RwLock::new(None),
             notify_decrypt: Arc::new(Notify::new()),
@@ -112,7 +115,7 @@ impl<V: ABFTValue> ABFT<V> {
 
         // Invoke acs with the encrypted transaction set. Get back a vector of encrypted transactions sets.
 
-        self.init_acs(encrypted).await;
+        self.init_acs().await;
 
         let value_vector = {
             let acs_lock = self.acs.read().await;
@@ -120,6 +123,7 @@ impl<V: ABFTValue> ABFT<V> {
             let acs = acs_lock.as_ref().expect("ACS should be init");
 
             acs.invoke(
+                encrypted,
                 recv_handle.clone(),
                 send_handle.clone(),
                 self.signer_prbc.clone(),
@@ -158,12 +162,19 @@ impl<V: ABFTValue> ABFT<V> {
                 let decrypt_message =
                     ABFTDecryptionShareMessage::new(*index, dec_key.into(), dec_nonce.into());
 
-                self.on_decryption_share(decrypt_message.clone(), self.index)
-                    .await?;
-
                 send_handle
-                    .broadcast(self.id, self.index, self.n_parties, 0, 0, decrypt_message)
+                    .broadcast(
+                        self.id,
+                        self.index,
+                        self.n_parties,
+                        0,
+                        0,
+                        decrypt_message.clone(),
+                    )
                     .await;
+
+                self.on_decryption_share(decrypt_message, self.index)
+                    .await?;
             }
         }
 
@@ -298,38 +309,19 @@ impl<V: ABFTValue> ABFT<V> {
             }
         }
 
-        // if not, if we have already received the share, disregard the message
-
-        let mut shares = self.decryption_shares.write().await;
-
-        if shares
-            .entry(message.index)
-            .or_default()
-            .contains_key(&send_id)
-        {
-            warn!(
-                "Party {} already received decrypt share for value {}, from {}",
-                self.index, message.index, send_id
-            );
-            return Ok(());
-        }
+        let ABFTDecryptionShareMessage { index, key, nonce } = message;
+        let key = key.into();
+        let nonce = nonce.into();
 
         // verify the share is valid
-        let n_values;
-
-        {
+        let n_values = {
             let vector_lock = self.encrypted_values.read().await;
 
             let vector = vector_lock.as_ref().unwrap();
 
-            n_values = vector.len();
-
             let encrypted = vector.get(&message.index).unwrap();
 
-            if !self
-                .encrypter
-                .verify_share(&encrypted.key, &message.key.clone().into())
-            {
+            if !self.encrypter.verify_share(&encrypted.key, &key) {
                 warn!(
                     "Party {} received a faulty decryption share for value {}'s key, from {}",
                     self.index, message.index, send_id
@@ -337,41 +329,40 @@ impl<V: ABFTValue> ABFT<V> {
                 return Ok(());
             }
 
-            if !self
-                .encrypter
-                .verify_share(&encrypted.nonce, &message.nonce.clone().into())
-            {
+            if !self.encrypter.verify_share(&encrypted.nonce, &nonce) {
                 warn!(
                     "Party {} received a faulty decryption share for value {}'s nonce, from {}",
                     self.index, message.index, send_id
                 );
                 return Ok(());
             }
-        }
+
+            vector.len()
+        };
 
         // insert share
 
-        let ABFTDecryptionShareMessage { index, key, nonce } = message;
+        let n_shares = {
+            let mut shares = self.decryption_shares.write().await;
 
-        let share = DecryptionSharePair {
-            key: key.into(),
-            nonce: nonce.into(),
+            let share = DecryptionSharePair { key, nonce };
+
+            shares.entry(index).or_default().insert(send_id, share);
+
+            shares.entry(index).or_default().len()
         };
-
-        shares.entry(index).or_default().insert(send_id, share);
 
         // if we have enough shares, decrypt
 
         debug!(
             "Party {} has received {} decryption share for value {}, need {}",
             self.index,
-            shares.entry(index).or_default().len(),
+            n_shares,
             index,
             (self.n_parties / 3 + 1)
         );
 
-        if shares.entry(index).or_default().len() as u32 >= (self.f_tolerance + 1) {
-            drop(shares);
+        if n_shares as u32 >= (self.f_tolerance + 1) {
             self.decrypt_value(index).await?;
 
             // if we have decrypted everything, notify
@@ -409,33 +400,30 @@ impl<V: ABFTValue> ABFT<V> {
             return Ok(());
         }
 
-        let vector_lock = self.encrypted_values.read().await;
+        let decrypted = {
+            let vector_lock = self.encrypted_values.read().await;
 
-        let vector = vector_lock.as_ref().unwrap();
+            let vector = vector_lock.as_ref().unwrap();
 
-        let encrypted = vector.get(&index).unwrap();
+            let encrypted = vector.get(&index).unwrap();
 
-        let key = self
-            .encrypter
-            .combine_shares(&encrypted.key, key_shares)
-            .unwrap();
+            let key = self
+                .encrypter
+                .combine_shares(&encrypted.key, key_shares)
+                .unwrap();
 
-        let nonce = self
-            .encrypter
-            .combine_shares(&encrypted.nonce, nonce_shares)
-            .unwrap();
+            let nonce = self
+                .encrypter
+                .combine_shares(&encrypted.nonce, nonce_shares)
+                .unwrap();
 
-        let symmetric = SymmetricEncrypter {
-            key: key.data,
-            nonce: nonce.data,
+            let symmetric = SymmetricEncrypter {
+                key: key.data,
+                nonce: nonce.data,
+            };
+
+            symmetric.decrypt(&encrypted.payload)?
         };
-
-        info!(
-            "Party {} decrypting payload from Party {}",
-            self.index, index
-        );
-
-        let decrypted = symmetric.decrypt(&encrypted.payload)?;
 
         let value: V = deserialize(&decrypted)?;
 
@@ -447,13 +435,13 @@ impl<V: ABFTValue> ABFT<V> {
         Ok(())
     }
 
-    async fn init_acs(&self, encrypted: EncodedEncryptedValue) {
+    async fn init_acs(&self) {
         let acs = ACS::init(
             self.id,
             self.index,
             self.f_tolerance,
             self.n_parties,
-            encrypted,
+            self.batch_size,
         );
 
         let mut lock = self.acs.write().await;

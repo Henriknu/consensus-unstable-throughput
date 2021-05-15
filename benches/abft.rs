@@ -23,8 +23,6 @@ use abft::{
     ABFTError, ABFT,
 };
 
-use abft::Value;
-
 use std::{collections::HashMap, sync::Arc};
 
 use futures::future::join_all;
@@ -42,7 +40,7 @@ use abft::test_helpers::{ABFTBufferManager, ChannelSender};
 
 const N_PARTIES: usize = THRESHOLD * 4;
 const THRESHOLD: usize = 2;
-const BATCH_SIZE: u64 = 10_000 as u64;
+const BATCH_SIZE: u32 = 10_000;
 const BUFFER_CAPACITY: usize = N_PARTIES * N_PARTIES * 50 + 1000;
 const SEED_TRANSACTION_SET: u32 = 899923234;
 
@@ -103,6 +101,7 @@ async fn abft_correctness() {
             i as u32,
             THRESHOLD as u32,
             N_PARTIES as u32,
+            BATCH_SIZE,
             signer_prbc,
             signer_mvba,
             coin,

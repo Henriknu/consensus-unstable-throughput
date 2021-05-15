@@ -1,4 +1,7 @@
 [build]
-rustflags = ["-C", "target-cpu=native"]    #+adx,+avx,+avx2,+fma,+sse,+sse2,+sse4.1,+ssse3,+sse4.2
-target= "x86_64-unknown-linux-gnu"
+rustflags = ["-C", "target-cpu=broadwell", "-C", "target-feature=+avx2,+fma,+sse4.1,+sse4.2,+adx,+bmi2,+ermsb,+fxsr,+lzcnt,+movbe,+popcnt,+rdseed,+xsaveopt"]    #"target-feature=+avx2,+fma,+sse4.1,+sse4.2,+adx,+bmi2,+ermsb,+fxsr,+lzcnt,+movbe,+popcnt,+rdseed,+xsaveopt"
+target = "x86_64-unknown-linux-gnu"
+
+
+
 # -Z build-std --target x86_64-unknown-linux-gnu

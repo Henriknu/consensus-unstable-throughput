@@ -7,7 +7,7 @@ use std::{
 };
 
 use byteorder::{self, ByteOrder};
-use log::{debug, info, warn};
+use log::{debug, warn};
 use tokio::sync::{mpsc::error::SendError, Notify, RwLock};
 
 use self::{
@@ -38,6 +38,7 @@ pub struct PRBC {
     index: u32,
     f_tolerance: u32,
     n_parties: u32,
+    batch_size: u32,
     pub(crate) send_id: u32,
     value_identifier: [u8; 8],
     shares: RwLock<BTreeMap<usize, SignatureShare>>,
@@ -49,7 +50,14 @@ pub struct PRBC {
 }
 
 impl PRBC {
-    pub fn init(id: u32, index: u32, f_tolerance: u32, n_parties: u32, send_id: u32) -> Self {
+    pub fn init(
+        id: u32,
+        index: u32,
+        f_tolerance: u32,
+        n_parties: u32,
+        batch_size: u32,
+        send_id: u32,
+    ) -> Self {
         let mut value_identifier = [0u8; 8];
 
         byteorder::NativeEndian::write_u32_into(&[id, send_id], &mut value_identifier);
@@ -59,6 +67,7 @@ impl PRBC {
             index,
             f_tolerance,
             n_parties,
+            batch_size,
             send_id,
             value_identifier,
             shares: Default::default(),
@@ -123,11 +132,6 @@ impl PRBC {
             );
         }
 
-        info!(
-            "Party {} succesfully completed PRBC with signature for Party {}. Shares: {:?}, ValueID: {:?}",
-            self.index, self.send_id, *lock, self.value_identifier
-        );
-
         self.has_signature.store(true, Ordering::Relaxed);
 
         Ok(PRBCSignature {
@@ -151,14 +155,6 @@ impl PRBC {
             message_data,
             message_type,
         } = message;
-
-        info!(
-            "Handling PRBC message from {} to {}, in PRBC instance {}, with message_type {:?}",
-            send_id,
-            recv_id,
-            prbc_index,
-            ProtocolMessageType::from_i32(message_type).unwrap()
-        );
 
         match ProtocolMessageType::from_i32(message_type).unwrap() {
             ProtocolMessageType::PrbcDone => {
@@ -195,7 +191,6 @@ impl PRBC {
 
                     rbc.on_echo_message(inner, send_handle).await?;
                 } else {
-                    info!("Did not find RBC for Party {}!", recv_id);
                     return Err(PRBCError::NotReadyForMessage(ProtocolMessage {
                         send_id,
                         recv_id,
@@ -215,7 +210,6 @@ impl PRBC {
 
                     rbc.on_value_message(inner, send_handle).await?;
                 } else {
-                    info!("Did not find RBC for Party {}!", recv_id);
                     return Err(PRBCError::NotReadyForMessage(ProtocolMessage {
                         send_id,
                         recv_id,
@@ -235,7 +229,6 @@ impl PRBC {
 
                     rbc.on_ready_message(send_id, inner, send_handle).await?;
                 } else {
-                    info!("Did not find RBC for Party {}!", recv_id);
                     return Err(PRBCError::NotReadyForMessage(ProtocolMessage {
                         send_id,
                         recv_id,
@@ -285,6 +278,7 @@ impl PRBC {
             self.index,
             self.f_tolerance,
             self.n_parties,
+            self.batch_size,
             self.send_id,
         )?;
 

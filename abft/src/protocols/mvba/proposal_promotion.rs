@@ -335,7 +335,7 @@ impl<V: ABFTValue + MvbaValue> PPReceiver<V> {
         PPLeader { key, lock, commit }
     }
 
-    pub async fn abandon(&self) {
+    pub fn abandon(&self) {
         self.notify_abandon.notify_one();
     }
 

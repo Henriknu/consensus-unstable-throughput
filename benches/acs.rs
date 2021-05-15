@@ -91,7 +91,7 @@ async fn acs_correctness() {
             i as u32,
             THRESHOLD as u32,
             N_PARTIES as u32,
-            value,
+            100,
         ));
 
         // Setup buffer manager
@@ -214,7 +214,7 @@ async fn acs_correctness() {
 
         let main_handle = tokio::spawn(async move {
             match acs
-                .invoke(main_receiver, f, prbc_signer, &*mvba_signer, &*coin)
+                .invoke(value, main_receiver, f, prbc_signer, &*mvba_signer, &*coin)
                 .await
             {
                 Ok(value) => return Ok(value),

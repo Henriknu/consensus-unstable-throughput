@@ -21,6 +21,7 @@ rand_core = {version = "0.6", features = ["getrandom"]}
 uint = "0.9.0"
 threshold_crypto = "0.4"
 thiserror = "1.0"
+flate2 = "1.0.20"
 
 [features]
 encrypt-p256 = []
@@ -31,3 +32,6 @@ commoncoin-p256 = []
 commoncoin-dalek-precomputed = []
 
 sign-ecdsa = []
+
+[profile.release]
+lto=true

@@ -1,3 +1,4 @@
+import os
 import re
 import time
 from typing import List, Dict
@@ -11,15 +12,15 @@ N = 8  # 8, 32, 64, 100 Stable. N = 8, 64 unstable.
 F = int(N/4)
 I = 1
 WAN = True
-SHOULD_MONITOR = False
-BATCH_SIZES = [100, 1000, 10000, 100_000, 1_000_000, 2_000_000] if WAN else [
-    N]  # 100, 1000, 10000, 100_000 1_000_000, 2_000_000
+SHOULD_MONITOR = True
+BATCH_SIZES = [100, 1000, 10000, 100_000, 1_000_000] if WAN else [
+    N]  # 100, 1000, 10000, 100_000, 1_000_000, 2_000_000
 UNSTABLE_BATCH_SIZES = {8: 10_000, 64: 1_000_000}
 SHOULD_PACKET_DELAY = True
 SHOULD_PACKET_LOSS = True
 PACKET_LOSS_RATES = [5, 10, 15]
 PACKET_DELAYS = [500, 2500, 5000]
-M = [int(F/2), F, 2*F, 3*F, N]
+M = [F, 2*F, 3*F, N]
 
 SERVER_AMI_ID = 'ami-042e8287309f5df03'  # Ubuntu 20.04 64 bit x86
 SERVER_INSTANCE_TYPE = 't2.medium'
@@ -85,6 +86,8 @@ def get_metric_data(private_host_names, starttime, endtime):
 
     metrics = []
 
+    print(private_host_names)
+
     private_host_names = list(private_host_names.values())
     starttime = datetime.datetime.fromtimestamp(starttime)
     endtime = datetime.datetime.fromtimestamp(endtime)
@@ -119,7 +122,7 @@ def get_metric_data(private_host_names, starttime, endtime):
 
                 "MetricName": "cpu_usage_active",
 
-                "Dimensions": [{"Name": "host", "Value": ip}]
+                "Dimensions": [{"Name": "host", "Value": ip}, {"Name": "cpu", "Value": "cpu-total"}]
             },
 
             "Period": METRIC_PERIOD,
@@ -192,7 +195,9 @@ def store_metric_data_pickle(batch_size: int):
     metrics = {}
 
     log_file_name_list = sorted(glob.glob(
-        f"logs/{N}_{F}_{batch_size}_*-" + ('WAN' if WAN else "LAN") + "*"))
+        f"logs/{N}_{F}_{batch_size}_*-" + ('WAN' if WAN else "LAN") + "*"), key=os.path.getmtime)
+
+    print(log_file_name_list)
 
     contents = [open(file_name).read().strip().split("\n\n")
                 for file_name in log_file_name_list]
@@ -496,6 +501,8 @@ def get_host_start_end(log_segments: List[str]):
                     datetime.datetime.fromisoformat(line.split(" - ")[0]))
             elif r_private.match(line):
                 private_host_names[i] = line.split(":")[4]
+
+    print("get host end", endtime)
 
     return private_host_names, starttime, endtime
 

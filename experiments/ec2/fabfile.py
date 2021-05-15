@@ -6,7 +6,7 @@ from datetime import datetime
 import time
 
 
-SHOULD_USE_EC2_BUILT_BINARY = False
+SHOULD_USE_EC2_BUILT_BINARY = True
 
 
 def get_group():
@@ -16,18 +16,19 @@ def get_group():
                           user="ubuntu", forward_agent=True)
 
 
-@task
-def compile_binary_and_crypto(c):
+def put_dir(conn: Connection, source, target):
+    for item in os.listdir(source):
+        if os.path.isfile(os.path.join(source, item)):
+            conn.put(os.path.join(source, item),
+                     remote='%s/%s' % (target, item))
+        else:
+            conn.run('mkdir -p %s/%s' % (target, item))
+            put_dir(conn, os.path.join(source, item),
+                    '%s/%s' % (target, item))
 
-    def put_dir(conn: Connection, source, target):
-        for item in os.listdir(source):
-            if os.path.isfile(os.path.join(source, item)):
-                conn.put(os.path.join(source, item),
-                         remote='%s/%s' % (target, item))
-            else:
-                conn.run('mkdir -p %s/%s' % (target, item))
-                put_dir(conn, os.path.join(source, item),
-                        '%s/%s' % (target, item))
+
+@task
+def compile_binary(c):
 
     start_compiler()
 
@@ -63,21 +64,35 @@ def compile_binary_and_crypto(c):
 
         conn.put(".cargo/config.toml", remote="abft/.cargo/")
 
-        conn.run("/home/ubuntu/.cargo/bin/cargo build --release")
+        conn.run("/home/ubuntu/.cargo/bin/cargo -Z build-std build --release")
 
-        conn.run(
-            f"/home/ubuntu/.cargo/bin/cargo run --release --bin generate_crypto {N} {F}")
-
-        conn.get("abft/target/release/abft", local="abft")
-
-        result = conn.run("ls crypto/")
-
-        files = result.stdout.split()
-
-        for file in files:
-            conn.get(f"abft/abft/crypto/{file}", local=f"crypto/{file}")
+        conn.get("abft/target/x86_64-unknown-linux-gnu/release/abft", local="abft")
 
     stop_all()
+
+
+@task
+def get_bin(c):
+
+    conn = Connection("ec2-18-232-127-65.compute-1.amazonaws.com",
+                      user="ubuntu", forward_agent=True)
+
+    conn.get("abft/target/x86_64-unknown-linux-gnu/release/abft", local="abft")
+
+
+@task
+def put_benches(c):
+
+    conn = Connection("ec2-3-236-230-46.compute-1.amazonaws.com",
+                      user="ubuntu", forward_agent=True)
+
+    conn.put("../../benches/erasure.rs", "benches/erasure.rs")
+
+    #put_dir(conn, "../../benches", "benches/")
+
+    #put_dir(conn, "../../consensus-core", "consensus-core/")
+
+    #put_dir(conn, "../../abft", "abft/")
 
 
 @task
@@ -86,13 +101,15 @@ def prepare_awscw_agent(c, group=None):
     if not group:
         group = get_group()
 
+    print("Preparing awscw_agent")
+
     group.run("wget https://s3.amazonaws.com/amazoncloudwatch-agent/ubuntu/amd64/latest/amazon-cloudwatch-agent.deb", hide=True)
     group.sudo("dpkg -i -E ./amazon-cloudwatch-agent.deb", hide=True)
     group.put("amazon-cloudwatch-agent.json")
     group.run("rm ./amazon-cloudwatch-agent.deb")
 
 
-@task
+@ task
 def start_awscw_agent(c, group=None):
 
     if not group:
@@ -101,32 +118,34 @@ def start_awscw_agent(c, group=None):
     group.sudo(
         "/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -s -c file:amazon-cloudwatch-agent.json")
 
+    group.sudo(
+        "/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a start")
 
-@task
+
+@ task
 def upload_crypto(c, group=None):
 
     if not group:
         group = get_group()
 
-    if not SHOULD_USE_EC2_BUILT_BINARY:
+    p = Popen(["./generate.sh",  f"{N}",  f"{int(F)}"])
 
-        p = Popen(["./generate.sh",  f"{N}",  f"{int(F)}"])
-
-        p.wait()
+    p.wait()
 
     print("Uploading crypto")
 
     group.run("mkdir -p crypto")
 
-    path = "crypto" if SHOULD_USE_EC2_BUILT_BINARY else "../../abft/crypto"
+    # path = "crypto" if SHOULD_USE_EC2_BUILT_BINARY else "../../abft/crypto"
 
     connection: Connection
 
     for i, connection in enumerate(group):
-        connection.put(f"{path}/key_material{i}", remote='crypto/')
+        print(f"Uploading crypto {i}")
+        connection.put(f"../../abft/crypto/key_material{i}", remote='crypto/')
 
 
-@task
+@ task
 def upload_binary(c, group=None):
 
     print("Uploading binary")
@@ -143,7 +162,7 @@ def upload_binary(c, group=None):
     group.sudo("mv binary/abft /usr/local/bin/abft")
 
 
-@task
+@ task
 def prepare_hosts(c, ips, group=None):
 
     print("Preparing hosts")
@@ -156,7 +175,7 @@ def prepare_hosts(c, ips, group=None):
     group.put("hosts")
 
 
-@task
+@ task
 def clear_logs(c, group=None):
 
     if not group:
@@ -165,7 +184,7 @@ def clear_logs(c, group=None):
     group.sudo("rm logs/execution.log")
 
 
-@task
+@ task
 def prepare_logs(c, group=None):
 
     print("Preparing logs")
@@ -178,7 +197,7 @@ def prepare_logs(c, group=None):
     group.put("../../log4rs.yaml")
 
 
-@task
+@ task
 def install_deps(c, group=None):
 
     if not group:
@@ -189,7 +208,7 @@ def install_deps(c, group=None):
     group.sudo("apt-get install -y iproute2 dtach build-essential")
 
 
-@task
+@ task
 def download_logs(c, b, group=None):
 
     if not group:
@@ -198,11 +217,12 @@ def download_logs(c, b, group=None):
     connection: Connection
 
     for i, connection in enumerate(group):
+        print(f"Downloading log: {i}")
         connection.get(
             f"logs/execution.log", local=f'logs/{N}_{int(F)}_{b}_[{i+1}]-{"WAN" if WAN else "LAN"}-{datetime.now().strftime("%m-%d, %H:%M")}.log')
 
 
-@task
+@ task
 def download_logs_unstable(c, b, m, delay, packet_loss, group=None):
 
     if not group:
@@ -211,11 +231,12 @@ def download_logs_unstable(c, b, m, delay, packet_loss, group=None):
     connection: Connection
 
     for i, connection in enumerate(group):
+        print(f"Downloading log: {i}")
         connection.get(
             f"logs/execution.log", local=f'unstable_logs/{N}_{int(F)}_{b}_unstable_{m}_{delay}_{packet_loss}_[{i+1}]-{"WAN" if WAN else "LAN"}-{datetime.now().strftime("%m-%d, %H:%M")}.log')
 
 
-@task
+@ task
 def run_protocol(c, iteration, b, group=None):
 
     if not group:
@@ -239,7 +260,7 @@ def run_protocol(c, iteration, b, group=None):
         promise.join()
 
 
-@task
+@ task
 def run_protocol_unstable(c, iteration, b, m, delay, packet_loss, group=None):
 
     if not group:
@@ -263,7 +284,7 @@ def run_protocol_unstable(c, iteration, b, m, delay, packet_loss, group=None):
         promise.join()
 
 
-@task
+@ task
 def stop_protocol(c, group=None):
 
     if not group:
@@ -272,7 +293,7 @@ def stop_protocol(c, group=None):
     group.run("pkill abft")
 
 
-@task
+@ task
 def setup(c, ips, group=None):
 
     if WAN:
@@ -300,7 +321,7 @@ def setup(c, ips, group=None):
     stop_all()
 
 
-@task
+@ task
 def prepare(c, ips, group=None):
 
     if not group:
@@ -312,7 +333,7 @@ def prepare(c, ips, group=None):
     prepare_logs(c, group=group)
 
 
-@task
+@ task
 def full(c):
 
     if WAN:
@@ -344,6 +365,8 @@ def full(c):
         download_logs(c, b, group=group)
 
         if SHOULD_MONITOR and WAN:
+            print("Waiting for metrics to be ready")
+            time.sleep(60)
             store_metric_data_pickle(b)
 
         clear_logs(c, group=group)
@@ -351,7 +374,7 @@ def full(c):
     stop_all()
 
 
-@task
+@ task
 def full_unstable(c):
 
     if WAN:
@@ -404,6 +427,7 @@ def full_unstable(c):
                 download_logs_unstable(c, b, m, 0, l, group=group)
 
                 if SHOULD_MONITOR and WAN:
+
                     store_metric_data_pickle_unstable(b, m, 0, l)
 
                 clear_logs(c, group=group)

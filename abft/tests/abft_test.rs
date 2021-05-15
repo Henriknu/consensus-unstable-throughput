@@ -24,8 +24,8 @@ use abft::test_helpers::{ABFTBufferManager, ChannelSender};
 use std::time::Instant;
 
 const N_PARTIES: usize = THRESHOLD * 4;
-const THRESHOLD: usize = 1;
-const BATCH_SIZE: u64 = 10_000 as u64;
+const THRESHOLD: usize = 2;
+const BATCH_SIZE: u32 = 100_000;
 const BUFFER_CAPACITY: usize = N_PARTIES * N_PARTIES * 50 + 1000;
 const SEED_TRANSACTION_SET: u32 = 899923234;
 
@@ -62,9 +62,13 @@ async fn abft_correctness() {
     let mut handles = Vec::with_capacity(N_PARTIES);
 
     for i in 0..N_PARTIES {
-        let mut recv = channels[i].1.take().unwrap();
+        let channel_i = &mut channels[i];
+
+        let (sender, recv) = channel_i;
+
+        let (sender, mut recv) = (sender.clone(), recv.take().unwrap());
         let senders: HashMap<u32, Sender<_>> = channels
-            .iter()
+            .iter_mut()
             .enumerate()
             .filter_map(|(j, channel)| {
                 if i != j {
@@ -94,6 +98,7 @@ async fn abft_correctness() {
             i as u32,
             THRESHOLD as u32,
             N_PARTIES as u32,
+            BATCH_SIZE,
             signer_prbc,
             signer_mvba,
             coin,
@@ -103,8 +108,6 @@ async fn abft_correctness() {
         // Setup buffer manager
 
         let mut buffer = ABFTBuffer::new();
-        let buffer_abft = abft.clone();
-        let buffer_f = f.clone();
 
         let _ = tokio::spawn(async move {
             while let Some(command) = buff_cmd_recv.recv().await {
@@ -113,42 +116,11 @@ async fn abft_correctness() {
                 info!("Buffer {} retrieved {} messages", i, messages.len());
 
                 for message in messages {
-                    match buffer_abft
-                        .handle_protocol_message(message, &*buffer_f)
-                        .await
-                    {
-                        Ok(_) => {}
-                        Err(ABFTError::NotReadyForPRBCMessage(early_message)) => {
-                            let index = early_message.prbc_index;
-                            buffer.execute(ABFTBufferCommand::ACS {
-                                inner: ACSBufferCommand::PRBC {
-                                    inner: PRBCBufferCommand::Store {
-                                        message: early_message,
-                                    },
-                                    send_id: index,
-                                },
-                            });
-                        }
-                        Err(ABFTError::NotReadyForMVBAMessage(early_message)) => {
-                            buffer.execute(ABFTBufferCommand::ACS {
-                                inner: ACSBufferCommand::MVBA {
-                                    inner: MVBABufferCommand::Store {
-                                        message: early_message,
-                                    },
-                                },
-                            });
-                        }
-
-                        Err(ABFTError::NotReadyForABFTDecryptionShareMessage(early_message)) => {
-                            buffer.execute(ABFTBufferCommand::Store {
-                                message: early_message,
-                            });
-                        }
-
-                        Err(e) => error!(
+                    if let Err(e) = sender.send(message).await {
+                        error!(
                             "Party {} got error when handling protocol message: {}",
                             i, e
-                        ),
+                        );
                     }
                 }
             }
@@ -164,49 +136,56 @@ async fn abft_correctness() {
         let _ = tokio::spawn(async move {
             while let Some(message) = recv.recv().await {
                 debug!("Received message at {}", i);
-                match msg_abft.handle_protocol_message(message, &*msg_f).await {
-                    Ok(_) => {}
-                    Err(ABFTError::NotReadyForPRBCMessage(early_message)) => {
-                        let index = early_message.prbc_index;
-                        msg_buff_send
-                            .send(ABFTBufferCommand::ACS {
-                                inner: ACSBufferCommand::PRBC {
-                                    inner: PRBCBufferCommand::Store {
-                                        message: early_message,
-                                    },
-                                    send_id: index,
-                                },
-                            })
-                            .await
-                            .unwrap();
-                    }
-                    Err(ABFTError::NotReadyForMVBAMessage(early_message)) => {
-                        msg_buff_send
-                            .send(ABFTBufferCommand::ACS {
-                                inner: ACSBufferCommand::MVBA {
-                                    inner: MVBABufferCommand::Store {
-                                        message: early_message,
-                                    },
-                                },
-                            })
-                            .await
-                            .unwrap();
-                    }
 
-                    Err(ABFTError::NotReadyForABFTDecryptionShareMessage(early_message)) => {
-                        msg_buff_send
-                            .send(ABFTBufferCommand::Store {
-                                message: early_message,
-                            })
-                            .await
-                            .unwrap();
-                    }
+                let local_abft = msg_abft.clone();
+                let local_f = msg_f.clone();
+                let local_buff_send = msg_buff_send.clone();
 
-                    Err(e) => error!(
-                        "Party {} got error when handling protocol message: {}",
-                        i, e
-                    ),
-                }
+                tokio::spawn(async move {
+                    match local_abft.handle_protocol_message(message, &*local_f).await {
+                        Ok(_) => {}
+                        Err(ABFTError::NotReadyForPRBCMessage(early_message)) => {
+                            let index = early_message.prbc_index;
+                            local_buff_send
+                                .send(ABFTBufferCommand::ACS {
+                                    inner: ACSBufferCommand::PRBC {
+                                        inner: PRBCBufferCommand::Store {
+                                            message: early_message,
+                                        },
+                                        send_id: index,
+                                    },
+                                })
+                                .await
+                                .unwrap();
+                        }
+                        Err(ABFTError::NotReadyForMVBAMessage(early_message)) => {
+                            local_buff_send
+                                .send(ABFTBufferCommand::ACS {
+                                    inner: ACSBufferCommand::MVBA {
+                                        inner: MVBABufferCommand::Store {
+                                            message: early_message,
+                                        },
+                                    },
+                                })
+                                .await
+                                .unwrap();
+                        }
+
+                        Err(ABFTError::NotReadyForABFTDecryptionShareMessage(early_message)) => {
+                            local_buff_send
+                                .send(ABFTBufferCommand::Store {
+                                    message: early_message,
+                                })
+                                .await
+                                .unwrap();
+                        }
+
+                        Err(e) => error!(
+                            "Party {} got error when handling protocol message: {}",
+                            i, e
+                        ),
+                    }
+                });
             }
         });
 

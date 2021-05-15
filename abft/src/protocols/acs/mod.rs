@@ -10,7 +10,7 @@ use consensus_core::crypto::{
     commoncoin::Coin,
     sign::{Signature, Signer},
 };
-use log::{debug, error, info};
+use log::{debug, error};
 use tokio::sync::{mpsc::Receiver, RwLock};
 
 use crate::{
@@ -28,26 +28,26 @@ pub type ACSResult<T> = Result<T, ACSError>;
 
 pub mod buffer;
 
-pub struct ACS<V: ABFTValue> {
+pub struct ACS {
     id: u32,
     index: u32,
     f_tolerance: u32,
     n_parties: u32,
-    value: V,
+    batch_size: u32,
 
     // sub-protocols
     prbcs: RwLock<Option<HashMap<u32, Arc<PRBC>>>>,
     mvba: RwLock<Option<MVBA<SignatureVector>>>,
 }
 
-impl<V: ABFTValue> ACS<V> {
-    pub fn init(id: u32, index: u32, f_tolerance: u32, n_parties: u32, value: V) -> Self {
+impl ACS {
+    pub fn init(id: u32, index: u32, f_tolerance: u32, n_parties: u32, batch_size: u32) -> Self {
         Self {
             id,
             index,
             f_tolerance,
             n_parties,
-            value,
+            batch_size,
 
             prbcs: RwLock::const_new(None),
             mvba: RwLock::const_new(None),
@@ -55,10 +55,12 @@ impl<V: ABFTValue> ACS<V> {
     }
 
     pub async fn invoke<
+        V: ABFTValue,
         F: ProtocolMessageSender + Sync + Send + 'static,
         R: PRBCReceiver + MVBAReceiver + Send + Sync + 'static,
     >(
         &self,
+        value: V,
         recv_handle: Arc<R>,
         send_handle: Arc<F>,
         signer_prbc: Arc<Signer>,
@@ -79,6 +81,10 @@ impl<V: ABFTValue> ACS<V> {
 
             let prbcs = prbc_lock.as_ref().expect("PRBC should be initialized");
 
+            let mut inputs = vec![None; prbcs.len()];
+
+            inputs[self.index as usize].replace(value);
+
             for (index, prbc) in prbcs {
                 let prbc_clone = prbc.clone();
                 let recv_clone = recv_handle.clone();
@@ -87,13 +93,7 @@ impl<V: ABFTValue> ACS<V> {
                 let signer_clone = signer_prbc.clone();
                 let index_copy = self.index;
 
-                let value = {
-                    if *index == self.index {
-                        Some(self.value.clone())
-                    } else {
-                        None
-                    }
-                };
+                let value = inputs[*index as usize].take();
 
                 tokio::spawn(async move {
                     match prbc_clone
@@ -130,40 +130,20 @@ impl<V: ABFTValue> ACS<V> {
         let mut signatures = BTreeMap::new();
 
         while let Some((index, signature)) = sig_recv.recv().await {
-            info!(
-                "Party {} received PRBC signatures for PRBC {}",
-                self.index, index
-            );
-
             if !signatures.contains_key(&index) {
-                debug!(
-                    "Party {} had not received PRBC signatures for PRBC {} before",
-                    self.index, index
-                );
                 signatures.insert(index, signature);
             }
 
-            debug!(
-                "Party {} has received {} PRBC signatures, need: {}",
-                self.index,
-                signatures.len(),
-                (self.n_parties - self.f_tolerance)
-            );
-
             if signatures.len() >= (self.n_parties - self.f_tolerance) as usize {
-                info!(
-                    "Party {} has received enough PRBC signatures to continue on to MVBA",
-                    self.index
-                );
                 break;
             }
         }
 
         // Propose W = set ( (value, sig)) to MVBA
 
-        let vector = self.to_signature_vector(&signatures).await;
+        let (signature_vector, value_vector) = self.split_signatures(signatures).await;
 
-        self.init_mvba(vector).await;
+        self.init_mvba(signature_vector).await;
 
         // Wait for mvba to return some W*, proposed by one of the parties.
 
@@ -175,16 +155,10 @@ impl<V: ABFTValue> ACS<V> {
             mvba.invoke(recv_handle, &*send_handle, signer_mvba, coin)
                 .await?
         };
-
-        info!(
-            "Party {} completed MVBA, with the following signature vector: {:?}",
-            self.index, elected_vector
-        );
-
         // Wait to receive values from each and every party contained in the W vector.
 
         let result = self
-            .retrieve_values(elected_vector, signatures, sig_recv)
+            .retrieve_values(elected_vector, value_vector, sig_recv)
             .await;
 
         // Return the combined values of all the parties in the W vector.
@@ -268,60 +242,63 @@ impl<V: ABFTValue> ACS<V> {
         Ok(())
     }
 
-    async fn to_signature_vector(
+    async fn split_signatures<V: ABFTValue>(
         &self,
-        signatures: &BTreeMap<u32, PRBCSignature<V>>,
-    ) -> SignatureVector {
-        let inner = signatures
-            .iter()
-            .map(|(k, v)| (*k, v.inner.clone()))
-            .collect();
+        prbc_signatures: BTreeMap<u32, PRBCSignature<V>>,
+    ) -> (SignatureVector, ValueVector<V>) {
+        let (values, signatures): (BTreeMap<u32, _>, BTreeMap<u32, _>) = prbc_signatures
+            .into_iter()
+            .map(|(k, v)| {
+                let PRBCSignature { value, inner } = v;
 
-        SignatureVector { inner }
+                ((k, value), (k, inner))
+            })
+            .unzip();
+
+        (
+            SignatureVector { inner: signatures },
+            ValueVector { inner: values },
+        )
     }
 
-    async fn retrieve_values(
+    async fn retrieve_values<V: ABFTValue>(
         &self,
-        vector: SignatureVector,
-        signatures: BTreeMap<u32, PRBCSignature<V>>,
+        signature_vector: SignatureVector,
+        value_vector: ValueVector<V>,
         mut sig_recv: Receiver<(u32, PRBCSignature<V>)>,
     ) -> ValueVector<V> {
-        let mut result = signatures
-            .into_iter()
-            .filter_map(|(index, signature)| {
-                if vector.inner.contains_key(&index) {
-                    Some((index, signature.value))
-                } else {
-                    None
-                }
-            })
-            .collect::<BTreeMap<_, _>>();
+        let ValueVector { inner } = value_vector;
 
-        if result.len() == vector.inner.len() {
-            return ValueVector { inner: result };
+        let mut inner: BTreeMap<u32, V> = inner
+            .into_iter()
+            .filter(|(k, _)| signature_vector.inner.contains_key(k))
+            .collect();
+
+        if inner.len() == signature_vector.inner.len() {
+            return ValueVector { inner };
         }
 
         // Need to get outstainding values
 
-        let mut remaining = Vec::with_capacity(vector.inner.len());
+        let mut remaining = Vec::with_capacity(signature_vector.inner.len());
 
-        for index in vector.inner.keys() {
-            if !result.contains_key(index) {
+        for index in signature_vector.inner.keys() {
+            if !inner.contains_key(index) {
                 remaining.push(*index);
             }
         }
 
         while let Some((index, signature)) = sig_recv.recv().await {
-            if !result.contains_key(&index) && remaining.contains(&index) {
-                result.insert(index, signature.value);
+            if !inner.contains_key(&index) && remaining.contains(&index) {
+                inner.insert(index, signature.value);
                 remaining.retain(|i| *i != index);
             }
-            if result.len() == vector.inner.len() {
+            if inner.len() == signature_vector.inner.len() {
                 break;
             }
         }
 
-        ValueVector { inner: result }
+        ValueVector { inner }
     }
 
     async fn init_prbc(&self) {
@@ -334,6 +311,7 @@ impl<V: ABFTValue> ACS<V> {
                         self.index,
                         self.f_tolerance,
                         self.n_parties,
+                        self.batch_size,
                         i,
                     )),
                 )

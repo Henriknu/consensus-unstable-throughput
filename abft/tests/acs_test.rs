@@ -21,7 +21,7 @@ use tokio::sync::mpsc::{self, Sender};
 use log::{debug, error, info};
 
 const N_PARTIES: usize = THRESHOLD * 4;
-const THRESHOLD: usize = 2;
+const THRESHOLD: usize = 8;
 const BUFFER_CAPACITY: usize = N_PARTIES * N_PARTIES * 50 + 100;
 
 use abft::test_helpers::{ACSBufferManager, ChannelSender};
@@ -82,7 +82,7 @@ async fn acs_correctness() {
             i as u32,
             THRESHOLD as u32,
             N_PARTIES as u32,
-            value,
+            100,
         ));
 
         // Setup buffer manager
@@ -205,7 +205,7 @@ async fn acs_correctness() {
 
         let main_handle = tokio::spawn(async move {
             match acs
-                .invoke(main_receiver, f, prbc_signer, &*mvba_signer, &*coin)
+                .invoke(value, main_receiver, f, prbc_signer, &*mvba_signer, &*coin)
                 .await
             {
                 Ok(value) => return Ok(value),
@@ -231,7 +231,7 @@ async fn acs_correctness() {
         match join_result {
             Ok(prbc_result) => match prbc_result {
                 Ok(value) => {
-                    println!("Value returned party {} = {:?}", i, value);
+                    println!("Value returned party {}", i);
                     if cmp_value.is_none() {
                         cmp_value.replace(value.clone());
                     }
