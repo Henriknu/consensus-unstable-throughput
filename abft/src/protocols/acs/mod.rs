@@ -10,7 +10,7 @@ use consensus_core::crypto::{
     commoncoin::Coin,
     sign::{Signature, Signer},
 };
-use log::{debug, error, warn};
+use log::{debug, error, info, warn};
 use tokio::sync::{mpsc::Receiver, RwLock};
 
 use crate::{
@@ -75,6 +75,8 @@ impl ACS {
 
         self.init_prbc().await;
 
+        info!("Party {} starting prbc instances", self.index);
+
         let (sig_send, mut sig_recv) = tokio::sync::mpsc::channel(self.n_parties as usize);
         {
             let prbc_lock = self.prbcs.read().await;
@@ -124,6 +126,8 @@ impl ACS {
                 });
             }
         }
+
+        info!("Party {} done starting prbc instances", self.index);
 
         // when received n - f signatures, we have enough values to propose for MVBA
 

@@ -1,7 +1,9 @@
 use bincode::deserialize;
 use clap::{App, Arg};
 use consensus_core::{
-    crypto::hash::hash_sha256, crypto::KeySet, data::transaction::TransactionSet,
+    crypto::hash::hash_sha256,
+    crypto::KeySet,
+    data::transaction::{Transaction, TransactionSet},
 };
 use futures::future::join_all;
 use log::{error, info, warn};
@@ -112,7 +114,13 @@ async fn main() {
 
         info!("Server Addr: {}", addr);
 
+        let batch_sized_buffer = (std::mem::size_of::<Transaction>() as u32)
+            * server_args.batch_size
+            / server_args.n_parties;
+
         match tonic::transport::Server::builder()
+            .initial_connection_window_size(std::cmp::max(batch_sized_buffer * 10, 65_535))
+            .initial_stream_window_size(std::cmp::max(batch_sized_buffer, 65_535))
             .add_service(server)
             .serve(addr)
             .await
@@ -303,7 +311,7 @@ async fn spawn_msg_handler(
     tokio::spawn(async move {
         while let Some(message) = msg_rx.recv().await {
             info!(
-                "Message handler received for Party {} from Party{} with type: {:?}",
+                "Message handler received for Party {} from Party {} with type: {:?}",
                 index,
                 message.send_id,
                 ProtocolMessageType::from_i32(message.message_type).unwrap()
@@ -381,6 +389,7 @@ async fn init_rpc_sender(args: &ABFTCliArgs) -> RPCSender {
                 loop {
                     match Channel::builder(uri.clone())
                         .timeout(Duration::from_secs(RECV_TIMEOUT_SECS))
+                        .keep_alive_while_idle(true)
                         .connect()
                         .await
                     {
