@@ -24,8 +24,8 @@ use abft::{
     proto::{
         abft_client::AbftClient,
         abft_server::{Abft, AbftServer},
-        FinishedMessage, FinishedResponse, ProtocolMessage, ProtocolResponse, SetupAck,
-        SetupAckResponse,
+        FinishedMessage, FinishedResponse, ProtocolMessage, ProtocolMessageType, ProtocolResponse,
+        SetupAck, SetupAckResponse,
     },
     protocols::{
         acs::buffer::ACSBufferCommand, mvba::buffer::MVBABufferCommand,
@@ -764,7 +764,16 @@ impl Abft for ABFTService {
         &self,
         request: Request<abft::proto::ProtocolMessage>,
     ) -> Result<Response<abft::proto::ProtocolResponse>, tonic::Status> {
-        if let Err(e) = self.msg_send.send(request.into_inner()).await {
+        let message = request.into_inner();
+
+        info!(
+            "Party {} received protocol message to Party {}, with type: {:?}",
+            message.recv_id,
+            message.send_id,
+            ProtocolMessageType::from_i32(message.message_type).unwrap()
+        );
+
+        if let Err(e) = self.msg_send.send(message).await {
             error!("Got error when sending message: {}", e);
         }
 

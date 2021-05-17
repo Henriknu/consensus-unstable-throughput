@@ -43,7 +43,7 @@ impl ToProtocolMessage for RBCValueMessage {
     const MESSAGE_TYPE: ProtocolMessageType = ProtocolMessageType::RbcValue;
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct RBCReadyMessage {
     pub(crate) root: H256,
 }

@@ -1,4 +1,5 @@
 use std::{
+    collections::btree_map::Entry,
     collections::BTreeMap,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -14,7 +15,7 @@ use consensus_core::crypto::{
 use consensus_core::erasure::{
     ErasureCoder, ErasureCoderError, NonZeroUsize, DEFAULT_PACKET_SIZE, DEFAULT_WORD_SIZE,
 };
-use log::warn;
+use log::{error, info, warn};
 use thiserror::Error;
 use tokio::sync::{Notify, RwLock};
 
@@ -33,6 +34,7 @@ pub struct RBC {
     erasure: ErasureCoder,
     echo_messages: RwLock<BTreeMap<H256, BTreeMap<u32, RBCEchoMessage>>>,
     ready_messages: RwLock<BTreeMap<H256, BTreeMap<u32, RBCReadyMessage>>>,
+    decoded: RwLock<BTreeMap<H256, Vec<Vec<u8>>>>,
     notify_echo: Arc<Notify>,
     notify_ready: Arc<Notify>,
     has_sent_ready: AtomicBool,
@@ -55,21 +57,26 @@ impl RBC {
             n_parties, batch_size, word_size, packet_size
         );
 
+        let erasure = ErasureCoder::new(
+            NonZeroUsize::new((n_parties - 2 * f_tolerance) as usize)
+                .ok_or_else(|| RBCError::ZeroUsize)?,
+            NonZeroUsize::new((2 * f_tolerance) as usize).ok_or_else(|| RBCError::ZeroUsize)?,
+            NonZeroUsize::new(packet_size).ok_or_else(|| RBCError::ZeroUsize)?,
+            NonZeroUsize::new(word_size).ok_or_else(|| RBCError::ZeroUsize)?,
+        )?;
+
+        warn!("Created erasure encoder");
+
         Ok(Self {
             id,
             index,
             f_tolerance,
             n_parties,
             send_id,
-            erasure: ErasureCoder::new(
-                NonZeroUsize::new((n_parties - 2 * f_tolerance) as usize)
-                    .ok_or_else(|| RBCError::ZeroUsize)?,
-                NonZeroUsize::new((2 * f_tolerance) as usize).ok_or_else(|| RBCError::ZeroUsize)?,
-                NonZeroUsize::new(packet_size).ok_or_else(|| RBCError::ZeroUsize)?,
-                NonZeroUsize::new(word_size).ok_or_else(|| RBCError::ZeroUsize)?,
-            )?,
+            erasure,
             echo_messages: Default::default(),
             ready_messages: Default::default(),
+            decoded: Default::default(),
             notify_echo: Arc::new(Notify::new()),
             notify_ready: Arc::new(Notify::new()),
             has_sent_ready: AtomicBool::new(false),
@@ -167,17 +174,9 @@ impl RBC {
                 .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
                 .is_ok()
         {
-            let blocks = self.reconstruct_blocks_with_root(root).await?;
+            self.reconstruct_blocks_with_root_and_validate(root).await?;
 
-            let merkle2 = MerkleTree::new(&blocks);
-
-            {
-                if *merkle2.root() != root {
-                    return Err(RBCError::InvalidMerkleRootConstructed);
-                }
-            }
-
-            let ready_message = RBCReadyMessage::new(*merkle2.root());
+            let ready_message = RBCReadyMessage::new(root);
 
             send_handle
                 .broadcast(
@@ -245,7 +244,16 @@ impl RBC {
         value: V,
         send_handle: &F,
     ) -> RBCResult<()> {
+        info!(
+            "Party {} encoding blocks for RBC {}",
+            self.index, self.send_id
+        );
         let fragments = self.erasure.encode(&serialize(&value)?);
+
+        info!(
+            "Party {} done encoding blocks for RBC {}",
+            self.index, self.send_id
+        );
 
         assert_eq!(fragments.len(), self.n_parties as usize);
 
@@ -272,8 +280,9 @@ impl RBC {
         Ok(())
     }
 
-    async fn reconstruct_blocks_with_root(&self, root: H256) -> RBCResult<Vec<Vec<u8>>> {
+    async fn reconstruct_blocks_with_root_and_validate(&self, root: H256) -> RBCResult<()> {
         // want to reconstruct whatever blocks sent out which have not been
+
         let mut lock = self.echo_messages.write().await;
 
         let root_map = lock.entry(root).or_default();
@@ -286,45 +295,96 @@ impl RBC {
             }
         }
 
-        let fragments = root_map
-            .iter()
-            .map(|(_, message)| message.fragment.clone())
+        // We can take the values. If the merkle root corresponding the fragments do not match "root", then we panic and "investigate".
+
+        let fragments = std::mem::take(root_map)
+            .into_iter()
+            .map(|(_, message)| message.fragment)
             .collect::<Vec<Vec<u8>>>();
+
+        info!(
+            "Party {} Reconstructing blocks for RBC {}",
+            self.index, self.send_id
+        );
 
         let fragments = self.erasure.reconstruct(&fragments, erasures)?;
 
-        Ok(fragments)
+        info!(
+            "Party {} done Reconstructing blocks for RBC {}",
+            self.index, self.send_id
+        );
+
+        let merkle2 = MerkleTree::new(&fragments);
+
+        if *merkle2.root() != root {
+            error!("Party {} reconstructed value in RBC instance {} and got invalid root. Investigate.", self.index, self.send_id);
+            panic!("Invalid root after reconstructing");
+        }
+
+        {
+            let mut decoded_lock = self.decoded.write().await;
+
+            decoded_lock.insert(root, fragments);
+        }
+
+        Ok(())
     }
 
     async fn decode_value<V: ABFTValue>(&self) -> RBCResult<V> {
         let root = self.get_ready_root().await?;
 
-        let fragments: Vec<Vec<u8>>;
-        let mut erasures = Vec::<i32>::with_capacity(self.n_parties as usize);
+        let mut lock = self.echo_messages.write().await;
+
+        // Check if we already reconstructed fragments. Can then use "cached" value, instead of decoding anew
 
         {
-            let mut lock = self.echo_messages.write().await;
+            let mut decoded_lock = self.decoded.write().await;
 
-            let root_map = lock.get(&root).ok_or_else(|| RBCError::NoReadyRootFound)?;
+            if let Entry::Occupied(decoded) = decoded_lock.entry(root) {
+                let mut fragments = decoded.remove();
 
-            for i in 0..self.n_parties {
-                if !root_map.contains_key(&i) {
-                    erasures.push(i as i32);
-                }
+                let bytes: Vec<_> = fragments
+                    .drain(0..(self.n_parties - 2 * self.f_tolerance) as usize)
+                    .flatten()
+                    .collect();
+
+                let value: V = deserialize(&bytes)?;
+
+                return Ok(value);
             }
-
-            // Don't need messages after this, can simply take the contents
-
-            fragments = std::mem::take(
-                lock.get_mut(&root)
-                    .ok_or_else(|| RBCError::NoReadyRootFound)?,
-            )
-            .into_iter()
-            .map(|(_, message)| message.fragment)
-            .collect();
         }
 
+        let root_map = lock.get(&root).ok_or_else(|| RBCError::NoReadyRootFound)?;
+
+        let mut erasures = Vec::with_capacity(self.n_parties as usize);
+
+        for i in 0..self.n_parties {
+            if !root_map.contains_key(&i) {
+                erasures.push(i as i32);
+            }
+        }
+
+        // Don't need messages after this, can simply take the contents
+
+        let fragments = std::mem::take(
+            lock.get_mut(&root)
+                .ok_or_else(|| RBCError::NoReadyRootFound)?,
+        )
+        .into_iter()
+        .map(|(_, message)| message.fragment)
+        .collect();
+
+        info!(
+            "Party {} decoding blocks for RBC {}",
+            self.index, self.send_id
+        );
+
         let bytes = self.erasure.decode(&fragments, erasures)?;
+
+        info!(
+            "Party {} done decoding blocks for RBC {}",
+            self.index, self.send_id
+        );
 
         let value: V = deserialize(&bytes)?;
 
@@ -346,51 +406,85 @@ impl RBC {
     }
 }
 
+/// Pre-calculated word and packet sizes for different values of N and B. Calculated for 3rd gen i7, 4 cores, 8 threads, Ivybridge, may differ for other architectures.
 fn get_word_and_packet_size(n_parties: usize, batch_size: usize) -> (usize, usize) {
     match n_parties {
+        n_parties if n_parties == 4 => match batch_size {
+            batch_size if batch_size == 4 => (2, 8),
+            _ => {
+                warn!("Non-precalced N or B provided");
+                (DEFAULT_WORD_SIZE, DEFAULT_PACKET_SIZE)
+            }
+        },
+
         n_parties if n_parties == 8 => match batch_size {
-            batch_size if batch_size == 100 => (DEFAULT_WORD_SIZE, 128),
-            batch_size if batch_size == 1000 => (DEFAULT_WORD_SIZE, 1024),
-            batch_size if batch_size == 10_000 => (DEFAULT_WORD_SIZE, 2048),
-            batch_size if batch_size == 100_000 => (DEFAULT_WORD_SIZE, 4096),
-            batch_size if batch_size == 1_000_000 => (DEFAULT_WORD_SIZE, 4096),
-            batch_size if batch_size == 2_000_000 => (DEFAULT_WORD_SIZE, 4096),
+            batch_size if batch_size == 8 => (3, 8),
+            batch_size if batch_size == 100 => (3, 256),
+            batch_size if batch_size == 1000 => (3, 4096),
+            batch_size if batch_size == 10_000 => (4, 2048),
+            batch_size if batch_size == 100_000 => (3, 16384),
+            batch_size if batch_size == 1_000_000 => (5, 8192),
+            batch_size if batch_size == 2_000_000 => (3, 16384),
+            _ => {
+                warn!("Non-precalced N or B provided");
+                (DEFAULT_WORD_SIZE, DEFAULT_PACKET_SIZE)
+            }
+        },
+
+        n_parties if n_parties == 16 => match batch_size {
+            batch_size if batch_size == 16 => (4, 4),
             _ => {
                 warn!("Non-precalced N or B provided");
                 (DEFAULT_WORD_SIZE, DEFAULT_PACKET_SIZE)
             }
         },
         n_parties if n_parties == 32 => match batch_size {
-            batch_size if batch_size == 100 => (DEFAULT_WORD_SIZE, 8),
-            batch_size if batch_size == 1000 => (DEFAULT_WORD_SIZE, 64),
-            batch_size if batch_size == 10_000 => (DEFAULT_WORD_SIZE, 512),
-            batch_size if batch_size == 100_000 => (DEFAULT_WORD_SIZE, 2048),
-            batch_size if batch_size == 1_000_000 => (DEFAULT_WORD_SIZE, 4096),
-            batch_size if batch_size == 2_000_000 => (DEFAULT_WORD_SIZE, 8192),
+            batch_size if batch_size == 32 => (5, 4),
+            batch_size if batch_size == 100 => (5, 8),
+            batch_size if batch_size == 1000 => (5, 64),
+            batch_size if batch_size == 10_000 => (5, 512),
+            batch_size if batch_size == 100_000 => (5, 2048),
+            batch_size if batch_size == 1_000_000 => (5, 4096),
+            batch_size if batch_size == 2_000_000 => (5, 8192),
+            _ => {
+                warn!("Non-precalced N or B provided");
+                (DEFAULT_WORD_SIZE, DEFAULT_PACKET_SIZE)
+            }
+        },
+        n_parties if n_parties == 48 => match batch_size {
+            batch_size if batch_size == 48 => (6, 2),
             _ => {
                 warn!("Non-precalced N or B provided");
                 (DEFAULT_WORD_SIZE, DEFAULT_PACKET_SIZE)
             }
         },
         n_parties if n_parties == 64 => match batch_size {
-            batch_size if batch_size == 100 => (DEFAULT_WORD_SIZE, 2),
-            batch_size if batch_size == 1000 => (DEFAULT_WORD_SIZE, 8),
-            batch_size if batch_size == 10_000 => (DEFAULT_WORD_SIZE, 256),
-            batch_size if batch_size == 100_000 => (DEFAULT_WORD_SIZE, 2048),
-            batch_size if batch_size == 1_000_000 => (DEFAULT_WORD_SIZE, 8192),
-            batch_size if batch_size == 2_000_000 => (DEFAULT_WORD_SIZE, 8192),
+            batch_size if batch_size == 64 => (6, 2),
+            batch_size if batch_size == 100 => (6, 2),
+            batch_size if batch_size == 1000 => (6, 8),
+            batch_size if batch_size == 10_000 => (6, 256),
+            batch_size if batch_size == 100_000 => (6, 2048),
+            batch_size if batch_size == 1_000_000 => (6, 4096),
+            batch_size if batch_size == 2_000_000 => (6, 8192),
+            _ => {
+                warn!("Non-precalced N or B provided");
+                (DEFAULT_WORD_SIZE, DEFAULT_PACKET_SIZE)
+            }
+        },
+        n_parties if n_parties == 80 => match batch_size {
+            batch_size if batch_size == 80 => (7, 1),
             _ => {
                 warn!("Non-precalced N or B provided");
                 (DEFAULT_WORD_SIZE, DEFAULT_PACKET_SIZE)
             }
         },
         n_parties if n_parties == 100 => match batch_size {
-            batch_size if batch_size == 100 => (DEFAULT_WORD_SIZE, 1),
-            batch_size if batch_size == 1000 => (DEFAULT_WORD_SIZE, 8),
-            batch_size if batch_size == 10_000 => (DEFAULT_WORD_SIZE, 64),
-            batch_size if batch_size == 100_000 => (DEFAULT_WORD_SIZE, 1024),
-            batch_size if batch_size == 1_000_000 => (DEFAULT_WORD_SIZE, 8192),
-            batch_size if batch_size == 2_000_000 => (DEFAULT_WORD_SIZE, 8192),
+            batch_size if batch_size == 100 => (7, 1),
+            batch_size if batch_size == 1000 => (7, 8),
+            batch_size if batch_size == 10_000 => (7, 128),
+            batch_size if batch_size == 100_000 => (7, 1024),
+            batch_size if batch_size == 1_000_000 => (7, 8192),
+            batch_size if batch_size == 2_000_000 => (7, 8192),
             _ => {
                 warn!("Non-precalced N or B provided");
                 (DEFAULT_WORD_SIZE, DEFAULT_PACKET_SIZE)
@@ -413,8 +507,8 @@ pub enum RBCError {
     FailedToSerialize(#[from] BincodeError),
     #[error("Reconstructed merkle root did not match original merkle root received by sender")]
     InvalidMerkleRootConstructed,
-    #[error("Reconstructed merkle root did not match original merkle root received by sender")]
+    #[error("Faulty number of erasure blocks")]
     FaultyNumberOfErasureBlocks,
-    #[error("Reconstructed merkle root did not match original merkle root received by sender")]
+    #[error("No ready root found, despite calling decode")]
     NoReadyRootFound,
 }

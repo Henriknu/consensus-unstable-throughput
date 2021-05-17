@@ -202,6 +202,13 @@ impl<V: ABFTValue> ABFT<V> {
     ) -> ABFTResult<()> {
         // assume valid existing header and valid message_type
 
+        info!(
+            "Handling protocol message from Part {} to Party {} with type: {:?}",
+            message.send_id,
+            message.recv_id,
+            ProtocolMessageType::from_i32(message.message_type).unwrap()
+        );
+
         match message.message_type() {
             ProtocolMessageType::PrbcDone
             | ProtocolMessageType::RbcEcho

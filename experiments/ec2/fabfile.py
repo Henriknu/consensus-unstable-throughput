@@ -54,6 +54,9 @@ def compile_binary(c):
         /home/ubuntu/.cargo/bin/rustup component add --toolchain nightly-2021-04-25 rustfmt clippy rust-src && \
         /home/ubuntu/.cargo/bin/rustup update")
 
+    #conn.run("rm -rf consensus-core/")
+    #conn.run("rm -rf abft/")
+
     put_dir(conn, "../../consensus-core", "consensus-core/")
 
     put_dir(conn, "../../abft", "abft/")

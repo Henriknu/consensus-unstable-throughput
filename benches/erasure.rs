@@ -4,11 +4,11 @@ use consensus_core::{data::transaction::TransactionSet, erasure::*};
 
 use bincode::serialize;
 
-const N: usize = 100; // 8, 32, 64, 100
+const N: usize = 8; // LAN 4, 7, 8, 16, 32, 48, 64, 80, 100 WAN 8, 32, 64, 100
 const F: usize = N / 4;
-const WORD_SIZES: [usize; 1] = [8]; //4, 8, 16, 32
-const PACKET_SIZES: [usize; 1] = [16384]; //1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536
-const BATCH_SIZE: u32 = 2_000_000;
+const WORD_SIZES: [usize; 1] = [5]; //4, 8, 16, 32
+const PACKET_SIZES: [usize; 1] = [8192]; //1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536
+const BATCH_SIZE: u32 = 1_000_000 as u32;
 const SEED_TRANSACTION_SET: u32 = 899923234;
 
 fn criterion_benchmark(c: &mut Criterion) {
@@ -17,6 +17,23 @@ fn criterion_benchmark(c: &mut Criterion) {
 
     for w in WORD_SIZES.iter() {
         for p in PACKET_SIZES.iter() {
+            {
+                c.bench_function(
+                    format!("erasure_create N={},B={}, W={}, P={},", n, BATCH_SIZE, w, p).as_str(),
+                    |b| {
+                        b.iter(|| {
+                            ErasureCoder::new(
+                                NonZeroUsize::new((n - 2 * f) as usize).unwrap(),
+                                NonZeroUsize::new((2 * f) as usize).unwrap(),
+                                NonZeroUsize::new(*p).unwrap(),
+                                NonZeroUsize::new(*w).unwrap(),
+                            )
+                            .unwrap()
+                        })
+                    },
+                );
+            }
+
             let encoder = ErasureCoder::new(
                 NonZeroUsize::new((n - 2 * f) as usize).unwrap(),
                 NonZeroUsize::new((2 * f) as usize).unwrap(),
@@ -35,6 +52,44 @@ fn criterion_benchmark(c: &mut Criterion) {
                 c.bench_function(
                     format!("erasure_encode N={},B={}, W={}, P={},", n, BATCH_SIZE, w, p).as_str(),
                     |b| b.iter(|| encoder.encode(&t1)),
+                );
+
+                let encoded1 = encoder.encode(&t1);
+                let encoded1: Vec<_> = encoded1
+                    .into_iter()
+                    .enumerate()
+                    .filter_map(|(i, v)| if i >= 2 * *f { Some(v) } else { None })
+                    .collect();
+                c.bench_function(
+                    format!("erasure_decode N={},B={}, W={}, P={},", n, BATCH_SIZE, w, p).as_str(),
+                    |b| {
+                        b.iter_batched(
+                            || (0i32..(2 * *f as i32)).collect(),
+                            |erasures| encoder.decode(&encoded1, erasures).unwrap(),
+                            criterion::BatchSize::SmallInput,
+                        )
+                    },
+                );
+
+                let encoded1 = encoder.encode(&t1);
+                let encoded1: Vec<_> = encoded1
+                    .into_iter()
+                    .enumerate()
+                    .filter_map(|(i, v)| if i >= *f { Some(v) } else { None })
+                    .collect();
+                c.bench_function(
+                    format!(
+                        "erasure_reconstruct N={},B={}, W={}, P={},",
+                        n, BATCH_SIZE, w, p
+                    )
+                    .as_str(),
+                    |b| {
+                        b.iter_batched(
+                            || (0i32..(*f as i32)).collect(),
+                            |erasures| encoder.reconstruct(&encoded1, erasures).unwrap(),
+                            criterion::BatchSize::SmallInput,
+                        )
+                    },
                 );
             }
 

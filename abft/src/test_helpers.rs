@@ -1,6 +1,8 @@
-use crate::proto::{abft_client::AbftClient, FinishedMessage, ProtocolMessage, SetupAck};
+use crate::proto::{
+    abft_client::AbftClient, FinishedMessage, ProtocolMessage, ProtocolMessageType, SetupAck,
+};
 use async_trait::async_trait;
-use log::error;
+use log::{error, info};
 use std::collections::HashMap;
 use tokio::sync::mpsc::Sender;
 use tonic::transport::Channel;
@@ -65,14 +67,20 @@ impl ProtocolMessageSender for RPCSender {
         let mut client = self.clients[&recv_id].clone();
 
         tokio::spawn(async move {
-            if let Err(e) = client
-                .protocol_exchange(
-                    message.to_protocol_message(id, send_id, recv_id, view, prbc_index),
-                )
-                .await
-            {
+            let message = message.to_protocol_message(id, send_id, recv_id, view, prbc_index);
+            let message_type = ProtocolMessageType::from_i32(message.message_type).unwrap();
+            info!(
+                "Party {} sending protocol message to Party {}, with type: {:?}",
+                send_id, recv_id, message_type
+            );
+            if let Err(e) = client.protocol_exchange(message).await {
                 error!("Got error when sending message: {}", e);
             }
+
+            info!(
+                "Party {} done sending protocol message to Party {}, with type: {:?}",
+                send_id, recv_id, message_type
+            );
         });
     }
 
@@ -94,7 +102,22 @@ impl ProtocolMessageSender for RPCSender {
             let mut inner = message.clone();
             inner.recv_id = i;
             let mut client = self.clients[&i].clone();
-            tokio::spawn(async move { client.protocol_exchange(inner).await });
+            tokio::spawn(async move {
+                let recv_id = inner.recv_id;
+                let message_type = ProtocolMessageType::from_i32(inner.message_type).unwrap();
+
+                info!(
+                    "Party {} sending protocol message to Party {}, with type: {:?}",
+                    send_id, recv_id, message_type
+                );
+                if let Err(e) = client.protocol_exchange(inner).await {
+                    error!("Got error when sending message: {}", e);
+                }
+                info!(
+                    "Party {} done sending protocol message to Party {}, with type: {:?}",
+                    send_id, recv_id, message_type
+                );
+            });
         }
     }
 }
