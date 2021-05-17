@@ -109,7 +109,7 @@ impl RBC {
         &self,
         message: RBCValueMessage,
         send_handle: &F,
-    ) -> RBCResult<()> {
+    ) {
         let echo_message =
             RBCEchoMessage::new(self.index, message.root, message.fragment, message.branch);
 
@@ -123,8 +123,6 @@ impl RBC {
                 echo_message,
             )
             .await;
-
-        Ok(())
     }
 
     pub async fn on_echo_message<F: ProtocolMessageSender>(
@@ -255,11 +253,11 @@ impl RBC {
             self.index, self.send_id
         );
 
-        assert_eq!(fragments.len(), self.n_parties as usize);
-
         let merkle = MerkleTree::new(&fragments);
 
         let mut fragments = fragments.into_iter();
+
+        let mut own_value_message = None;
 
         for j in 0..self.n_parties {
             let fragment = fragments
@@ -273,9 +271,12 @@ impl RBC {
                     .send(self.id, self.index, j, 0, self.send_id, message)
                     .await;
             } else {
-                self.on_value_message(message, send_handle).await?;
+                own_value_message.replace(message);
             }
         }
+
+        self.on_value_message(own_value_message.unwrap(), send_handle)
+            .await;
 
         Ok(())
     }

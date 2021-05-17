@@ -135,6 +135,8 @@ impl<V: ABFTValue> ABFT<V> {
 
         let encrypted_values = Self::decode_value_vector(value_vector);
 
+        let mut decrypt_messages = Vec::with_capacity(encrypted_values.len());
+
         // save value vector
 
         {
@@ -173,9 +175,13 @@ impl<V: ABFTValue> ABFT<V> {
                     )
                     .await;
 
-                self.on_decryption_share(decrypt_message, self.index)
-                    .await?;
+                decrypt_messages.push(decrypt_message);
             }
+        }
+
+        for decrypt_message in decrypt_messages {
+            self.on_decryption_share(decrypt_message, self.index)
+                .await?;
         }
 
         recv_handle.drain_decryption_shares().await?;

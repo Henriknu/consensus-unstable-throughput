@@ -10,7 +10,7 @@ use consensus_core::crypto::{
     commoncoin::Coin,
     sign::{Signature, Signer},
 };
-use log::{debug, error};
+use log::{debug, error, warn};
 use tokio::sync::{mpsc::Receiver, RwLock};
 
 use crate::{
@@ -106,7 +106,7 @@ impl ACS {
                                 .send((prbc_clone.send_id, signature))
                                 .await
                                 .map_err(|e| {
-                                    error!(
+                                    warn!(
                                         "Could not send signature for PRBC {}, got error {}",
                                         index_copy, e
                                     );

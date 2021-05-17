@@ -25,7 +25,7 @@ use std::time::Instant;
 
 const N_PARTIES: usize = THRESHOLD * 4;
 const THRESHOLD: usize = 2;
-const BATCH_SIZE: u32 = 100_000;
+const BATCH_SIZE: u32 = 1_000_000;
 const BUFFER_CAPACITY: usize = N_PARTIES * N_PARTIES * 50 + 1000;
 const SEED_TRANSACTION_SET: u32 = 899923234;
 
