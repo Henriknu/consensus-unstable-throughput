@@ -89,6 +89,26 @@ impl PBSender {
             )
             .await;
 
+        // Provide our own share for the proposal
+
+        let response = PBResponse {
+            id: self.id,
+            value: proposal.value,
+        };
+
+        let identifier = SignatureIdentifier::new(self.id.step as usize + 1, self.index as usize);
+
+        let inner = signer.sign(
+            &serialize(&response).expect("Could not serialize message for on_value_send"),
+            &identifier,
+        );
+
+        {
+            let mut shares = self.shares.lock().await;
+
+            shares.insert(self.index as usize, PBSigShare { inner });
+        }
+
         // wait for n - f shares
 
         let notify_shares = self.notify_shares.clone();
@@ -109,11 +129,6 @@ impl PBSender {
         let identifier = SignatureIdentifier::new(self.id.step as usize + 1, self.index as usize);
 
         let signature = signer.combine_signatures(&shares, &identifier);
-
-        let response = PBResponse {
-            id: self.id,
-            value: proposal.value.clone(),
-        };
 
         if !signer.verify_signature(&signature, &serialize(&response).unwrap()) {
             error!("Party {} got invalid when promoting proposal.", self.index,);

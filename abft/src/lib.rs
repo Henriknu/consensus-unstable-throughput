@@ -1,6 +1,9 @@
 use std::{
     collections::{BTreeMap, HashMap},
-    sync::Arc,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
 };
 
 use bincode::{deserialize, serialize, Error as BincodeError};
@@ -42,6 +45,7 @@ pub struct ABFT<V: ABFTValue> {
     notify_decrypt: Arc<Notify>,
     decryption_shares: RwLock<HashMap<u32, HashMap<u32, DecryptionSharePair>>>,
     decrypted: RwLock<BTreeMap<u32, V>>,
+    has_decrypted: Vec<AtomicBool>,
 
     // sub-protocol
     acs: RwLock<Option<ACS>>,
@@ -64,6 +68,8 @@ impl<V: ABFTValue> ABFT<V> {
         coin: Coin,
         encrypter: Encrypter,
     ) -> Self {
+        let has_decrypted = (0..n_parties).map(|_| AtomicBool::new(false)).collect();
+
         Self {
             id,
             index,
@@ -75,6 +81,7 @@ impl<V: ABFTValue> ABFT<V> {
             notify_decrypt: Arc::new(Notify::new()),
             decryption_shares: Default::default(),
             decrypted: Default::default(),
+            has_decrypted,
 
             acs: RwLock::const_new(None),
 
@@ -375,7 +382,11 @@ impl<V: ABFTValue> ABFT<V> {
             (self.n_parties / 3 + 1)
         );
 
-        if n_shares as u32 >= (self.f_tolerance + 1) {
+        if n_shares as u32 >= (self.f_tolerance + 1)
+            && self.has_decrypted[index as usize]
+                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+        {
             self.decrypt_value(index).await?;
 
             // if we have decrypted everything, notify
@@ -403,15 +414,6 @@ impl<V: ABFTValue> ABFT<V> {
                 .map(|(_, pair)| (pair.key, pair.nonce))
                 .unzip()
         };
-
-        debug!(
-            "Party {} extracted decrypt info for {}. Key shares: {:?}, Nonce shares: {:?}",
-            self.index, index, key_shares, nonce_shares
-        );
-
-        if key_shares.is_empty() || nonce_shares.is_empty() {
-            return Ok(());
-        }
 
         let decrypted = {
             let vector_lock = self.encrypted_values.read().await;

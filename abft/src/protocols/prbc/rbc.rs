@@ -52,11 +52,6 @@ impl RBC {
         let (word_size, packet_size) =
             get_word_and_packet_size(n_parties as usize, batch_size as usize);
 
-        warn!(
-            "For N: {}, B:{}, choose word size: {} and packet size: {} for erasure coding",
-            n_parties, batch_size, word_size, packet_size
-        );
-
         let erasure = ErasureCoder::new(
             NonZeroUsize::new((n_parties - 2 * f_tolerance) as usize)
                 .ok_or_else(|| RBCError::ZeroUsize)?,
@@ -64,8 +59,6 @@ impl RBC {
             NonZeroUsize::new(packet_size).ok_or_else(|| RBCError::ZeroUsize)?,
             NonZeroUsize::new(word_size).ok_or_else(|| RBCError::ZeroUsize)?,
         )?;
-
-        warn!("Created erasure encoder");
 
         Ok(Self {
             id,
@@ -109,7 +102,7 @@ impl RBC {
         &self,
         message: RBCValueMessage,
         send_handle: &F,
-    ) {
+    ) -> RBCResult<()> {
         let echo_message =
             RBCEchoMessage::new(self.index, message.root, message.fragment, message.branch);
 
@@ -120,9 +113,13 @@ impl RBC {
                 self.n_parties,
                 0,
                 self.send_id,
-                echo_message,
+                echo_message.clone(),
             )
             .await;
+
+        self.on_echo_message(echo_message, send_handle).await?;
+
+        Ok(())
     }
 
     pub async fn on_echo_message<F: ProtocolMessageSender>(
@@ -183,14 +180,15 @@ impl RBC {
                     self.n_parties,
                     0,
                     self.send_id,
-                    ready_message,
+                    ready_message.clone(),
                 )
                 .await;
+
+            self.handle_own_ready_message(ready_message).await?;
         }
 
         Ok(())
     }
-
     pub async fn on_ready_message<F: ProtocolMessageSender>(
         &self,
         index: u32,
@@ -225,12 +223,28 @@ impl RBC {
                     self.n_parties,
                     0,
                     self.send_id,
-                    ready_message,
+                    ready_message.clone(),
                 )
                 .await;
+
+            self.handle_own_ready_message(ready_message).await?;
         }
 
         if n_ready_messages >= (self.f_tolerance * 2 + 1) as usize {
+            self.notify_ready.notify_one();
+        }
+
+        Ok(())
+    }
+
+    async fn handle_own_ready_message(&self, message: RBCReadyMessage) -> RBCResult<()> {
+        // Store own ready message
+        let root = message.root;
+
+        let mut lock = self.ready_messages.write().await;
+        lock.entry(root).or_default().insert(self.index, message);
+
+        if lock.entry(root).or_default().len() >= (self.f_tolerance * 2 + 1) as usize {
             self.notify_ready.notify_one();
         }
 
@@ -276,7 +290,7 @@ impl RBC {
         }
 
         self.on_value_message(own_value_message.unwrap(), send_handle)
-            .await;
+            .await?;
 
         Ok(())
     }

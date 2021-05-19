@@ -59,7 +59,7 @@ impl ToProtocolMessage for ElectCoinShareMessage {
     const MESSAGE_TYPE: ProtocolMessageType = ProtocolMessageType::ElectCoinShare;
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ViewChangeMessage<V: ABFTValue> {
     pub id: u32,
     pub index: u32,
@@ -96,7 +96,7 @@ impl<V: ABFTValue> ToProtocolMessage for ViewChangeMessage<V> {
     const MESSAGE_TYPE: ProtocolMessageType = ProtocolMessageType::ViewChange;
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MVBADoneMessage<V: ABFTValue> {
     pub id: MVBAID,
     #[serde(bound = "")]
@@ -113,7 +113,7 @@ impl<V: ABFTValue> ToProtocolMessage for MVBADoneMessage<V> {
     const MESSAGE_TYPE: ProtocolMessageType = ProtocolMessageType::MvbaDone;
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MVBASkipShareMessage {
     pub id: MVBAID,
     pub share: SkipShare,
@@ -129,7 +129,7 @@ impl ToProtocolMessage for MVBASkipShareMessage {
     const MESSAGE_TYPE: ProtocolMessageType = ProtocolMessageType::MvbaSkipShare;
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MVBASkipMessage {
     pub id: MVBAID,
     pub sig: SkipSig,

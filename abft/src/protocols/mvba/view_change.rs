@@ -64,6 +64,7 @@ impl<V: ABFTValue> ViewChange<V> {
         leader_lock: Option<PPProposal<V>>,
         leader_commit: Option<PPProposal<V>>,
         send_handle: &F,
+        signer: &Signer,
     ) -> ViewChangeResult<Changes<V>> {
         let vc_message = ViewChangeMessage::new(
             self.id.id,
@@ -81,9 +82,11 @@ impl<V: ABFTValue> ViewChange<V> {
                 self.n_parties,
                 self.view,
                 0,
-                vc_message,
+                vc_message.clone(),
             )
             .await;
+
+        self.on_view_change_message(vc_message, signer)?;
 
         // wait for n - f distinct view change messages, or view change message with valid commit (can decide early then)
 

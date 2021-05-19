@@ -8,22 +8,22 @@ import glob
 import boto3
 import pickle
 
-N = 8  # 8, 32, 64, 100 Stable. N = 8, 64 unstable.
+N = 64  # 8, 32, 64, 100 Stable. N = 8, 64 unstable.
 F = int(N/4)
 I = 1
 WAN = True
-SHOULD_MONITOR = False
-BATCH_SIZES = [100, 1000, 10000, 100_000, 1_000_000] if WAN else [
+SHOULD_MONITOR = True
+BATCH_SIZES = [100, 1000, 10000, 100_000, 1_000_000, 2_000_000] if WAN else [
     N]  # 100, 1000, 10000, 100_000, 1_000_000, 2_000_000
 LAN_N = [4, 8, 16, 32, 48, 64, 80, 100]
 LAN_BATCH_SIZES = {4: 4, 8: 8, 16: 16,
                    32: 32, 48: 48, 64: 64, 80: 80, 100: 100}
 UNSTABLE_BATCH_SIZES = {8: 10_000, 64: 1_000_000}
 SHOULD_PACKET_DELAY = True
-SHOULD_PACKET_LOSS = True
-PACKET_LOSS_RATES = [5, 10, 15]
-PACKET_DELAYS = [500, 2500, 5000]
-M = [F, 2*F, 3*F, N]
+SHOULD_PACKET_LOSS = False
+PACKET_LOSS_RATES = [5, 10, 15]  # 5, 10, 15
+PACKET_DELAYS = [500, 2500, 5000]  # 500, 2500, 5000
+M = [2*F, 3*F, N]  # F, 2*F, 3*F, N
 
 SERVER_AMI_ID = 'ami-042e8287309f5df03'  # Ubuntu 20.04 64 bit x86
 SERVER_INSTANCE_TYPE = 't2.medium'
@@ -200,8 +200,6 @@ def store_metric_data_pickle(batch_size: int):
     log_file_name_list = sorted(glob.glob(
         f"logs/{N}_{F}_{batch_size}_*-" + ('WAN' if WAN else "LAN") + "*"), key=os.path.getmtime)
 
-    print(log_file_name_list)
-
     contents = [open(file_name).read().strip().split("\n\n")
                 for file_name in log_file_name_list]
 
@@ -226,7 +224,7 @@ def store_metric_data_pickle_unstable(batch_size: int, m_parties: int, delay: in
     metrics = {}
 
     log_file_name_list = sorted(glob.glob(
-        f"unstable_logs/{N}_{F}_{batch_size}_unstable_{m_parties}_{delay}_{loss}*"))
+        f"unstable_logs/{N}_{F}_{batch_size}_unstable_{m_parties}_{delay}_{loss}*"), key=os.path.getmtime)
 
     contents = [open(file_name).read().strip().split("\n\n")
                 for file_name in log_file_name_list]

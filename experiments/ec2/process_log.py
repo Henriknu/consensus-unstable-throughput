@@ -13,12 +13,11 @@ UTC_OFFSET = 3600
 NUM_REGIONS = 8
 
 
-def _process_iteration(log_segments: List[str], n_parties: int, f_tolerance: int, batch_size: int, iteration: int):
+def _process_iteration(log_segments: List[str], n_parties: int, f_tolerance: int, batch_size: int, iteration: int, pickle_path: str):
 
     # Find start and end time
     private_host_names, starttime, endtime = get_host_start_end(log_segments)
     latencies: List[int] = []
-    print(n_parties, f_tolerance, batch_size)
 
     # Calculate latencies and max_latency
 
@@ -42,7 +41,7 @@ def _process_iteration(log_segments: List[str], n_parties: int, f_tolerance: int
         n_parties-f_tolerance-1] - min(starttime.values())
 
     cpu, mem, net = get_metrics(
-        n_parties, f_tolerance, batch_size,  iteration, starttime, endtime)
+        iteration, starttime, endtime, pickle_path)
 
     result_cpu = sorted(cpu.values())[
         n_parties-f_tolerance-1]
@@ -56,19 +55,14 @@ def _process_iteration(log_segments: List[str], n_parties: int, f_tolerance: int
     return result_latency, result_cpu, result_mem, result_net
 
 
-def get_metrics(n_parties: int, f_tolerance: int, batch_size: int, iteration: int, starttime, endtime):
+def get_metrics(iteration: int, starttime, endtime, pickle_path: str):
 
     cpu = {}
     mem = {}
     net = {}
 
-    print("starttime:", starttime)
-    print("endtime:", endtime)
-
-    with open(f"metrics/{n_parties}_{f_tolerance}_{batch_size}.pickle", "rb") as file:
+    with open(pickle_path, "rb") as file:
         metric_collection = pickle.load(file)
-
-    print(metric_collection)
 
     for metric_group in metric_collection[iteration]:
 
@@ -78,37 +72,38 @@ def get_metrics(n_parties: int, f_tolerance: int, batch_size: int, iteration: in
 
             j = int(metric["Id"].split("_")[2])
 
-            metric["Timestamps"] = [to_unix(timestamp) - UTC_OFFSET
-                                    for timestamp in metric["Timestamps"]]
+            if j in endtime:
 
-            print(metric["Timestamps"][0])
-            print(math.trunc(starttime[j]))
-            print(metric["Values"])
+                # print(j)
+                # print(starttime[j])
 
-            filtered = filter(lambda x: x[1] >=
-                              math.trunc(starttime[j]) and x[1] <= math.trunc(endtime[j]), zip(metric["Values"], metric["Timestamps"]))
+                metric["Timestamps"] = [to_unix(timestamp) - UTC_OFFSET
+                                        for timestamp in metric["Timestamps"]]
 
-            if metric["Id"].startswith("net_metrics"):
+                filtered = filter(lambda x: x[1] >=
+                                  math.trunc(starttime[j]) and x[1] <= math.trunc(endtime[j]), zip(metric["Values"], metric["Timestamps"]))
 
-                net[j] = sum(map(lambda x: x[0], filtered))
+                if metric["Id"].startswith("net_metrics"):
 
-            elif metric["Id"].startswith("cpu_metrics"):
-                if filtered := list(filtered):
+                    net[j] = sum(map(lambda x: x[0], filtered))
 
-                    cpu[j] = sum(map(lambda x: x[0], filtered)) / \
-                        len(filtered)
+                elif metric["Id"].startswith("cpu_metrics"):
+                    if filtered := list(filtered):
 
-            elif metric["Id"].startswith("mem_metrics"):
-                if filtered := list(filtered):
-                    mem[j] = sum(map(lambda x: x[0], filtered)) / \
-                        len(filtered)
+                        cpu[j] = sum(map(lambda x: x[0], filtered)) /\
+                            len(filtered)
 
-    print(cpu, mem, net)
+                elif metric["Id"].startswith("mem_metrics"):
+                    if filtered := list(filtered):
+                        mem[j] = sum(map(lambda x: x[0], filtered)) /\
+                            len(filtered)
 
     return cpu, mem, net
 
 
 def process_log_files_stable(n_parties: int, f_tolerance: int, batch_size: int, WAN: bool):
+
+    print(n_parties, f_tolerance, batch_size)
 
     log_file_name_list = sorted(glob.glob(
         f"logs/{n_parties}_{f_tolerance}_{batch_size}_*-" + ('WAN' if WAN else "LAN") + "*"), key=os.path.getmtime)
@@ -118,20 +113,20 @@ def process_log_files_stable(n_parties: int, f_tolerance: int, batch_size: int, 
 
     results = []
 
+    pickle_path = f"metrics/{n_parties}_{f_tolerance}_{batch_size}.pickle"
+
     if contents:
 
-        for i in range(len(contents[0])):
+        for i in range(1):
             log_segments = [content[i] for content in contents]
             result = _process_iteration(
-                log_segments, n_parties, f_tolerance, batch_size, i)
+                log_segments, n_parties, f_tolerance, batch_size, i, pickle_path)
             results.append(result)
 
         latency = sum(map(lambda result: result[0], results))
         cpu = sum(map(lambda result: result[1], results))
         mem = sum(map(lambda result: result[2], results))
         net = sum(map(lambda result: result[3], results))
-
-        print("Result", latency, cpu, mem, net)
 
         return latency, cpu, mem, net
 
@@ -140,27 +135,31 @@ def process_log_files_stable(n_parties: int, f_tolerance: int, batch_size: int, 
 
 def process_log_files_unstable(n_parties: int, f_tolerance: int, batch_size: int, m_parties: int, delay: int, loss: int):
 
+    print(n_parties, f_tolerance, batch_size, m_parties, delay, loss)
+
     log_file_name_list = sorted(glob.glob(
-        f"unstable_logs/{n_parties}_{f_tolerance}_{batch_size}_unstable_{m_parties}_{delay}_{loss}*"))
+        f"unstable_logs/{n_parties}_{f_tolerance}_{batch_size}_unstable_{m_parties}_{delay}_{loss}*"), key=os.path.getmtime)
 
     contents = [open(file_name).read().strip().split("\n\n")
                 for file_name in log_file_name_list]
 
     results = []
 
+    pickle_path = f"unstable_metrics/{n_parties}_{f_tolerance}_{batch_size}_{m_parties}_{delay}_{loss}.pickle"
+
     if contents:
 
-        for i in range(len(contents[0])):
+        for i in range(1):
             log_segments = [content[i] for content in contents]
             result = _process_iteration(
-                log_segments, n_parties, f_tolerance, batch_size)
+                log_segments, n_parties, f_tolerance, batch_size, i, pickle_path)
             results.append(result)
 
         latency = sum(
-            map(lambda result: result[0], results)) / len(contents[0])
-        cpu = sum(map(lambda result: result[1], results)) / len(contents[0])
-        mem = sum(map(lambda result: result[2], results)) / len(contents[0])
-        net = sum(map(lambda result: result[3], results)) / len(contents[0])
+            map(lambda result: result[0], results))
+        cpu = sum(map(lambda result: result[1], results))
+        mem = sum(map(lambda result: result[2], results))
+        net = sum(map(lambda result: result[3], results))
 
         return latency, cpu, mem, net
 
@@ -173,8 +172,6 @@ def ps(n_parties: int, WAN: bool):
 
     f_tolerance = n_parties // 4
 
-    # TODO: Get CPU, MEM, NET metrics
-
     results = [(batch_size / n_parties, *process_log_files_stable(
         n_parties, f_tolerance, batch_size, WAN)) for batch_size in BATCH_SIZES]
 
@@ -183,7 +180,7 @@ def ps(n_parties: int, WAN: bool):
 
 def pu(n_parties: int):
 
-    batches = {8: 1000, 64: 1_000_000}
+    batches = {8: 10_000, 64: 1_000_000}
 
     results_delay = []
     results_loss = []
@@ -192,31 +189,26 @@ def pu(n_parties: int):
 
     f_tolerance = n_parties // 4
 
-    # TODO: Get CPU, MEM, NET metrics
-
-    for m_parties in M:
-
-        partial_delay = []
-        partial_loss = []
+    for m_parties in [f_tolerance, 2*f_tolerance, 3*f_tolerance, n_parties]:
 
         for delay in PACKET_DELAYS:
 
-            latency = process_log_files_unstable(
+            result = process_log_files_unstable(
                 n_parties, f_tolerance, batch_size, m_parties, delay, 0)
-            if latency:
-                partial_delay.append((delay, latency))
+
+            results_delay.append((n_parties, f_tolerance,
+                                 m_parties, delay, 0,  [(batch_size / n_parties, *result)]))
 
         for loss in PACKET_LOSS_RATES:
-            latency = process_log_files_unstable(
+            result = process_log_files_unstable(
                 n_parties, f_tolerance, batch_size, m_parties, 0, loss)
-            if latency:
-                partial_loss.append((loss, latency))
 
-        results_delay.append(
-            (n_parties, f_tolerance, m_parties, partial_delay))
-        results_loss.append((n_parties, f_tolerance, m_parties, partial_loss))
-
+            results_loss.append((n_parties, f_tolerance,
+                                m_parties, 0, loss,  [(batch_size / n_parties, *result)]))
+    print("Delay: \n")
     print(results_delay)
+    print()
+    print("Packet loss: \n")
     print(results_loss)
 
 

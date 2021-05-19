@@ -54,8 +54,8 @@ def compile_binary(c):
         /home/ubuntu/.cargo/bin/rustup component add --toolchain nightly-2021-04-25 rustfmt clippy rust-src && \
         /home/ubuntu/.cargo/bin/rustup update")
 
-    #conn.run("rm -rf consensus-core/")
-    #conn.run("rm -rf abft/")
+    # conn.run("rm -rf consensus-core/")
+    # conn.run("rm -rf abft/")
 
     put_dir(conn, "../../consensus-core", "consensus-core/")
 
@@ -91,11 +91,11 @@ def put_benches(c):
 
     conn.put("../../benches/erasure.rs", "benches/erasure.rs")
 
-    #put_dir(conn, "../../benches", "benches/")
+    # put_dir(conn, "../../benches", "benches/")
 
-    #put_dir(conn, "../../consensus-core", "consensus-core/")
+    # put_dir(conn, "../../consensus-core", "consensus-core/")
 
-    #put_dir(conn, "../../abft", "abft/")
+    # put_dir(conn, "../../abft", "abft/")
 
 
 @task
@@ -219,10 +219,12 @@ def download_logs(c, b, group=None):
 
     connection: Connection
 
+    prefix = "logs" if WAN else "lan_logs"
+
     for i, connection in enumerate(group):
         print(f"Downloading log: {i}")
         connection.get(
-            f"logs/execution.log", local=f'logs/{N}_{int(F)}_{b}_[{i+1}]-{"WAN" if WAN else "LAN"}-{datetime.now().strftime("%m-%d, %H:%M")}.log')
+            f"logs/execution.log", local=f'{prefix}/{N}_{int(F)}_{b}_[{i+1}]-{"WAN" if WAN else "LAN"}-{datetime.now().strftime("%m-%d, %H:%M")}.log')
 
 
 @ task
@@ -236,7 +238,7 @@ def download_logs_unstable(c, b, m, delay, packet_loss, group=None):
     for i, connection in enumerate(group):
         print(f"Downloading log: {i}")
         connection.get(
-            f"logs/execution.log", local=f'unstable_logs/{N}_{int(F)}_{b}_unstable_{m}_{delay}_{packet_loss}_[{i+1}]-{"WAN" if WAN else "LAN"}-{datetime.now().strftime("%m-%d, %H:%M")}.log')
+            f"logs/execution.log", local=f'unstable_logs/{N}_{F}_{b}_unstable_{m}_{delay}_{packet_loss}_[{i+1}]-{"WAN" if WAN else "LAN"}-{datetime.now().strftime("%m-%d, %H:%M")}.log')
 
 
 @ task
@@ -330,8 +332,8 @@ def prepare(c, ips, group=None):
     if not group:
         group = get_group()
 
-    upload_crypto(c, group=group)
-    upload_binary(c, group=group)
+    #upload_crypto(c, group=group)
+    #upload_binary(c, group=group)
     prepare_hosts(c, ips, group=group)
     prepare_logs(c, group=group)
 
@@ -395,7 +397,7 @@ def full_unstable(c):
     prepare(c, ips, group=group)
 
     if SHOULD_MONITOR and WAN:
-        prepare_awscw_agent(c, group=group)
+        #prepare_awscw_agent(c, group=group)
         start_awscw_agent(c, group=group)
 
     b = UNSTABLE_BATCH_SIZES[N]
@@ -414,9 +416,13 @@ def full_unstable(c):
                 download_logs_unstable(c, b, m, d, 0, group=group)
 
                 if SHOULD_MONITOR and WAN:
+                    print("Waiting for metrics to be ready")
+                    time.sleep(60)
                     store_metric_data_pickle_unstable(b, m, d, 0)
 
                 clear_logs(c, group=group)
+
+    for m in M:
 
         if SHOULD_PACKET_LOSS:
 
@@ -430,7 +436,8 @@ def full_unstable(c):
                 download_logs_unstable(c, b, m, 0, l, group=group)
 
                 if SHOULD_MONITOR and WAN:
-
+                    print("Waiting for metrics to be ready")
+                    time.sleep(60)
                     store_metric_data_pickle_unstable(b, m, 0, l)
 
                 clear_logs(c, group=group)

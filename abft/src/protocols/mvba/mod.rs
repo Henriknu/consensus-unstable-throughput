@@ -148,7 +148,7 @@ impl<V: ABFTValue + MvbaValue> MVBA<V> {
                     },
                 };
 
-                self.send_done_if_not_skip(promotion_proof, send_handle)
+                self.send_done_if_not_skip(promotion_proof, send_handle, signer)
                     .await?;
             }
 
@@ -199,7 +199,7 @@ impl<V: ABFTValue + MvbaValue> MVBA<V> {
                 .expect("ViewChange should be initialized");
 
             let changes = view_change
-                .invoke(result.key, result.lock, result.commit, send_handle)
+                .invoke(result.key, result.lock, result.commit, send_handle, signer)
                 .await?;
 
             if let Some(value) = changes.value {
@@ -489,18 +489,25 @@ impl<V: ABFTValue + MvbaValue> MVBA<V> {
 
             let skip_share_message = MVBASkipShareMessage::new(id, share);
 
+            state.has_sent_skip_share.insert(id.view, true);
+
+            let view = state.view;
+
+            drop(state);
+
             send_handle
                 .broadcast(
                     id.id,
                     self.index,
                     self.n_parties,
-                    state.view,
+                    view,
                     0,
-                    skip_share_message,
+                    skip_share_message.clone(),
                 )
                 .await;
 
-            state.has_sent_skip_share.insert(id.view, true);
+            self.on_skip_share_message(self.index, skip_share_message, send_handle, signer)
+                .await?;
         }
 
         Ok(())
@@ -577,16 +584,23 @@ impl<V: ABFTValue + MvbaValue> MVBA<V> {
 
             state.has_sent_skip.insert(id.view, true);
 
+            let view = state.view;
+
+            drop(state);
+
             send_handle
                 .broadcast(
                     id.id,
                     self.index,
                     self.n_parties,
-                    state.view,
+                    view,
                     0,
-                    skip_message,
+                    skip_message.clone(),
                 )
                 .await;
+
+            self.on_skip_message(skip_message, send_handle, signer)
+                .await?;
         }
         Ok(())
     }
@@ -739,6 +753,7 @@ impl<V: ABFTValue + MvbaValue> MVBA<V> {
         &self,
         promotion_proof: Option<PBSig>,
         send_handle: &F,
+        signer: &Signer,
     ) -> MVBAResult<()> {
         let state = self.state.read().await;
 
@@ -774,11 +789,14 @@ impl<V: ABFTValue + MvbaValue> MVBA<V> {
                     self.n_parties,
                     state.view,
                     0,
-                    mvba_done,
+                    mvba_done.clone(),
                 )
                 .await;
 
             drop(state);
+
+            self.on_done_message(self.index, mvba_done, send_handle, signer)
+                .await?;
 
             self.notify_skip.notified().await;
         }
@@ -967,7 +985,7 @@ pub struct SkipShare {
     inner: SignatureShare,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkipSig {
     inner: Signature,
 }

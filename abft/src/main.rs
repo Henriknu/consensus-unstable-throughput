@@ -40,7 +40,7 @@ use abft::{
 use std::sync::Arc;
 use tokio::sync::mpsc::{self, Receiver, Sender};
 
-const RECV_TIMEOUT_SECS: u64 = 120;
+const RECV_TIMEOUT_SECS: u64 = 240;
 const CLIENT_RETRY_TIMEOUT_SECS: u64 = 1;
 const SERVER_PORT_NUMBER: u64 = 50000;
 const SEED_TRANSACTION_SET: u32 = 899923234;
@@ -55,8 +55,6 @@ async fn main() {
     let args = Arc::new(parse_args());
 
     // If enabled, calculate which nodes are affected by unstable network and invoke NetEm.
-
-    let enabled_unstable = (args.m_parties != 0) && enable_unstable_network(&args);
 
     // Buffer manager
 
@@ -119,8 +117,8 @@ async fn main() {
             / server_args.n_parties;
 
         match tonic::transport::Server::builder()
-            .initial_connection_window_size(std::cmp::max(batch_sized_buffer * 10, 65_535))
-            .initial_stream_window_size(std::cmp::max(batch_sized_buffer, 65_535))
+            .initial_connection_window_size(std::cmp::max(batch_sized_buffer, 65_535))
+            .initial_stream_window_size(std::cmp::max(batch_sized_buffer / 10, 65_535))
             .add_service(server)
             .serve(addr)
             .await
@@ -166,6 +164,8 @@ async fn main() {
 
     send_setup_ack(&*args, &rpc_sender).await;
 
+    let enabled_unstable = (args.m_parties != 0) && enable_unstable_network(&args);
+
     wait_for_setup_ack(&mut setup_rx, &*args).await;
 
     // Invoke protocol
@@ -195,13 +195,13 @@ async fn main() {
         }
     }
 
-    send_finished(&*args, &rpc_sender).await;
-
-    wait_for_finish_and_exit(&mut fin_rx, &*args).await;
-
     if enabled_unstable {
         disable_unstable_network();
     }
+
+    send_finished(&*args, &rpc_sender).await;
+
+    wait_for_finish_and_exit(&mut fin_rx, &*args).await;
 }
 
 async fn send_setup_ack(args: &ABFTCliArgs, rpc_sender: &Arc<RPCSender>) {

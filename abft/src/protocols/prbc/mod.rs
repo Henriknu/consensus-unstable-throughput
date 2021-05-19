@@ -208,7 +208,7 @@ impl PRBC {
                 if let Some(rbc) = &*rbc {
                     let inner: RBCValueMessage = deserialize(&message_data)?;
 
-                    rbc.on_value_message(inner, send_handle).await;
+                    rbc.on_value_message(inner, send_handle).await?;
                 } else {
                     return Err(PRBCError::NotReadyForMessage(ProtocolMessage {
                         send_id,
