@@ -19,23 +19,6 @@ def plot_stable():
     plot_net(MEASUREMENTS_STABLE_WAN, "STABLE_WAN")
 
 
-def plot_unstable():
-    plot_latency(MEASUREMENTS_UNSTABLE_DELAY, "UNSTABLE_DELAY")
-    plot_throughput(MEASUREMENTS_UNSTABLE_DELAY, "UNSTABLE_DELAY")
-    plot_v_latency_throughput(MEASUREMENTS_UNSTABLE_DELAY, "UNSTABLE_DELAY")
-    plot_cpu(MEASUREMENTS_UNSTABLE_DELAY, "UNSTABLE_DELAY")
-    plot_mem(MEASUREMENTS_UNSTABLE_DELAY, "UNSTABLE_DELAY")
-    plot_net(MEASUREMENTS_UNSTABLE_DELAY, "UNSTABLE_DELAY")
-
-    plot_latency(MEASUREMENTS_UNSTABLE_PACKET_LOSS, "UNSTABLE_PACKET_LOSS")
-    plot_throughput(MEASUREMENTS_UNSTABLE_PACKET_LOSS, "UNSTABLE_PACKET_LOSS")
-    plot_v_latency_throughput(
-        MEASUREMENTS_UNSTABLE_PACKET_LOSS, "UNSTABLE_PACKET_LOSS")
-    plot_cpu(MEASUREMENTS_UNSTABLE_PACKET_LOSS, "UNSTABLE_PACKET_LOSS")
-    plot_mem(MEASUREMENTS_UNSTABLE_PACKET_LOSS, "UNSTABLE_PACKET_LOSS")
-    plot_net(MEASUREMENTS_UNSTABLE_PACKET_LOSS, "UNSTABLE_PACKET_LOSS")
-
-
 def plot_latency(data=None, suffix=None):
 
     if not data:
@@ -63,7 +46,7 @@ def plot_latency(data=None, suffix=None):
     plt.ylabel('Latency (Seconds) ')
     plt.xlabel('Batch size (Number of Tx) in log scale')
     plt.tight_layout()
-    plt.savefig('pdfs/plot_latency.pdf', format='pdf', dpi=1000)
+    plt.savefig(f'pdfs/plot_latency_{suffix}.pdf', format='pdf', dpi=1000)
 
 
 def plot_throughput(data=None, suffix=None):
@@ -83,6 +66,7 @@ def plot_throughput(data=None, suffix=None):
         for ToverN, latency, _, _, _ in entries:
             batch.append(N*ToverN)
             throughput.append(ToverN*(N-t) / latency)
+
         ax.plot(batch, throughput, style, label='%d/%d' % (N, t))
     ax.set_xscale("log")
     ax.set_yscale("log")
@@ -91,7 +75,7 @@ def plot_throughput(data=None, suffix=None):
     plt.legend(title='Nodes / Tolerance', loc='best')
     plt.ylabel('Throughput (Tx per second) in log scale')
     plt.xlabel('Batch size (Number of Tx) in log scale')
-    plt.savefig('pdfs/plot_throughput.pdf',
+    plt.savefig(f'pdfs/plot_throughput_{suffix}.pdf',
                 format='pdf', dpi=1000)
 
 
@@ -119,7 +103,8 @@ def plot_v_latency_throughput(data=None, suffix=None):
     plt.ylabel('Latency (Seconds) in log scale')
     plt.xlabel('Throughput (Tx per second) in log scale')
     plt.tight_layout()
-    plt.savefig('pdfs/plot_latency_throughput.pdf', format='pdf', dpi=1000)
+    plt.savefig(
+        f'pdfs/plot_latency_throughput_{suffix}.pdf', format='pdf', dpi=1000)
 
 
 def plot_cpu(data=None, suffix=None):
@@ -134,19 +119,20 @@ def plot_cpu(data=None, suffix=None):
     plt.clf()
     ax = f.add_subplot(1, 1, 1)
     for N, t, entries, style in get_data():
-        throughput = []
+        batches = []
         cpu_usage = []
-        for ToverN, latency, cpu, _, _ in entries:
-            throughput.append(ToverN*(N-t) / latency)
+        for ToverN, _, cpu, _, _ in entries:
+            batches.append(N*ToverN)
             cpu_usage.append(cpu)
-        ax.plot(throughput, cpu_usage, style, label='%d/%d' % (N, t))
+        ax.plot(batches, cpu_usage, style, label='%d/%d' % (N, t))
     ax.set_xscale("log")
-    ax.set_yscale("log")
+    plt.ylim([0, 100])
     plt.legend(title='Nodes / Tolerance', loc='best')
     plt.ylabel('CPU utilization (Percentage)')
-    plt.xlabel('Throughput (Tx per second) in log scale')
+    plt.xlabel('Batch size (Number of Tx) in log scale')
     plt.tight_layout()
-    plt.savefig('pdfs/plot_latency_throughput.pdf', format='pdf', dpi=1000)
+    plt.savefig(
+        f'pdfs/plot_res_cpu_{suffix}.pdf', format='pdf', dpi=1000)
 
 
 def plot_mem(data=None, suffix=None):
@@ -161,19 +147,20 @@ def plot_mem(data=None, suffix=None):
     plt.clf()
     ax = f.add_subplot(1, 1, 1)
     for N, t, entries, style in get_data():
-        throughput = []
+        batches = []
         mem_usage = []
-        for ToverN, latency, _, mem,  _ in entries:
-            throughput.append(ToverN*(N-t) / latency)
+        for ToverN, _, _, mem,  _ in entries:
+            batches.append(N*ToverN)
             mem_usage.append(mem)
-        ax.plot(throughput, mem_usage, style, label='%d/%d' % (N, t))
+        ax.plot(batches, mem_usage, style, label='%d/%d' % (N, t))
     ax.set_xscale("log")
-    ax.set_yscale("log")
+    plt.ylim([10**6, 4 * 10**9])
     plt.legend(title='Nodes / Tolerance', loc='best')
     plt.ylabel('Memory utilization (Bytes)')
     plt.xlabel('Throughput (Tx per second) in log scale')
     plt.tight_layout()
-    plt.savefig('pdfs/plot_latency_throughput.pdf', format='pdf', dpi=1000)
+    plt.savefig(
+        f'pdfs/plot_res_mem_{suffix}.pdf', format='pdf', dpi=1000)
 
 
 def plot_net(data=None, suffix=None):
@@ -188,19 +175,20 @@ def plot_net(data=None, suffix=None):
     plt.clf()
     ax = f.add_subplot(1, 1, 1)
     for N, t, entries, style in get_data():
-        throughput = []
+        batches = []
         net_usage = []
-        for ToverN, latency, _, _, net in entries:
-            throughput.append(ToverN*(N-t) / latency)
+        for ToverN, _, _, _, net in entries:
+            batches.append(ToverN*(N-t))
             net_usage.append(net)
-        ax.plot(throughput, net_usage, style, label='%d/%d' % (N, t))
+        ax.plot(batches, net_usage, style, label='%d/%d' % (N, t))
     ax.set_xscale("log")
     ax.set_yscale("log")
     plt.legend(title='Nodes / Tolerance', loc='best')
     plt.ylabel('Outbound network traffic (Bytes)')
     plt.xlabel('Throughput (Tx per second) in log scale')
     plt.tight_layout()
-    plt.savefig('pdfs/plot_latency_throughput.pdf', format='pdf', dpi=1000)
+    plt.savefig(
+        f'pdfs/plot_res_net_{suffix}.pdf', format='pdf', dpi=1000)
 
 
 def get_data():

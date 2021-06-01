@@ -8,15 +8,15 @@ import glob
 import boto3
 import pickle
 
-N = 64  # 8, 32, 64, 100 Stable. N = 8, 64 unstable.
+N = 100  # 8, 32, 64, 100 Stable. N = 8, 64 unstable.
 F = int(N/4)
 I = 1
-WAN = True
+WAN = False
 SHOULD_MONITOR = True
 BATCH_SIZES = [100, 1000, 10000, 100_000, 1_000_000, 2_000_000] if WAN else [
     N]  # 100, 1000, 10000, 100_000, 1_000_000, 2_000_000
 LAN_N = [4, 8, 16, 32, 48, 64, 80, 100]
-LAN_BATCH_SIZES = {4: 4, 8: 8, 16: 16,
+LAN_BATCH_SIZES = {4: 4, 7: 7, 8: 8, 16: 16,
                    32: 32, 48: 48, 64: 64, 80: 80, 100: 100}
 UNSTABLE_BATCH_SIZES = {8: 10_000, 64: 1_000_000}
 SHOULD_PACKET_DELAY = True

@@ -22,12 +22,6 @@ fn criterion_benchmark(c: &mut Criterion) {
         b.iter(|| signer_ecdsa.sign_reuse_pre_signed(data))
     });
 
-    let sig_share_pairing = signer_pairing.sign(data, &identifier);
-
-    c.bench_function("threshold_crypto Verify Share", |b| {
-        b.iter(|| signer_pairing.verify_share(0, &sig_share_pairing, data))
-    });
-
     let shares_pairing = signers_vec_pairing
         .iter()
         .enumerate()

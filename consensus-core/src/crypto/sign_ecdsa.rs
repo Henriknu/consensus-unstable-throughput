@@ -75,9 +75,9 @@ impl Signer {
 
     /// Pre-compute `l` set of pre sign material, for `n_parties` parties.
     ///
-    /// For ABFT, we generate pre-sign material in order to handle the maximal amount of signatures needed for a single round of the consensus algorithm.
-    /// Per party n, this is 1 for PRBC, 5 for MVBA * number of views. Given honest parties, this will never be more than 6.
-    /// For dishonest parties, one would generate according to the expected number of rounds needed for MVBA (2/3 chance pr round to elect honest leader, expected number of rounds < 3/2.)
+    /// NB: THIS IS ONLY A SIMULATION OF ACTUALLY RUNNING THE PRE-SIGN PROTOCOL. THIS IS NOT SECURE.
+    /// Currently, this generates N * 6 presign material. It should really be N + K * (4N + 1), where K is maximum of expected rounds of MVBA protocol.
+    /// Presign material cannot be reused, and such need to be discarded after use
     fn pre_sign_material(
         x: Scalar,
         n_parties: usize,

@@ -14,3 +14,5 @@ experiments/ec2/crypto
 experiments/ec2/abft
 **/__pycache__
 log.log
+test.py
+test2.py

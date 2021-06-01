@@ -45,6 +45,11 @@ path = "erasure.rs"
 harness = false
 
 [[bench]]
+name = "erasure2"
+path = "erasure2.rs"
+harness = false
+
+[[bench]]
 name = "aes"
 path = "aes.rs"
 harness = false
@@ -72,4 +77,9 @@ harness = false
 [[bench]]
 name = "dalek"
 path = "dalek.rs"
+harness = false
+
+[[bench]]
+name = "precomputed"
+path = "precomputed.rs"
 harness = false
