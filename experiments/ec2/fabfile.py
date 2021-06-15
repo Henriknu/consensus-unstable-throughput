@@ -1,7 +1,7 @@
 import os
 from subprocess import Popen
 from fabric import Connection, ThreadingGroup, task
-from utils.utils import ip_all, store_metric_data_pickle, store_metric_data_pickle_unstable, start_N_LAN, start_N_WAN, start_compiler, stop_all, N, F, M, BATCH_SIZES, UNSTABLE_BATCH_SIZES, I, WAN, PACKET_LOSS_RATES, PACKET_DELAYS, SHOULD_MONITOR, SHOULD_PACKET_DELAY, SHOULD_PACKET_LOSS
+from utils.utils import ip_all, store_metric_data_pickle, store_metric_data_pickle_unstable, start_N_LAN, start_N_WAN, start_compiler, stop_all, N, F, M, BATCH_SIZES, UNSTABLE_BATCH_SIZES, I, WAN, PACKET_LOSS_RATES, PACKET_DELAYS, SHOULD_MONITOR, SHOULD_PACKET_DELAY, SHOULD_PACKET_LOSS, LAN_BATCH_SIZES
 from datetime import datetime
 import time
 
@@ -332,8 +332,8 @@ def prepare(c, ips, group=None):
     if not group:
         group = get_group()
 
-    #upload_crypto(c, group=group)
-    #upload_binary(c, group=group)
+    upload_crypto(c, group=group)
+    upload_binary(c, group=group)
     prepare_hosts(c, ips, group=group)
     prepare_logs(c, group=group)
 
@@ -375,6 +375,35 @@ def full(c):
             store_metric_data_pickle(b)
 
         clear_logs(c, group=group)
+
+    stop_all()
+
+
+@ task
+def full_LAN(c):
+
+    start_N_LAN()
+
+    time.sleep(20)
+
+    ips = ip_all()
+
+    group = ThreadingGroup(*ips,
+                           user="ubuntu", forward_agent=True)
+
+    prepare(c, ips, group=group)
+
+    b = LAN_BATCH_SIZES[N]
+
+    print("Running experiments with batch size:", b)
+
+    for i in range(I):
+
+        run_protocol(c, i + 1, b, group=group)
+
+    download_logs(c, b, group=group)
+
+    clear_logs(c, group=group)
 
     stop_all()
 

@@ -432,6 +432,14 @@ fn get_word_and_packet_size(n_parties: usize, batch_size: usize) -> (usize, usiz
             }
         },
 
+        n_parties if n_parties == 7 => match batch_size {
+            batch_size if batch_size == 7 => (3, 8),
+            _ => {
+                warn!("Non-precalced N or B provided");
+                (DEFAULT_WORD_SIZE, DEFAULT_PACKET_SIZE)
+            }
+        },
+
         n_parties if n_parties == 8 => match batch_size {
             batch_size if batch_size == 8 => (3, 8),
             batch_size if batch_size == 100 => (3, 256),
@@ -440,6 +448,22 @@ fn get_word_and_packet_size(n_parties: usize, batch_size: usize) -> (usize, usiz
             batch_size if batch_size == 100_000 => (3, 16384),
             batch_size if batch_size == 1_000_000 => (5, 8192),
             batch_size if batch_size == 2_000_000 => (3, 16384),
+            _ => {
+                warn!("Non-precalced N or B provided");
+                (DEFAULT_WORD_SIZE, DEFAULT_PACKET_SIZE)
+            }
+        },
+
+        n_parties if n_parties == 10 => match batch_size {
+            batch_size if batch_size == 10 => (4, 4),
+            _ => {
+                warn!("Non-precalced N or B provided");
+                (DEFAULT_WORD_SIZE, DEFAULT_PACKET_SIZE)
+            }
+        },
+
+        n_parties if n_parties == 13 => match batch_size {
+            batch_size if batch_size == 13 => (4, 8),
             _ => {
                 warn!("Non-precalced N or B provided");
                 (DEFAULT_WORD_SIZE, DEFAULT_PACKET_SIZE)

@@ -1,5 +1,82 @@
 
-MEASUREMENTS_STABLE_LAN = []
+# LAN Bare Latency
+
+MEASUREMENTS_BARE_LATENCY_LAN_ABFT = [
+    (4, 1, 0.0240478515625),  # ABFT
+    (7, 2, 0.04808104515075684),  # ABFT
+    (10, 3,  0.061860084533691406),  # ABFT
+    (13, 4, 0.08942985534667969),  # ABFT
+    (16, 5, 0.11595892906188965)  # ABFT
+]
+
+MEASUREMENTS_BARE_LATENCY_LAN_BEAT_BEAT = [
+    (4, 1, 0.1),  # BEAT BEAT0
+    (7, 2, 0.54),  # BEAT BEAT0
+]
+
+MEASUREMENTS_BARE_LATENCY_LAN_BEAT_HB = [
+    (4, 1, 0.21),  # BEAT HB
+    (7, 2, 1.47),  # BEAT HB
+]
+
+# WAN Bare Latency
+
+MEASUREMENTS_BARE_LATENCY_WAN_ABFT = [
+
+    (32, 8, 2.0476999282836914),
+    (64, 16, 2.8309249877929688),
+    (100, 25, 6.553422927856445)
+]
+
+MEASUREMENTS_BARE_LATENCY_WAN_DUMBO_HB = [
+
+    (32, 8, 70),
+    (64, 16, 240),
+    (100, 25, 491)
+
+]
+
+MEASUREMENTS_BARE_LATENCY_WAN_DUMBO_DUMBO1 = [
+
+    (32, 8, 19),
+    (64, 16, 49),
+    (100, 25, 90)
+]
+
+MEASUREMENTS_BARE_LATENCY_WAN_DUMBO_DUMBO2 = [
+
+    (32, 8, 7.5),
+    (64, 16, 14),
+    (100, 25, 24)
+
+]
+
+# WAN Transaction throughput - 2x10^6 transactions
+
+MEASUREMENTS_WAN_THROUGHPUT_ABFT = [
+    (8, 2, 38106),
+    (32, 8, 38733),
+    (64, 16, 34486),
+    (100, 25, 28591)
+]
+
+MEASUREMENTS_WAN_THROUGHPUT_HB = [
+    (32, 8, 8430),
+    (64, 16, 4453),
+    (100, 25, 1934)
+]
+
+MEASUREMENTS_WAN_THROUGHPUT_DUMBO1 = [
+    (32, 8, 11313),
+    (64, 16, 12111),
+    (100, 25, 8814)
+]
+
+MEASUREMENTS_WAN_THROUGHPUT_DUMBO2 = [
+    (32, 8, 15121),
+    (64, 16, 18692),
+    (100, 25, 17767)
+]
 
 
 # Measurements from the table. (N, F, [(batch_size / N, latency, CPU, MEM, NET), ...], styling)

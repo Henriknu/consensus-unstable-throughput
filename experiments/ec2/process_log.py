@@ -2,7 +2,7 @@ import os
 import pickle
 import numpy as np
 import glob
-from utils.utils import BATCH_SIZES, M, PACKET_DELAYS, PACKET_LOSS_RATES, get_host_start_end, to_unix
+from utils.utils import BATCH_SIZES, M, PACKET_DELAYS, PACKET_LOSS_RATES, get_host_start_end, to_unix, LAN_BATCH_SIZES
 from datetime import datetime
 from typing import List, Dict
 import time
@@ -210,6 +210,15 @@ def pu(n_parties: int):
     print()
     print("Packet loss: \n")
     print(results_loss)
+
+
+def ps_LAN():
+
+    for n_parties in LAN_BATCH_SIZES:
+        batch_size = n_parties
+        f_tolerance = n_parties // 3
+        print((n_parties, f_tolerance, (batch_size / n_parties, *process_log_files_stable(
+            n_parties, f_tolerance, batch_size, False))))
 
 
 if __name__ == '__main__':
